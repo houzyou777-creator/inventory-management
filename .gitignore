@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Excel 一時ファイル
+~$*.xlsx
+~$*.xlsm
+~$*.xls
+
+# バックアップ（Git管理外）
+_backup/
+
+# 認証・機密情報
+*.env
+secrets/
+credentials/
+
+# macOS テキストクリッピング
+*.textClipping
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
