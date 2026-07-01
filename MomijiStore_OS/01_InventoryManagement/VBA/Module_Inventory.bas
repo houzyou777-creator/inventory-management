@@ -101,10 +101,10 @@ Sub RegisterProduct()
     wsM.Cells(masterRow, PM_CREATED).Value = Now()
     wsM.Cells(masterRow, PM_UPDATED).Value = Now()
     If Trim(wsM.Cells(masterRow, PM_STATUS).Value) = "" Then
-        wsM.Cells(masterRow, PM_STATUS).Value = "active"
+        wsM.Cells(masterRow, PM_STATUS).Value = "”Ì”„’†"
     End If
     Dim channels As Variant
-    channels = Array("self", "fba", "rakuten")
+    channels = Array("©ŒÈ”­‘—", "FBA", "Šy“V")
     Dim ch As Variant
     For Each ch In channels
         lastInvRow = wsI.Cells(wsI.Rows.Count, INV_INTID).End(xlUp).Row + 1
@@ -114,7 +114,7 @@ Sub RegisterProduct()
         wsI.Cells(lastInvRow, INV_RESERVED).Value = 0
         wsI.Cells(lastInvRow, INV_UPDATED).Value  = Now()
     Next ch
-    MsgBox "ï¿½oï¿½^ï¿½ï¿½ï¿½ï¿½: [" & intId & "] ï¿½ï¿½ self / fba / rakuten ï¿½ï¿½3ï¿½`ï¿½ï¿½ï¿½lï¿½ï¿½ï¿½Å’Ç‰ï¿½ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½ï¿½B", vbInformation
+    MsgBox "ï¿½oï¿½^ï¿½ï¿½ï¿½ï¿½: [" & intId & "] ï¿½ï¿½ ©ŒÈ”­‘— / FBA / Šy“V ï¿½ï¿½3ï¿½`ï¿½ï¿½ï¿½lï¿½ï¿½ï¿½Å’Ç‰ï¿½ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½ï¿½B", vbInformation
     ThisWorkbook.Sheets(SH_INVENTORY).Activate
 End Sub
 
@@ -140,7 +140,7 @@ Sub ConfirmPurchase()
     qtyRcv  = Val(wsPO.Cells(poRow, PO_QTY_RCV).Value)
     purchId = Trim(wsPO.Cells(poRow, PO_ID).Value)
     prodName = Trim(wsPO.Cells(poRow, PO_NAME).Value)
-    If intId = ""  Then MsgBox "internal_id ï¿½ï¿½ï¿½ï¿½Å‚ï¿½ï¿½B",       vbExclamation : Exit Sub
+    If intId = ""  Then MsgBox "“à•”ŠÇ—ID ï¿½ï¿½ï¿½ï¿½Å‚ï¿½ï¿½B",       vbExclamation : Exit Sub
     If qtyRcv <= 0 Then MsgBox "ï¿½ï¿½ï¿½×ï¿½ï¿½iIï¿½ï¿½jï¿½ï¿½ 0 ï¿½È‰ï¿½ï¿½Å‚ï¿½ï¿½B", vbExclamation : Exit Sub
     If dest = ""   Then MsgBox "ï¿½ï¿½ï¿½Éï¿½iNï¿½ï¿½jï¿½ï¿½ï¿½ï¿½ï¿½İ’ï¿½Å‚ï¿½ï¿½B",  vbExclamation : Exit Sub
     If MsgBox("ï¿½yï¿½dï¿½ï¿½ï¿½ï¿½mï¿½ï¿½z" & Chr(10) & _
@@ -159,7 +159,7 @@ Sub ConfirmPurchase()
             wsI.Cells(invRow, INV_STOCK).Value   = prev + qtyRcv
             wsI.Cells(invRow, INV_STOCKED).Value = Now()
             wsI.Cells(invRow, INV_UPDATED).Value = Now()
-            Call WriteLog(intId, prodName, dest, "purchase_in", _
+            Call WriteLog(intId, prodName, dest, "d“ü“üŒÉ", _
                           prev, qtyRcv, prev + qtyRcv, purchId, "ï¿½dï¿½ï¿½ï¿½ï¿½mï¿½ï¿½}ï¿½Nï¿½ï¿½")
             found = True
             Exit For
@@ -170,7 +170,7 @@ Sub ConfirmPurchase()
                "ï¿½ï¿½Éï¿½ï¿½iï¿½oï¿½^ï¿½}ï¿½Nï¿½ï¿½ï¿½iRegisterProductï¿½jï¿½ï¿½ï¿½ï¿½ï¿½sï¿½ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½B", vbExclamation
         Exit Sub
     End If
-    wsPO.Cells(poRow, PO_STATUS).Value    = "received"
+    wsPO.Cells(poRow, PO_STATUS).Value    = "“üŒÉÏ"
     wsPO.Cells(poRow, PO_REFLECTED).Value = Now()
     MsgBox "ï¿½İŒÉ”ï¿½ï¿½fï¿½ï¿½ï¿½ï¿½ï¿½Bï¿½Xï¿½eï¿½[ï¿½^ï¿½Xï¿½ï¿½ received ï¿½ÉXï¿½Vï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½ï¿½B", vbInformation
 End Sub
@@ -193,18 +193,18 @@ Sub AdjustInventory()
     If intId = "" Then MsgBox "ï¿½ï¿½ï¿½ï¿½ï¿½Ç—ï¿½IDï¿½ï¿½ï¿½ï¿½Å‚ï¿½ï¿½B", vbExclamation : Exit Sub
     Dim typeNum As String
     typeNum = InputBox("ï¿½Cï¿½ï¿½ï¿½ï¿½Ê‚ï¿½ï¿½ï¿½Íi1ï¿½`5ï¿½j:" & Chr(10) & _
-        "1: adjustmentï¿½iï¿½Iï¿½ï¿½ï¿½ï¿½ï¿½j" & Chr(10) & _
-        "2: disposalï¿½iï¿½pï¿½ï¿½ï¿½j"     & Chr(10) & _
-        "3: return_inï¿½iï¿½Ô•iï¿½j"    & Chr(10) & _
-        "4: sale_outï¿½iï¿½oï¿½Éj"     & Chr(10) & _
-        "5: fba_transferï¿½iFBAï¿½]ï¿½ï¿½ï¿½j", "ï¿½İŒÉCï¿½ï¿½")
+        "1: ’I‰µ’²®ï¿½iï¿½Iï¿½ï¿½ï¿½ï¿½ï¿½j" & Chr(10) & _
+        "2: ”pŠüˆ•ªï¿½iï¿½pï¿½ï¿½ï¿½j"     & Chr(10) & _
+        "3: •Ô•i“üŒÉï¿½iï¿½Ô•iï¿½j"    & Chr(10) & _
+        "4: ”Ì”„oŒÉï¿½iï¿½oï¿½Éj"     & Chr(10) & _
+        "5: FBAˆÚ‘—ï¿½iFBAï¿½]ï¿½ï¿½ï¿½j", "ï¿½İŒÉCï¿½ï¿½")
     Dim txType As String
     Select Case typeNum
-        Case "1": txType = "adjustment"
-        Case "2": txType = "disposal"
-        Case "3": txType = "return_in"
-        Case "4": txType = "sale_out"
-        Case "5": txType = "fba_transfer"
+        Case "1": txType = "’I‰µ’²®"
+        Case "2": txType = "”pŠüˆ•ª"
+        Case "3": txType = "•Ô•i“üŒÉ"
+        Case "4": txType = "”Ì”„oŒÉ"
+        Case "5": txType = "FBAˆÚ‘—"
         Case Else: Exit Sub
     End Select
     Dim newStockStr As String
