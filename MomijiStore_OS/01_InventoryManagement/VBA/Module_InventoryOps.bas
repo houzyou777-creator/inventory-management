@@ -112,17 +112,21 @@ Public Sub ConfirmInventory()
         Dim pid  As String: pid  = Trim(CStr(wsInput.Cells(r, SI_PID).Value))
         Dim zone As String: zone = Trim(CStr(wsInput.Cells(r, SI_ZONE).Value))
 
-        If pid = "" Then _
+        If pid = "" Then
             errMsg = errMsg & "行" & r & ": 内部管理IDが未入力です。" & vbCrLf
+        End If
 
-        If wsInput.Cells(r, SI_REALQTY).Value = "" Then _
+        If wsInput.Cells(r, SI_REALQTY).Value = "" Then
             errMsg = errMsg & "行" & r & ": 実棚数が未入力です（0と空白は区別されます）。" & vbCrLf
+        End If
 
-        If Trim(CStr(wsInput.Cells(r, SI_STAFF).Value)) = "" Then _
+        If Trim(CStr(wsInput.Cells(r, SI_STAFF).Value)) = "" Then
             errMsg = errMsg & "行" & r & ": 棚卸担当者が未入力です。" & vbCrLf
+        End If
 
-        If wsInput.Cells(r, SI_DATE).Value = "" Then _
+        If wsInput.Cells(r, SI_DATE).Value = "" Then
             errMsg = errMsg & "行" & r & ": 棚卸日が未入力です。" & vbCrLf
+        End If
 
         If pid <> "" And zone <> "" Then
             If FindStockRow(wsStock, pid, zone) = 0 Then
