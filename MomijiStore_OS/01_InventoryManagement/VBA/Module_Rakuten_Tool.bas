@@ -409,7 +409,9 @@ Sub RunAggregation()
             End If
         End If
 
-        dupKey = IIf(skuNo <> "", skuNo, manageNo)
+        ' 楽天では同一SKU番号が別商品(管理番号違い)に使い回されるため、
+        ' 管理番号×SKUのペアで重複判定する(SKU単独だと別商品を誤って除外する)
+        dupKey = manageNo & "|" & skuNo
         isDup = False
         On Error Resume Next
         tmpVal = dicSku(dupKey)
