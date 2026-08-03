@@ -7,6 +7,8 @@ KPI管理シートの月次シートと商品マスターを突き合わせる�
 使い方:
     python3 sync_cost_master.py check 7月            # 突合レポートのみ(変更なし)
     python3 sync_cost_master.py register 7月         # 未登録商品をマスターへ追加登録
+    python3 sync_cost_master.py adopt 7月            # 原価不一致をKPI側の値でマスター更新
+                                                     # (ユーザーが明示承認した場合のみ実行すること)
 
 設計方針(GS移行を見据えて):
 - 照合キーは「楽天商品管理番号 × 楽天SKU」のペア(SKU単独照合はNG。使い回しがあるため)
@@ -128,8 +130,28 @@ def register_missing(month_sheet, missing):
     return pn_num, cn_num
 
 
+def adopt_kpi_costs(month_sheet, conflict):
+    """不一致分のマスター標準原価をKPI側の値で更新する(ユーザー承認済みの場合のみ)"""
+    wb = load_workbook(MASTER_FILE)
+    wm = wb[SH_MASTER]
+    target = {pid: r['cost'] for r, pid, _ in conflict}
+    today = date.today().isoformat()
+    updated = 0
+    for row in range(2, wm.max_row + 1):
+        pid = str(wm.cell(row, PM_ID).value or '')
+        if pid in target:
+            wm.cell(row, PM_COST).value = target[pid]
+            wm.cell(row, PM_UPD).value = today
+            old_note = wm.cell(row, PM_NOTE).value
+            note = f'原価をKPI{month_sheet}に合わせて更新'
+            wm.cell(row, PM_NOTE).value = f'{old_note} / {note}' if old_note else note
+            updated += 1
+    wb.save(MASTER_FILE)
+    return updated
+
+
 def main():
-    if len(sys.argv) < 3 or sys.argv[1] not in ('check', 'register'):
+    if len(sys.argv) < 3 or sys.argv[1] not in ('check', 'register', 'adopt'):
         print(__doc__)
         sys.exit(1)
     mode, month_sheet = sys.argv[1], sys.argv[2]
@@ -139,9 +161,19 @@ def main():
     print(f'{month_sheet}: {len(rows)}行(ユニーク{len(match)+len(conflict)+len(missing)}ペア)')
     print(f'  マスター一致: {len(match)} / 原価不一致: {len(conflict)} / 未登録: {len(missing)}')
     if conflict:
-        print('--- 原価不一致(マスターは変更していません。要ユーザー判断)')
+        if mode == 'adopt':
+            print('--- 原価不一致(これからKPI側の値でマスターを更新します)')
+        else:
+            print('--- 原価不一致(マスターは変更していません。要ユーザー判断)')
         for r, pid, mc in conflict:
             print(f'  {r["ctrl"]} ({pid}) マスター:{mc} / KPI:{r["cost"]} — {r["name"][:30]}')
+    if mode == 'adopt':
+        if not conflict:
+            print('不一致なし — 更新処理スキップ')
+            return
+        updated = adopt_kpi_costs(month_sheet, conflict)
+        print(f'マスター原価をKPI側に更新: {updated}件')
+        return
     if mode == 'register':
         if not missing:
             print('未登録なし — 登録処理スキップ')
