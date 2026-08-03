@@ -81,6 +81,17 @@ cd MomijiStore_OS/02_Analytics/Python
    - KPIシートの同月と結合し広告依存度・広告費対粗利を算出(KPIシート生成後に実行)
    - KPIシート経費欄の広告費 = RPP割引後実績額の税込(×1.1)
 
+## AmazonSP広告分析
+
+1. 広告コンソール → 測定と報告 → スポンサー広告レポートで2本作成(期間は対象月、時間単位: 概要)
+   - レポートタイプ「広告商品」(必須)/「検索用語」(任意)
+2. ```
+   python3 build_amazon_sp_month.py "../SourceData/広告対象商品レポート.xlsx" 8月 "../SourceData/検索用語レポート.xlsx"
+   ```
+   - 出力先: `AmazonSP広告分析.xlsx`(月別+<月>_検索用語シート)
+   - Amazon KPIシートの同月と結合(KPIシート生成後に実行)
+   - アトリビューションは7日間(楽天RPPの720hと基準が異なる)
+
 ## トラブル時
 
 - 各ステップは実行前にバックアップを `SourceData/Backup/` に作る
