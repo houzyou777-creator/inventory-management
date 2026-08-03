@@ -70,6 +70,17 @@ cd MomijiStore_OS/02_Analytics/Python
    ```
    - 原価不一致が出たら内容確認のうえ `adopt-amazon 8月`(ユーザー承認必須)
 
+## 楽天RPP広告分析
+
+1. RMS広告センター(プロモーション → RPP)から月次レポート2種をダウンロード
+   - 商品別レポート(`rpp_item_reports_...csv`)/サマリー(`rpp_reports_...csv`)
+2. ```
+   python3 build_rakuten_rpp_month.py ../SourceData/rpp_item_reports_xxx.csv ../SourceData/rpp_reports_xxx.csv 8月
+   ```
+   - 出力先: `楽天RPP広告分析.xlsx`(月別シート)
+   - KPIシートの同月と結合し広告依存度・広告費対粗利を算出(KPIシート生成後に実行)
+   - KPIシート経費欄の広告費 = RPP割引後実績額の税込(×1.1)
+
 ## トラブル時
 
 - 各ステップは実行前にバックアップを `SourceData/Backup/` に作る
