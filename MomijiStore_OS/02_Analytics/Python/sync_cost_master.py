@@ -9,6 +9,11 @@ KPI管理シートの月次シートと商品マスターを突き合わせる�
     python3 sync_cost_master.py register 7月         # 未登録商品をマスターへ追加登録
     python3 sync_cost_master.py adopt 7月            # 原価不一致をKPI側の値でマスター更新
                                                      # (ユーザーが明示承認した場合のみ実行すること)
+    python3 sync_cost_master.py push                 # 商品マスター→在庫集計ツール原価マスターへ配信
+
+注意: push は openpyxl ではなく Excel(AppleScript)経由で書き込む。
+xlsm を openpyxl で保存するとボタン描画(drawing1.xml)が失われるため。
+GS移行時はこの層を Apps Script の直接参照に置き換える。
 
 設計方針(GS移行を見据えて):
 - 照合キーは「楽天商品管理番号 × 楽天SKU」のペア(SKU単独照合はNG。使い回しがあるため)
@@ -150,7 +155,99 @@ def adopt_kpi_costs(month_sheet, conflict):
     return updated
 
 
+TOOL_FILE = BASE + '/01_InventoryManagement/SourceData/楽天在庫金額集計ツール_v1.0.xlsm'
+SH_TOOL_COST = '原価マスター'
+
+
+def build_push_rows():
+    """商品マスター+出品テーブルから集計ツール原価マスター用の行を作る
+    (JAN, 楽天商品管理番号, 商品名, 商品種別, 標準原価, 最終更新日, 備考)"""
+    wb = load_workbook(MASTER_FILE, data_only=True)
+    products = {}
+    for r in wb[SH_MASTER].iter_rows(min_row=2, values_only=True):
+        if r[0]:
+            products[str(r[0])] = r
+    rctrl_by_pid = {}
+    for r in wb[SH_LISTING].iter_rows(min_row=2, values_only=True):
+        pid, ch, rctrl = r[LT_PID - 1], r[LT_CH - 1], r[LT_RCTRL - 1]
+        if pid and rctrl and ch and '楽天' in str(ch):
+            rctrl_by_pid.setdefault(str(pid), str(rctrl).strip())
+    rows, seen = [], set()
+    for pid, p in products.items():
+        jan = str(p[PM_JAN - 1]).strip() if p[PM_JAN - 1] else ''
+        rctrl = rctrl_by_pid.get(pid, '')
+        cost = p[PM_COST - 1]
+        if cost is None or (jan == '' and rctrl == ''):
+            continue
+        key = (jan, rctrl)
+        if key in seen:
+            continue
+        seen.add(key)
+        upd = p[PM_UPD - 1]
+        upd = upd.isoformat()[:10] if hasattr(upd, 'isoformat') else (str(upd)[:10] if upd else '')
+        rows.append([jan, rctrl, str(p[PM_NAME - 1] or ''), str(p[PM_TYPE - 1] or '単品'),
+                     float(cost), upd, '商品マスターから同期'])
+    return rows
+
+
+def push_to_tool(rows):
+    """Excel(AppleScript)経由で集計ツールの原価マスターシートへ書き込む"""
+    import subprocess
+    import tempfile
+
+    def esc(v):
+        if isinstance(v, float):
+            return str(int(v)) if v == int(v) else str(v)
+        return '"' + str(v).replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+    # 1行が長くなりすぎないよう100行ずつ set value する(AppleScriptの複数行リストは書けないため)
+    CHUNK = 100
+    stmts = []
+    for i in range(0, len(rows), CHUNK):
+        chunk = rows[i:i + CHUNK]
+        data = ','.join('{' + ','.join(esc(v) for v in row) + '}' for row in chunk)
+        r1, r2 = 3 + i, 2 + i + len(chunk)
+        stmts.append(f'set value of range ("A{r1}:G{r2}") of ws to {{{data}}}')
+    body = '\n    '.join(stmts)
+    # 集計シートが10万行あるため、書き込み中は手動計算にして最後に一括再計算する
+    script = f'''
+set p to POSIX file "{TOOL_FILE}"
+with timeout of 900 seconds
+tell application "Microsoft Excel"
+    set wasRunning to running
+    open p
+    delay 2
+    set wb to active workbook
+    set ws to worksheet "{SH_TOOL_COST}" of wb
+    set calculation to calculation manual
+    set screen updating to false
+    clear contents of range "A3:G10000" of ws
+    {body}
+    set calculation to calculation automatic
+    calculate
+    set screen updating to true
+    save wb
+    close wb saving no
+    if not wasRunning then quit
+end tell
+end timeout
+return "push done: {len(rows)} rows"
+'''
+    with tempfile.NamedTemporaryFile('w', suffix='.applescript', delete=False) as f:
+        f.write(script)
+        path = f.name
+    r = subprocess.run(['osascript', path], capture_output=True, text=True, timeout=300)
+    if r.returncode != 0:
+        raise RuntimeError(f'AppleScript failed: {r.stderr}')
+    return r.stdout.strip()
+
+
 def main():
+    if len(sys.argv) >= 2 and sys.argv[1] == 'push':
+        rows = build_push_rows()
+        print(f'配信対象: {len(rows)}行(商品マスター由来)')
+        print(push_to_tool(rows))
+        return
     if len(sys.argv) < 3 or sys.argv[1] not in ('check', 'register', 'adopt'):
         print(__doc__)
         sys.exit(1)
