@@ -11,6 +11,10 @@ KPI管理シートの月次シートと商品マスターを突き合わせる�
                                                      # (ユーザーが明示承認した場合のみ実行すること)
     python3 sync_cost_master.py push                 # 商品マスター→在庫集計ツール原価マスターへ配信
 
+    python3 sync_cost_master.py check-amazon 7月     # Amazon KPIシートとの突合レポート
+    python3 sync_cost_master.py register-amazon 7月  # Amazon側の未登録商品をマスターへ追加登録
+    python3 sync_cost_master.py adopt-amazon 7月     # Amazon側の原価不一致をKPI側でマスター更新(要承認)
+
 注意: push は openpyxl ではなく Excel(AppleScript)経由で書き込む。
 xlsm を openpyxl で保存するとボタン描画(drawing1.xml)が失われるため。
 GS移行時はこの層を Apps Script の直接参照に置き換える。
@@ -157,6 +161,105 @@ def adopt_kpi_costs(month_sheet, conflict):
 
 TOOL_FILE = BASE + '/01_InventoryManagement/SourceData/楽天在庫金額集計ツール_v1.0.xlsm'
 SH_TOOL_COST = '原価マスター'
+AMZ_KPI_FILE = BASE + '/02_Analytics/SourceData/Amazon運営 KPI管理シート.xlsx'
+AMZ_INV_FILE = BASE + '/01_InventoryManagement/SourceData/Amazon在庫リスト_import.xlsx'
+
+
+def load_master_amazon():
+    """マスターを読み、ASIN/AmazonSKU→内部管理ID と ID→標準原価 を返す"""
+    wb = load_workbook(MASTER_FILE, data_only=True)
+    cost_by_pid = {}
+    for r in wb[SH_MASTER].iter_rows(min_row=2, values_only=True):
+        if r[0]:
+            cost_by_pid[str(r[0])] = r[PM_COST - 1]
+    asin2pid, asku2pid = {}, {}
+    for r in wb[SH_LISTING].iter_rows(min_row=2, values_only=True):
+        pid, asin, asku = r[LT_PID - 1], r[LT_ASIN - 1], r[LT_ASKU - 1]
+        if not pid:
+            continue
+        if asin:
+            asin2pid.setdefault(norm(asin), str(pid))
+        if asku:
+            asku2pid.setdefault(norm(asku), str(pid))
+    return cost_by_pid, asin2pid, asku2pid
+
+
+def load_amazon_kpi_month(month_sheet):
+    """Amazon KPI月次シートから (ASIN, AmazonSKU, 商品名, 仕入値) をペア重複なしで返す"""
+    wb = load_workbook(AMZ_KPI_FILE, data_only=True)
+    ws = wb[month_sheet]
+    out, seen = [], set()
+    for row in range(8, ws.max_row + 1):
+        asin = ws.cell(row, 3).value
+        if asin is None:
+            break
+        key = (norm(asin), norm(ws.cell(row, 2).value))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            'asin': str(asin).strip(),
+            'sku': str(ws.cell(row, 2).value or '').strip(),
+            'name': str(ws.cell(row, 1).value or '').strip(),
+            'cost': ws.cell(row, 12).value,
+        })
+    return out
+
+
+def classify_amazon(rows, cost_by_pid, asin2pid, asku2pid):
+    match, conflict, missing = [], [], []
+    for r in rows:
+        pid = asin2pid.get(norm(r['asin'])) or asku2pid.get(norm(r['sku']))
+        if pid is None:
+            missing.append(r)
+            continue
+        mc = cost_by_pid.get(pid)
+        if mc is not None and r['cost'] is not None and float(mc) == float(r['cost']):
+            match.append(r)
+        else:
+            conflict.append((r, pid, mc))
+    return match, conflict, missing
+
+
+def load_amazon_jan_lookup():
+    """Amazon在庫リストから ASIN→JAN を引く(マスター登録時のJAN補完用)"""
+    wb = load_workbook(AMZ_INV_FILE, read_only=True, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    jan_by_asin = {}
+    for r in ws.iter_rows(min_row=2, values_only=True):
+        jan, asin = r[0], r[1]
+        if asin and jan:
+            jan_by_asin.setdefault(norm(asin), str(jan).strip())
+    return jan_by_asin
+
+
+def register_missing_amazon(month_sheet, missing):
+    """Amazon側の未登録商品を商品マスター+出品テーブルへ追加登録する"""
+    jan_by_asin = load_amazon_jan_lookup()
+    wb = load_workbook(MASTER_FILE)
+    wm, wl = wb[SH_MASTER], wb[SH_LISTING]
+    pn_num = max(int(str(r[0])[1:]) for r in wm.iter_rows(min_row=2, values_only=True) if r[0])
+    cn_num = max(int(str(r[0])[1:]) for r in wl.iter_rows(min_row=2, values_only=True) if r[0])
+    today = date.today().isoformat()
+    note = f'Amazon KPI{month_sheet}シートから自動登録'
+    mrow, lrow = wm.max_row + 1, wl.max_row + 1
+    for r in missing:
+        pn_num += 1
+        cn_num += 1
+        pid, cid = f'P{pn_num:06d}', f'C{cn_num:06d}'
+        ptype = 'セット' if 'セット' in r['name'] else '単品'
+        vals_m = [pid, jan_by_asin.get(norm(r['asin'])), r['name'], ptype, r['cost'],
+                  'Amazon', '販売中', today, today, note]
+        for col, v in enumerate(vals_m, start=1):
+            wm.cell(mrow, col).value = v
+        vals_l = [cid, pid, 'Amazon', None, None, r['asin'], r['sku'] or None,
+                  None, '販売中', today, note]
+        for col, v in enumerate(vals_l, start=1):
+            wl.cell(lrow, col).value = v
+        mrow += 1
+        lrow += 1
+    wb.save(MASTER_FILE)
+    return pn_num, cn_num
 
 
 def build_push_rows():
@@ -236,10 +339,39 @@ return "push done: {len(rows)} rows"
     with tempfile.NamedTemporaryFile('w', suffix='.applescript', delete=False) as f:
         f.write(script)
         path = f.name
-    r = subprocess.run(['osascript', path], capture_output=True, text=True, timeout=300)
+    r = subprocess.run(['osascript', path], capture_output=True, text=True, timeout=960)
     if r.returncode != 0:
         raise RuntimeError(f'AppleScript failed: {r.stderr}')
     return r.stdout.strip()
+
+
+def main_amazon(mode, month_sheet):
+    cost_by_pid, asin2pid, asku2pid = load_master_amazon()
+    rows = load_amazon_kpi_month(month_sheet)
+    match, conflict, missing = classify_amazon(rows, cost_by_pid, asin2pid, asku2pid)
+    print(f'Amazon {month_sheet}: ユニーク{len(rows)}ペア')
+    print(f'  マスター一致: {len(match)} / 原価不一致: {len(conflict)} / 未登録: {len(missing)}')
+    if conflict:
+        if mode == 'adopt-amazon':
+            print('--- 原価不一致(これからKPI側の値でマスターを更新します)')
+        else:
+            print('--- 原価不一致(マスターは変更していません。要ユーザー判断)')
+        for r, pid, mc in conflict:
+            print(f'  {r["asin"]} ({pid}) マスター:{mc} / KPI:{r["cost"]} — {r["name"][:30]}')
+    if mode == 'adopt-amazon':
+        if not conflict:
+            print('不一致なし — 更新処理スキップ')
+            return
+        updated = adopt_kpi_costs(f'Amazon {month_sheet}', conflict)
+        print(f'マスター原価をKPI側に更新: {updated}件')
+    elif mode == 'register-amazon':
+        if not missing:
+            print('未登録なし — 登録処理スキップ')
+            return
+        last_p, last_c = register_missing_amazon(month_sheet, missing)
+        print(f'登録完了: {len(missing)}件追加 (最終ID P{last_p:06d} / C{last_c:06d})')
+    elif missing:
+        print(f'--- 未登録 {len(missing)}件(register-amazon モードで追加登録できます)')
 
 
 def main():
@@ -247,6 +379,9 @@ def main():
         rows = build_push_rows()
         print(f'配信対象: {len(rows)}行(商品マスター由来)')
         print(push_to_tool(rows))
+        return
+    if len(sys.argv) >= 3 and sys.argv[1] in ('check-amazon', 'register-amazon', 'adopt-amazon'):
+        main_amazon(sys.argv[1], sys.argv[2])
         return
     if len(sys.argv) < 3 or sys.argv[1] not in ('check', 'register', 'adopt'):
         print(__doc__)

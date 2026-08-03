@@ -63,6 +63,12 @@ cd MomijiStore_OS/02_Analytics/Python
    - K列(販売手数料)をSKU別実額に置換(同一SKU複数行は売上比で按分)
    - プロモーション費・その他手数料・送料も自動入力
 4. 残りの黄色セル(仕入値・広告費・梱包資材)を入力して確定
+5. 新商品をマスターへ還流 → 在庫集計ツールへ配信
+   ```
+   python3 sync_cost_master.py register-amazon 8月
+   python3 sync_cost_master.py push
+   ```
+   - 原価不一致が出たら内容確認のうえ `adopt-amazon 8月`(ユーザー承認必須)
 
 ## トラブル時
 
