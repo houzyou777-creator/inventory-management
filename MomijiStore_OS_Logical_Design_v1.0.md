@@ -3,7 +3,7 @@
 > **This document follows FOUNDATION.md.**
 > **If any conflict exists, FOUNDATION.md takes precedence.**
 
-ステータス: **ドラフト v1.0 — 承認待ち**
+ステータス: **v1.0 — 承認済み / Logical Design Complete(2026-08-05)**
 作成日: 2026-08-05
 位置づけ: **Phase2「MomijiStore OS Core」最初の成果物**
 階層: ARCHITECTURE層(`Architecture.md`の下位・実装の上位)
@@ -331,4 +331,72 @@ graph LR
 
 ---
 
-**次のステップ:** 本書の承認 → §9-1(本番用xlsm)の判断 → Infrastructure実装開始条件(RAM・HDD)の充足 → フォルダ作成(Phase2後半)
+## 12. System Boundary(システム境界)
+
+**MomijiStore OSが何を管理し、何を管理しないかを、ここで確定する。境界を曖昧にしない。**
+
+境界が曖昧なシステムは、際限なく機能が流れ込み、やがて誰も全体を把握できなくなる。**管理しないと決めることは、管理すると決めることと同じだけ重要である。**
+
+### 管理する(MomijiStore OSの内側)
+
+| 対象 | 該当する層 |
+|------|-----------|
+| 商品 | Data |
+| 在庫 | Data |
+| 仕入 | Data |
+| 販売 | Data |
+| 広告 | Data |
+| 利益 | Data(算出結果) |
+| マスター | Data(正本) |
+| 知識 | Intelligence |
+| AI Memory | Intelligence |
+| ログ(操作・変更・監査) | Security |
+
+### 管理しない(MomijiStore OSの外側)
+
+| 対象 | 理由 |
+|------|------|
+| 銀行 | 金銭の移動は人の責任領域。OSは記録も操作もしない |
+| 会計ソフト | 会計は専門ソフトの領域。OSは数値を**渡すだけ** |
+| 税務 | 制度対応は専門家の領域 |
+| 給与 | 個人情報を含み、OSの目的外 |
+| 契約書 | 法務の領域。OSは保管も管理もしない |
+| 個人PC設定 | 個人の作業環境はOSの管理対象外 |
+
+### 境界を越えるときの規則
+
+1. **外側へは「出す」だけ。** 会計ソフトへ月次の集計値を渡すことはあっても、会計ソフトの内部をOSが持つことはしない
+2. **外側のものをOSへ取り込まない。** 銀行残高や契約内容をデータとして保持しない
+3. **境界の変更は設計変更である。** 外側にあるものを内側へ移す判断は、Decision Logへの記録と承認を要する
+4. **迷ったら外側に置く。** 内側に入れるほど、引き継ぎ時に説明すべきことが増える(Always Simple)
+
+## 13. Future Extension(将来の拡張予定)
+
+**ここには「追加予定」だけを書く。設計は書かない。**
+目的は、**今後どこまで拡張できる設計なのかを見えるようにする**こと。着手時期・優先度は未定であり、実際に着手する際は個別に設計・承認を行う。
+
+### 事業の拡張
+
+- BrandReuse OS
+- Physical AI
+
+### 販売チャネルの拡張
+
+- Mercari
+- Yahoo
+- Shopify
+
+### 機能の拡張
+
+- CRM
+- BI Dashboard
+- Voice AI
+- AI Agent
+- Workflow Engine
+
+---
+
+**Phase2 ステータス: Logical Design Complete(2026-08-05)**
+
+次は **Phase3「MomijiStore OS Infrastructure」** — 共有フォルダの作成、Docker実行基盤、GitミラーNAS構築、バックアップ自動化。
+着手にはInfrastructure実装開始条件(RAM容量の確定・HDD構成の確定・Volume設計の確定)の充足が必要。

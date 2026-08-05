@@ -39,7 +39,7 @@ Momiji Store(EC事業)の運営システム「MomijiStore OS」を、一つの�
 1. **シンプルさを優先する。** 高度な構成より、**長期間運用できる構成**を優先する。売却できる会社とは「誰でも引き継げる構成」の会社である。構成を複雑にする提案は、シンプルな代替案と比較してから採用する
 2. **複雑さは必要になった時だけ追加する。最初から追加しない。Always Simple.**
 3. **フォルダ構成は設計の結果であり、目的ではない。** 目的は会社全体をシステム化すること。フォルダは`Architecture.md`(会社全体の設計図)が確定してから、その結果として最後に作る
-4. **段階移行** — 現段階(Phase3のDocker基盤完成まで)は「実行はMac、資産はNAS」。最終ゴールはNAS上のDocker統合基盤(Claude Code / Git / AI / 在庫管理DB / バックアップ)で、Macは開発端末に徹する
+4. **段階移行** — 現段階(Phase3のInfrastructure完成まで)は「実行はMac、資産はNAS」。最終ゴールはNAS上のDocker統合基盤(Claude Code / Git / AI / 在庫管理DB / バックアップ)で、Macは開発端末に徹する
 5. **安全性 > 保守性 > 拡張性 > 速度** の優先順位
 6. **AIが読み書きできる形式を優先する** — 属人的なファイルより構造化データ(将来的にExcel→DB移行)
 7. **Googleスプレッドシート移行を見据える** — VBA依存最小化・数式優先・シート構造/列名/内部ID不変(詳細はCLAUDE.md)
@@ -90,8 +90,8 @@ Mac(作業場所)→ GitHub(正本)→ NAS Mirror(災害対策)
 | フェーズ | テーマ | 内容 | 状態 |
 |----------|--------|------|------|
 | Phase1 | **NAS** | 現状調査(`NAS_PHASE1_SURVEY_REPORT.md`)+接続確認・開発環境調査(`NAS_PHASE15_SURVEY_REPORT.md`) | 完了 |
-| Phase2 | **MomijiStore OS Core** | 会社OSの中核を確立する。**最初の成果物: `MomijiStore_OS Logical Design v1.0`** → その結果としての共有フォルダ設計・作成・権限設定 | 開始条件待ち |
-| Phase3 | **Docker** | Compose実行基盤・GitミラーNAS構築・バックアップ自動化 | 未着手 |
+| Phase2 | **MomijiStore OS Core** | 会社OSの中核を**論理として**確立する。成果物: `MomijiStore_OS Logical Design v1.0` | ✅ **Logical Design Complete**(2026-08-05) |
+| Phase3 | **MomijiStore OS Infrastructure** | 共有フォルダ作成・権限設定・Docker実行基盤・GitミラーNAS構築・バックアップ自動化 | 開始条件待ち |
 | Phase4 | **Database** | Excel→PostgreSQL移行(商品マスター・在庫・広告・会計) | 未着手 |
 | Phase5 | **AI Agent** | MCP経由でAIが業務を実行(Automation Rule準拠) | 未着手 |
 | Phase6 | **Autonomous Company** | 人は判断のみ。仕組みで利益が出る会社 | 未着手 |
@@ -108,7 +108,8 @@ Mac(作業場所)→ GitHub(正本)→ NAS Mirror(災害対策)
 - [x] NAS機種・ストレージ方式の把握(DXP4800 GT / M.2 SSD RAID1 約1.85TB)
 - [x] GitHub運用確認済
 
-**B. Infrastructure実装開始条件(共有フォルダ作成・Docker・DB等)— ⬜ 未充足**
+**B. Phase3(MomijiStore OS Infrastructure)開始条件 — ⬜ 未充足**
+※ 共有フォルダ作成・権限設定・Docker・バックアップ自動化はすべてPhase3で実施する
 
 - [ ] RAM容量の確定(現在8GB・将来増設予定 → 増設後の容量と時期)
 - [ ] HDD構成の確定(本数・容量・RAIDレベル・空きベイ)
