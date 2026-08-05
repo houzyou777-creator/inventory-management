@@ -1,7 +1,7 @@
 # PROJECT_CHARTER — MomijiStore OS
 
-ステータス: **v0.5 — 承認済み(2026-08-05)**
-作成日: 2026-08-05(v0.5 — Principle「Always Simple」追加)
+ステータス: **v0.6 — 承認済み(2026-08-05)**
+作成日: 2026-08-05(v0.6 — Phase番号をArchitecture.md Roadmapへ統一)
 
 ---
 
@@ -30,7 +30,7 @@ Momiji Store(EC事業)の運営システム「MomijiStore OS」を、一つの�
 1. **シンプルさを優先する。** 高度な構成より、**長期間運用できる構成**を優先する。売却できる会社とは「誰でも引き継げる構成」の会社である。構成を複雑にする提案は、シンプルな代替案と比較してから採用する
 2. **複雑さは必要になった時だけ追加する。最初から追加しない。Always Simple.**
 3. **フォルダ構成は設計の結果であり、目的ではない。** 目的は会社全体をシステム化すること。フォルダは`Architecture.md`(会社全体の設計図)が確定してから、その結果として最後に作る
-4. **段階移行** — 現段階(〜Phase3)は「実行はMac、資産はNAS」。最終ゴールはNAS上のDocker統合基盤(Claude Code / Git / AI / 在庫管理DB / バックアップ)で、Macは開発端末に徹する
+4. **段階移行** — 現段階(Phase3のDocker基盤完成まで)は「実行はMac、資産はNAS」。最終ゴールはNAS上のDocker統合基盤(Claude Code / Git / AI / 在庫管理DB / バックアップ)で、Macは開発端末に徹する
 5. **安全性 > 保守性 > 拡張性 > 速度** の優先順位
 6. **AIが読み書きできる形式を優先する** — 属人的なファイルより構造化データ(将来的にExcel→DB移行)
 7. **Googleスプレッドシート移行を見据える** — VBA依存最小化・数式優先・シート構造/列名/内部ID不変(詳細はCLAUDE.md)
@@ -56,7 +56,7 @@ Momiji Store(EC事業)の運営システム「MomijiStore OS」を、一つの�
 - 対象: Gitリポジトリ / Excelファイル / SourceData / マニュアル類
 - 世代: daily(7世代) / weekly(4世代) / monthly(12世代) / release(無期限)※現行 `_backup/` 構成を踏襲
 - 保存先: NAS `20_Backup/` を正、Macローカル `_backup/` を作業用とする
-- NASのSnapshot機能を併用する(方式はPhase1.5で調査)
+- NASのSnapshot機能を併用する(方式はPhase1で調査済み — `NAS_PHASE15_SURVEY_REPORT.md`)
 - **古いバックアップの自動削除は禁止** — 削除候補の提示のみ
 - 年1回以上リストア訓練を実施し、復旧手順を `90_System/` に文書化する
 
@@ -76,22 +76,25 @@ Mac(作業場所)→ GitHub(正本)→ NAS Mirror(災害対策)
 
 ## 7. フェーズ管理
 
-| フェーズ | 内容 | 状態 |
-|----------|------|------|
-| Phase1 | 現状調査・レポート(`NAS_PHASE1_SURVEY_REPORT.md`) | 完了(v1.1) |
-| **Phase1.5** | **NAS接続確認 + 開発環境調査(`NAS_PHASE15_SURVEY_REPORT.md`)** | 完了(v1.1) |
-| Phase2 | **会社OSの設計(`Architecture.md`)→ その結果としての**共有フォルダ設計承認・作成・権限設定 | 開始条件待ち |
-| Phase3 | GitミラーNAS構築・バックアップ自動化・データ集約 | 未着手 |
-| Phase4 | Docker統合基盤(長期構想の実装)・監視・リストア訓練 | 未着手 |
+**Phase番号は `Architecture.md` の Roadmap を正とする。**
+
+| フェーズ | テーマ | 内容 | 状態 |
+|----------|--------|------|------|
+| Phase1 | **NAS** | 現状調査(`NAS_PHASE1_SURVEY_REPORT.md`)+接続確認・開発環境調査(`NAS_PHASE15_SURVEY_REPORT.md`) | 完了 |
+| Phase2 | **MomijiStore OS** | 会社OSの論理設計(`Architecture.md`)→ その結果としての共有フォルダ設計・作成・権限設定 | 開始条件待ち |
+| Phase3 | **Docker** | Compose実行基盤・GitミラーNAS構築・バックアップ自動化 | 未着手 |
+| Phase4 | **Database** | Excel→PostgreSQL移行(商品マスター・在庫・広告・会計) | 未着手 |
+| Phase5 | **AI Agent** | MCP経由でAIが業務を実行(Automation Rule準拠) | 未着手 |
+| Phase6 | **Autonomous Company** | 人は判断のみ。仕組みで利益が出る会社 | 未着手 |
 
 各フェーズは「調査・提案 → ユーザー承認 → バックアップ → 実装 → テスト・報告」の順で進める。承認前に次フェーズの実装へ進まない。
 
 **Phase2 開始条件(4つすべて完了で開始):**
 
-- [ ] `Architecture.md`(会社全体の設計図)の承認
 - [ ] SMB確認(管理画面での原因特定・開通)
 - [ ] RAM容量確認(増設予定含む)
 - [ ] RAID確認(構成・Volume・空きベイ)
+- [x] Phase番号統一(Architecture.md Roadmapを正として統一済み)
 
 ## 8. 承認制ルール(最優先)
 
