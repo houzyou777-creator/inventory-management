@@ -230,6 +230,7 @@ AIのすべての作業は次のフローに従う:
 | ログ | `ジョブ名_YYYYMMDD.log`。ジョブ名は英語スネークケース | `sync_cost_master_20260805.log` |
 | バックアップ | `名前_backup_YYYYMMDD_内容`(既存規則を継続)。`Backup/` フォルダへ集約 | `Module_Inventory_backup_20260805_pre_dbmigration.bas` |
 | ドキュメント | 英語ファイル名・大文字スネークまたはPascal(既存踏襲)。日本語は本文のみ | `PROJECT_CHARTER.md` `NAS_PHASE1_SURVEY_REPORT.md` |
+| 業務ID | `BIZ-<領域>-<連番2桁>`。領域は MST / PUR / INV / SAL / ADS / FIN / KNW / SYS | `BIZ-INV-02`(棚卸確定) |
 
 ※ import対象のモール由来CSVのファイル名は**変更しない**(照合互換のため — 既存ルール)。
 
@@ -244,6 +245,7 @@ AIのすべての作業は次のフローに従う:
 
 | 日時 | 決定事項 | 理由 | 代替案 | 採用理由 | 影響範囲 |
 |------|----------|------|--------|----------|----------|
+| 2026-08-05 | **Phase2.5「Business Catalog」を新設し、Phase3 Infrastructureの前に会社の全業務を一覧化する** | Infrastructureは Business を実現するために存在する。業務が確定していない状態で基盤を作ると、基盤の都合が業務を歪める | Phase3の中で業務整理も行う | 業務一覧を独立させることで、Infrastructure設計の要件が一覧から導出できる(`Business_Catalog.md` §9) | Roadmap・フェーズ管理表。Phase3着手は本カタログ承認後 |
 | 2026-08-05 | **Phase2を「Logical Design Complete」として完了とし、共有フォルダ作成以降をPhase3「MomijiStore OS Infrastructure」へ移す**(Phase3の旧名称「Docker」を改称) | Phase2の完成条件5つは論理設計の品質を問うものであり、フォルダ作成の有無とは無関係。設計と実装をフェーズとしても分離する | Phase2にフォルダ作成まで含めたまま完了を待つ | 論理設計が完了した事実を確定させることで、ハードウェア確定待ちが設計の完了を妨げなくなる。Phase3の名称もDocker単体より実態(基盤全体)に合う | Roadmap・フェーズ管理表・Phase2/3の作業範囲。フォルダ作成・権限設定はPhase3へ移動 |
 | 2026-08-05 | **`在庫管理システム_v1.0_本番用.xlsm` の削除を確定する**(保留解除) | `MomijiStore_OS Logical Design v1.0` で在庫の正本を `在庫管理システム_v1.0.xlsm` に確定したため、`_本番用`は役割を終えた。6/28以降更新がなく、内容はgit履歴のblob `cac3c98` に完全保存されている | 復元して`_backup/release/`へ退避 / 保留継続 | gitに同一内容が残っており復元保管は二重管理になる(BL-5「正本は増やしてはならない」に反する)。正本確定後に保留を続ける理由がない。**削除確定はワークスペースの現状をコミットで確定させる操作であり、`git show cac3c98` でいつでも取り出せる** | 在庫管理Excel運用。以後、在庫の正本は`在庫管理システム_v1.0.xlsm`ただ一つ |
 | 2026-08-05 | **Phase2開始条件を「論理設計開始条件」と「Infrastructure実装開始条件」に分離する** | RAM容量とHDD構成はInfrastructure Layerの実装方式に影響するが、データ構造・業務プロセス・正本の定義といった論理設計には影響しない | 全条件が揃うまで論理設計も待機する | 論理設計を先に確定させることで、ハードウェア確定後の実装が設計どおりに進む。待機は不要な遅延を生む | Phase2の進行順序。論理設計は即時開始可、フォルダ作成・Docker・DB構築はB条件充足まで禁止 |
@@ -296,6 +298,7 @@ AIのすべての作業は次のフローに従う:
 |----------|--------|--------|
 | Phase1 | **NAS** | 調査・接続確認 ✅ |
 | Phase2 | **MomijiStore OS Core** | 会社OSの中核を**論理として**確立する。成果物: `MomijiStore_OS Logical Design v1.0` ✅ **Logical Design Complete(2026-08-05)** |
+| Phase2.5 | **Business Catalog** | 会社の全業務を一覧化する。成果物: `Business_Catalog.md`(Infrastructureは Business を実現するために存在するため、先に業務を確定させる) |
 | Phase3 | **MomijiStore OS Infrastructure** | 論理設計の結果を形にする。共有フォルダ作成・Docker実行基盤(Compose 1ファイル化)・Gitミラー・バックアップ自動化 |
 | Phase4 | **Database** | Excel→PostgreSQL移行(商品マスター・在庫・広告・会計) |
 | Phase5 | **AI Agent** | MCP経由でAIが業務を実行(Automation Rule準拠) |

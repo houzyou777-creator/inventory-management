@@ -398,5 +398,6 @@ graph LR
 
 **Phase2 ステータス: Logical Design Complete(2026-08-05)**
 
-次は **Phase3「MomijiStore OS Infrastructure」** — 共有フォルダの作成、Docker実行基盤、GitミラーNAS構築、バックアップ自動化。
-着手にはInfrastructure実装開始条件(RAM容量の確定・HDD構成の確定・Volume設計の確定)の充足が必要。
+次は **Phase2.5「Business Catalog」**(`Business_Catalog.md`)— 会社の全業務の一覧化。
+その後 **Phase3「MomijiStore OS Infrastructure」** — 共有フォルダの作成、Docker実行基盤、GitミラーNAS構築、バックアップ自動化。
+Phase3の着手にはInfrastructure開始条件(RAM容量の確定・HDD構成の確定・Volume設計の確定)の充足が必要。
