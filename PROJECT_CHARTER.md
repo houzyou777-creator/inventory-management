@@ -98,13 +98,23 @@ Mac(作業場所)→ GitHub(正本)→ NAS Mirror(災害対策)
 
 各フェーズは「調査・提案 → ユーザー承認 → バックアップ → 実装 → テスト・報告」の順で進める。承認前に次フェーズの実装へ進まない。
 
-**Phase2 開始条件(4つすべて完了で開始):**
+**Phase2 開始条件** — 論理設計とInfrastructure実装で必要な条件は異なるため、2つに分離する。
 
-- [x] SMB確認(2026-08-05 実機で接続確認済み — SMB 3.1.1・共有`MomijiStore`マウント成功)
-- [ ] RAM容量確認(増設予定含む)
-- [ ] RAID確認(構成・Volume・空きベイ)
-- [x] **NAS永続マウント方式を決定する** → **Finderの「ログイン項目」を正式採用**(2026-08-05・Always Simple優先。launchd / autofs は将来必要になった時だけ検討)
+**A. 論理設計開始条件(`MomijiStore_OS Logical Design v1.0`)— ✅ すべて充足(2026-08-05)**
+
+- [x] SMB確認(実機で接続確認済み — SMB 3.1.1・共有`MomijiStore`マウント成功)
+- [x] **NAS永続マウント方式の決定** → Finderの「ログイン項目」を正式採用(Always Simple優先。launchd / autofs は将来必要になった時だけ検討)
 - [x] Phase番号統一(Architecture.md Roadmapを正として統一済み)
+- [x] NAS機種・ストレージ方式の把握(DXP4800 GT / M.2 SSD RAID1 約1.85TB)
+- [x] GitHub運用確認済
+
+**B. Infrastructure実装開始条件(共有フォルダ作成・Docker・DB等)— ⬜ 未充足**
+
+- [ ] RAM容量の確定(現在8GB・将来増設予定 → 増設後の容量と時期)
+- [ ] HDD構成の確定(本数・容量・RAIDレベル・空きベイ)
+- [ ] Volume設計の確定(SSD/HDDの役割分担・ファイルシステム)
+
+**論理設計はBの確定を待たずに進められる。** RAM・HDD構成はInfrastructure Layerの実装方式に影響するが、データ構造・業務プロセス・正本の定義といった論理設計には影響しないため。
 
 ## 8. 承認制ルール(最優先)
 
