@@ -231,6 +231,7 @@ AIのすべての作業は次のフローに従う:
 | バックアップ | `名前_backup_YYYYMMDD_内容`(既存規則を継続)。`Backup/` フォルダへ集約 | `Module_Inventory_backup_20260805_pre_dbmigration.bas` |
 | ドキュメント | 英語ファイル名・大文字スネークまたはPascal(既存踏襲)。日本語は本文のみ | `PROJECT_CHARTER.md` `NAS_PHASE1_SURVEY_REPORT.md` |
 | 業務ID | `BIZ-<領域>-<連番2桁>`。領域は MST / PUR / INV / SAL / ADS / FIN / KNW / SYS | `BIZ-INV-02`(棚卸確定) |
+| Decision ID | `DEC-<領域>-<連番2桁>`。領域は業務IDと共通。**Decision Log(個別の判断記録)とは別物** | `DEC-MST-02`(原価不一致の採否) |
 
 ※ import対象のモール由来CSVのファイル名は**変更しない**(照合互換のため — 既存ルール)。
 
@@ -298,7 +299,7 @@ AIのすべての作業は次のフローに従う:
 |----------|--------|--------|
 | Phase1 | **NAS** | 調査・接続確認 ✅ |
 | Phase2 | **MomijiStore OS Core** | 会社OSの中核を**論理として**確立する。成果物: `MomijiStore_OS Logical Design v1.0` ✅ **Logical Design Complete(2026-08-05)** |
-| Phase2.5 | **Business Catalog** | 会社の全業務を一覧化する。成果物: `Business_Catalog.md`(Infrastructureは Business を実現するために存在するため、先に業務を確定させる) |
+| Phase2.5 | **Business Catalog** | 会社の業務と判断を一覧化する。成果物: `Business_Catalog.md`(全業務)・`Decision_Catalog.md`(全判断)。Infrastructureは Business を実現するために存在するため、先に業務と判断を確定させる |
 | Phase3 | **MomijiStore OS Infrastructure** | 論理設計の結果を形にする。共有フォルダ作成・Docker実行基盤(Compose 1ファイル化)・Gitミラー・バックアップ自動化 |
 | Phase4 | **Database** | Excel→PostgreSQL移行(商品マスター・在庫・広告・会計) |
 | Phase5 | **AI Agent** | MCP経由でAIが業務を実行(Automation Rule準拠) |
