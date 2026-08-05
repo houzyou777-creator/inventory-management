@@ -91,7 +91,7 @@ Mac(作業場所)→ GitHub(正本)→ NAS Mirror(災害対策)
 |----------|--------|------|------|
 | Phase1 | **NAS** | 現状調査(`NAS_PHASE1_SURVEY_REPORT.md`)+接続確認・開発環境調査(`NAS_PHASE15_SURVEY_REPORT.md`) | 完了 |
 | Phase2 | **MomijiStore OS Core** | 会社OSの中核を**論理として**確立する。成果物: `MomijiStore_OS Logical Design v1.0` | ✅ **Logical Design Complete**(2026-08-05) |
-| Phase2.5 | **Business Catalog** | 会社の業務と判断を一覧化(`Business_Catalog.md` / `Decision_Catalog.md`)。Infrastructureは Business を実現するために存在するため先に行う | 承認待ち |
+| Phase2.5 | **Business Catalog** | 会社の業務・判断・業務フローを一覧化(`Business_Catalog.md` / `Decision_Catalog.md` / `Process_Catalog.md`)。Infrastructureは Business を実現するために存在するため先に行う | 承認待ち |
 | Phase3 | **MomijiStore OS Infrastructure** | 共有フォルダ作成・権限設定・Docker実行基盤・GitミラーNAS構築・バックアップ自動化 | 開始条件待ち |
 | Phase4 | **Database** | Excel→PostgreSQL移行(商品マスター・在庫・広告・会計) | 未着手 |
 | Phase5 | **AI Agent** | MCP経由でAIが業務を実行(Automation Rule準拠) | 未着手 |
