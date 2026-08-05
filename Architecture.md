@@ -98,7 +98,7 @@ graph TB
 | データ | 正(現在) | 正(移行後) | 移行方針 |
 |--------|-----------|-------------|----------|
 | 商品マスター | Excel(商品マスターシート・原価の正) | PostgreSQL `products` | 列名・内部管理IDを変えずに移植(GS移行方針と同じ原則) |
-| 在庫 | 在庫管理システムv1.0.xlsm ※**正本はPhase2の論理設計で確定する**(本番用xlsmの扱いも同時に再判断) | PostgreSQL `inventory` | 楽天=管理番号×SKUペアで照合する現行ルールを維持 |
+| 在庫 | 在庫管理システムv1.0.xlsm ※**正本は`MomijiStore_OS Logical Design v1.0`で確定する**(本番用xlsmの扱いも同時に再判断) | PostgreSQL `inventory` | 楽天=管理番号×SKUペアで照合する現行ルールを維持 |
 | 広告 | 楽天RPP/AmazonSP分析シート | PostgreSQL `ads_*` | モールCSV→取込の現行パイプラインをPythonジョブ化 |
 | 会計 | 月次KPIシート(経費・限界利益) | PostgreSQL `finance_*` | 月次確定の運用(黄色塗り→確定)をステータス列で再現 |
 | マニュアル | 04_Manual(Markdown/Excel) | Git管理のMarkdown | すでにGit管理下。継続 |
@@ -244,6 +244,7 @@ AIのすべての作業は次のフローに従う:
 
 | 日時 | 決定事項 | 理由 | 代替案 | 採用理由 | 影響範囲 |
 |------|----------|------|--------|----------|----------|
+| 2026-08-05 | **Phase2の正式名称を「MomijiStore OS Core」に統一する。** `MomijiStore_OS Logical Design v1.0` はPhase2そのものではなく、**Phase2最初の成果物**として扱う | フェーズ名と成果物名が混在し、どちらを指しているか曖昧だった | Phase2の名称を「MomijiStore_OS Logical Design」とする | フェーズは複数の成果物を含む器であり、単一成果物の名前をフェーズ名にすると後続の成果物(フォルダ設計・権限設定)が名前から漏れる | 全文書のPhase2表記。Roadmap・フェーズ管理表・Data Layer・Success Metrics・未確定事項 |
 | 2026-08-05 | **FOUNDATION.mdを唯一の最上位文書とし、全文書の冒頭に優先宣言を記載する。** Decision Log・AI Memory Policyは独立ファイルにせず本書の章として維持 | 判断基準の所在を一箇所に確定させ、AI・人・外注が同じ前提で動けるようにする | Decision Log / AI Memory Policyを独立文書として分割する | 分割すると同期対象の文書が増え、Always Simpleに反する。両者は本書の設計判断と不可分であり、章として持つほうが参照しやすい。**分割は必要になった時に検討する** | `PROJECT_CHARTER.md`・`Architecture.md`(Decision Log/AI Memory Policyを含む)。今後作成する全文書にも同宣言を付す |
 | 2026-08-05 | **NAS永続マウント方式はFinderの「ログイン項目」を正式採用する**(Phase2) | Always Simpleを最優先とする。追加の常駐設定ファイルを作らず、GUI設定のみで完結する | launchd(自動マウントジョブ) / autofs(`/etc/auto_master`によるオンデマンドマウント) | 設定が1画面で完結し、第三者が見て理解・再現できる。launchd/autofsは設定ファイルの管理対象が増え、引き継ぎコストが上がる。**将来必要になった時だけ検討する** | Phase2。**マウントはユーザーセッションに属するため、Phase3の自動化はユーザーセッション内で実行する前提とし、書き込み前のマウント検証を必須とする** |
 | 2026-08-05 | **MacからNASへのSMB接続は正常。Finder / CLI / Claude Code すべてが同一SMBセッションを利用できることを確認** | 実機検証で `//momiji-admin@192.168.0.8/MomijiStore` をSMB 3.1.1でマウントし、`mount`・`smbutil statshares`・`smbutil view` から同一セッションを確認。当初の「445 closed」はNAS側SMBサービスが未稼働だった時点の観測であり、Mac側・Claude Code側の制約ではないと判明(445と139が同時に開き、無関係な22/9999は不変) | Finder専用運用とし自動化はNASローカルで完結させる | Mac・CLI・AIが同じ経路でNASを扱えるため、設計を分岐させずに済む | **今後はNASを中心としたMomijiStore OS構築を進める。** Phase2以降の全設計の前提 |
@@ -272,7 +273,7 @@ AIのすべての作業は次のフローに従う:
 
 ## Success Metrics
 
-会社のOSが成長しているかを測定するKPI。Phase2以降、四半期ごとに計測する(計測方法の詳細は論理設計で定義)。
+会社のOSが成長しているかを測定するKPI。Phase2以降、四半期ごとに計測する(計測方法の詳細は`MomijiStore_OS Logical Design v1.0`で定義)。
 
 | KPI | 何を測るか |
 |-----|-----------|
@@ -291,7 +292,7 @@ AIのすべての作業は次のフローに従う:
 | フェーズ | テーマ | 到達点 |
 |----------|--------|--------|
 | Phase1 | **NAS** | 調査・接続確認 ✅ |
-| Phase2 | **MomijiStore OS** | 会社OSの論理設計(本書)→ その結果としてのフォルダ・共有構築 |
+| Phase2 | **MomijiStore OS Core** | 会社OSの中核を確立する。**最初の成果物: `MomijiStore_OS Logical Design v1.0`** → その結果としてのフォルダ・共有構築 |
 | Phase3 | **Docker** | NAS上の実行基盤(Compose 1ファイル化・Gitミラー・バックアップ自動化) |
 | Phase4 | **Database** | Excel→PostgreSQL移行(商品マスター・在庫・広告・会計) |
 | Phase5 | **AI Agent** | MCP経由でAIが業務を実行(Automation Rule準拠) |
@@ -306,7 +307,7 @@ AIのすべての作業は次のフローに従う:
 | RAID確認 | ⬜ 構成・Volume・空きベイの確認待ち |
 | **NAS永続マウント方式** | ✅ **Finderの「ログイン項目」を正式採用**(2026-08-05・Always Simple優先)。launchd / autofs は将来必要になった時だけ検討。設定作業はPhase2で実施 |
 | Phase番号統一 | ✅ 完了(本書Roadmapを正とし、`PROJECT_CHARTER.md`を統一済み) |
-| 本番用xlsmの扱い | ✅ **保留継続を決定**(2026-08-05)。Phase2で「在庫管理システムの正本」を確定した時点で再判断する。それまで復元・削除・移動・リネーム・上書きをすべて禁止 |
+| 本番用xlsmの扱い | ✅ **保留継続を決定**(2026-08-05)。`MomijiStore_OS Logical Design v1.0`で「在庫管理システムの正本」を確定した時点で再判断する。それまで復元・削除・移動・リネーム・上書きをすべて禁止 |
 
 ---
 
