@@ -1,9 +1,14 @@
 # PROJECT_CHARTER — MomijiStore OS
 
-ステータス: **v0.7 — 承認済み(2026-08-05)**
-作成日: 2026-08-05(v0.7 — FOUNDATION.mdへの従属を明記)
+> **This document follows FOUNDATION.md.**
+> **If any conflict exists, FOUNDATION.md takes precedence.**
+>
+> **This project follows FOUNDATION.md.**
 
-> **本憲章は `FOUNDATION.md`(会社の憲法)に従う。**
+ステータス: **v0.8 — 承認済み(2026-08-05)**
+作成日: 2026-08-05(v0.8 — FOUNDATION.md優先宣言を冒頭へ追加)
+
+> 本憲章は `FOUNDATION.md`(会社の憲法)に従う。
 > 文書階層は FOUNDATION → PROJECT CHARTER → ARCHITECTURE → OPERATIONS → IMPLEMENTATION。
 > 本憲章とFOUNDATIONが矛盾した場合はFOUNDATIONが優先する。
 

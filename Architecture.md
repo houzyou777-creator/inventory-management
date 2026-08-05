@@ -1,7 +1,10 @@
 # Architecture.md — MomijiStore OS 1.0 会社全体設計図
 
-ステータス: **v0.3 — 承認済み(2026-08-05 エース最終レビュー99点・修正6件反映)**
-作成日: 2026-08-05
+> **This document follows FOUNDATION.md.**
+> **If any conflict exists, FOUNDATION.md takes precedence.**
+
+ステータス: **v0.4 — 承認済み(2026-08-05)**
+作成日: 2026-08-05(v0.4 — FOUNDATION.md優先宣言を追加)
 
 > **MomijiStore Philosophy**(PROJECT_CHARTER.md 第0章)
 > 会社ではなく、会社を動かすOSを作る。AIが運営できる会社を作る。人ではなく、仕組みで利益が出る会社を目指す。
@@ -190,6 +193,9 @@ AIのすべての作業は次のフローに従う:
 
 ### AI Memory Policy(Intelligence Layerの運用ルール)
 
+> **This document follows FOUNDATION.md. If any conflict exists, FOUNDATION.md takes precedence.**
+> ※ AI Memory Policyは独立文書ではなく本書の一節として管理する(Always Simple — 分割は必要になった時に検討する)。
+
 | 項目 | ルール |
 |------|--------|
 | **保存する情報** | 事業判断の基準と結果(なぜ仕入れた/やめたか)・施策の結論と成果・運用ノウハウ(モール仕様の罠等)・ユーザーからの訂正/フィードバック・設計判断(Decision Log) |
@@ -231,10 +237,14 @@ AIのすべての作業は次のフローに従う:
 
 ## Decision Log(設計判断の記録)
 
+> **This document follows FOUNDATION.md. If any conflict exists, FOUNDATION.md takes precedence.**
+> ※ Decision Logは独立文書ではなく本書の一章として管理する(Always Simple — 分割は必要になった時に検討する)。
+
 **目的: AIが「なぜこの設計なのか」を理解できるようにする。** 新しい判断は本表の先頭に追記する。
 
 | 日時 | 決定事項 | 理由 | 代替案 | 採用理由 | 影響範囲 |
 |------|----------|------|--------|----------|----------|
+| 2026-08-05 | **FOUNDATION.mdを唯一の最上位文書とし、全文書の冒頭に優先宣言を記載する。** Decision Log・AI Memory Policyは独立ファイルにせず本書の章として維持 | 判断基準の所在を一箇所に確定させ、AI・人・外注が同じ前提で動けるようにする | Decision Log / AI Memory Policyを独立文書として分割する | 分割すると同期対象の文書が増え、Always Simpleに反する。両者は本書の設計判断と不可分であり、章として持つほうが参照しやすい。**分割は必要になった時に検討する** | `PROJECT_CHARTER.md`・`Architecture.md`(Decision Log/AI Memory Policyを含む)。今後作成する全文書にも同宣言を付す |
 | 2026-08-05 | **NAS永続マウント方式はFinderの「ログイン項目」を正式採用する**(Phase2) | Always Simpleを最優先とする。追加の常駐設定ファイルを作らず、GUI設定のみで完結する | launchd(自動マウントジョブ) / autofs(`/etc/auto_master`によるオンデマンドマウント) | 設定が1画面で完結し、第三者が見て理解・再現できる。launchd/autofsは設定ファイルの管理対象が増え、引き継ぎコストが上がる。**将来必要になった時だけ検討する** | Phase2。**マウントはユーザーセッションに属するため、Phase3の自動化はユーザーセッション内で実行する前提とし、書き込み前のマウント検証を必須とする** |
 | 2026-08-05 | **MacからNASへのSMB接続は正常。Finder / CLI / Claude Code すべてが同一SMBセッションを利用できることを確認** | 実機検証で `//momiji-admin@192.168.0.8/MomijiStore` をSMB 3.1.1でマウントし、`mount`・`smbutil statshares`・`smbutil view` から同一セッションを確認。当初の「445 closed」はNAS側SMBサービスが未稼働だった時点の観測であり、Mac側・Claude Code側の制約ではないと判明(445と139が同時に開き、無関係な22/9999は不変) | Finder専用運用とし自動化はNASローカルで完結させる | Mac・CLI・AIが同じ経路でNASを扱えるため、設計を分岐させずに済む | **今後はNASを中心としたMomijiStore OS構築を進める。** Phase2以降の全設計の前提 |
 | 2026-08-05 | Phase番号はArchitecture.md Roadmapを正とする | 憲章と本書で番号が不一致だった | 憲章を正とする | Roadmapが最新の全体像を反映しているため | 憲章§7・全ドキュメントのPhase表記 |
