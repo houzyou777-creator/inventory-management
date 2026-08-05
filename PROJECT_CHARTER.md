@@ -1,7 +1,11 @@
 # PROJECT_CHARTER — MomijiStore OS
 
-ステータス: **v0.6 — 承認済み(2026-08-05)**
-作成日: 2026-08-05(v0.6 — Phase番号をArchitecture.md Roadmapへ統一)
+ステータス: **v0.7 — 承認済み(2026-08-05)**
+作成日: 2026-08-05(v0.7 — FOUNDATION.mdへの従属を明記)
+
+> **本憲章は `FOUNDATION.md`(会社の憲法)に従う。**
+> 文書階層は FOUNDATION → PROJECT CHARTER → ARCHITECTURE → OPERATIONS → IMPLEMENTATION。
+> 本憲章とFOUNDATIONが矛盾した場合はFOUNDATIONが優先する。
 
 ---
 
@@ -94,7 +98,7 @@ Mac(作業場所)→ GitHub(正本)→ NAS Mirror(災害対策)
 - [x] SMB確認(2026-08-05 実機で接続確認済み — SMB 3.1.1・共有`MomijiStore`マウント成功)
 - [ ] RAM容量確認(増設予定含む)
 - [ ] RAID確認(構成・Volume・空きベイ)
-- [ ] **NAS永続マウント方式を決定する**(Finder / launchd / autofs 等)
+- [x] **NAS永続マウント方式を決定する** → **Finderの「ログイン項目」を正式採用**(2026-08-05・Always Simple優先。launchd / autofs は将来必要になった時だけ検討)
 - [x] Phase番号統一(Architecture.md Roadmapを正として統一済み)
 
 ## 8. 承認制ルール(最優先)
