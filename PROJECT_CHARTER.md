@@ -91,9 +91,10 @@ Mac(作業場所)→ GitHub(正本)→ NAS Mirror(災害対策)
 
 **Phase2 開始条件(4つすべて完了で開始):**
 
-- [ ] SMB確認(管理画面での原因特定・開通)
+- [x] SMB確認(2026-08-05 実機で接続確認済み — SMB 3.1.1・共有`MomijiStore`マウント成功)
 - [ ] RAM容量確認(増設予定含む)
 - [ ] RAID確認(構成・Volume・空きベイ)
+- [ ] **NAS永続マウント方式を決定する**(Finder / launchd / autofs 等)
 - [x] Phase番号統一(Architecture.md Roadmapを正として統一済み)
 
 ## 8. 承認制ルール(最優先)
