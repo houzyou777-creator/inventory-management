@@ -330,8 +330,9 @@ Redis・Ollama・Playwrightは**Phase3では定義しない**(Decision Log「必
 | STEP | 内容 | 完了条件 | 前提 |
 |------|------|---------|------|
 | **STEP1** | **本計画の作成** | 本書の承認 | — |
-| STEP2 | Storage / Folder | 共有フォルダが作成され、Macからマウントして読み書きできる。**目印ファイルが配置済** | 承認 + **OQ-4・OQ-5・OQ-7** |
-| STEP3 | Git Mirror | NASのミラーがGitHubと同一のコミットを持つことを検証済 | STEP2 |
+| **STEP2** | **Docker Project(Compose)の器** | ✅ **完了(2026-08-05)** — §16参照 | 承認 |
+| STEP2b | Storage / Folder | 共有フォルダが作成され、Macからマウントして読み書きできる。**目印ファイルが配置済** | **OQ-4** |
+| STEP3 | Git Mirror | NASのミラーがGitHubと同一のコミットを持つことを検証済 | STEP2b |
 | STEP4 | Docker Compose Core | `momiji-stack.yml` がデプロイでき、スタックの起動・停止ができる | STEP3 |
 | STEP5 | PostgreSQL | コンテナが起動し接続できる。**メモリ実測値を記録**(OQ-6の回答) | STEP4 |
 | STEP6 | MCP / Python Worker | 両コンテナが起動する。Python Workerは**Excel非依存処理のみ**が対象 | STEP5 |
@@ -406,6 +407,47 @@ Redis・Ollama・Playwrightは**Phase3では定義しない**(Decision Log「必
 
 ---
 
-**次のステップ:** 本計画の承認 → OQ-4・OQ-5の確認(UGOS管理画面・ユーザー操作)+ OQ-7の判断 → STEP2の詳細設計と承認 → 実装
+---
 
-**本計画の提出時点で、実装は一切行っていない。**
+## 16. STEP2 実施記録 — Docker Project(Compose)の器
+
+**実施日:** 2026-08-05 / **状態:** ✅ 完了
+
+### やったこと
+
+`momiji-stack.yml` の器をリポジトリに作成した。**デプロイしていないため、コンテナ・イメージ・ネットワーク・ボリュームの実体は一切存在しない。**
+
+| 成果物 | 内容 |
+|--------|------|
+| `MomijiStore_OS/05_Infrastructure/docker/momiji-stack.yml` | Compose定義の器。`name` / `networks` / `volumes` を確定。`services` は空(`{}`)。STEP5以降で有効化するPostgreSQL・MCP・Python Workerの雛形をコメントで用意 |
+| `MomijiStore_OS/05_Infrastructure/docker/.env.example` | 環境変数テンプレート(値は空)。`MOMIJI_` プレフィックス |
+| `.gitignore` | `.env` を明示的に除外し、`.env.example` は追跡する例外を追加 |
+
+### 確定した既定値(Decision Log記録済)
+
+| 項目 | 既定値 |
+|------|--------|
+| Project名 | `momiji-stack` |
+| ネットワーク | `momiji_net`(bridge・**外部公開しない**) |
+| ボリューム | `momiji_pg_data`(SSD ボリューム1 = 業務データ正本領域) |
+| 配置場所 | `MomijiStore_OS/05_Infrastructure/docker/`(既存の番号プレフィックス方式に従い `05_` を新設) |
+| 常駐サービス | PostgreSQL・MCP の2つのみ(RAM 8GB制約) |
+| ポート公開 | **しない**。スタック内部からのみ接続する |
+| 認証情報 | `.env`(Git管理外)。値の入力は利用者が行う |
+
+### 検証結果
+
+| 検証 | 結果 |
+|------|------|
+| `.env.example` がGitで追跡できる | ✅ |
+| `.env` がGitで除外される(認証情報の漏洩防止) | ✅ `git add` が拒否されることを確認 |
+| コンテナ・イメージ・ネットワーク・ボリュームの実体 | ✅ **未作成**(デプロイしていない) |
+
+### ロールバック方法
+
+`MomijiStore_OS/05_Infrastructure/` を削除し、`.gitignore` の3行を元に戻す。**ファイル追加のみのため、削除すれば完全に元の状態へ戻る。会社への影響なし。**
+
+---
+
+**次のステップ:** STEP5(PostgreSQL)— `momiji-stack.yml` のコメントを外し、パッチバージョンを固定してデプロイする。
+※ STEP2b(共有フォルダ)・STEP3(Git Mirror)はOQ-4の確認後に実施。

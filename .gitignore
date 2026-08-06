@@ -12,7 +12,9 @@
 _backup/
 
 # 認証・機密情報
+.env
 *.env
+!.env.example
 secrets/
 credentials/
 

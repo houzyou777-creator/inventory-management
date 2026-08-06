@@ -1,0 +1,108 @@
+# =============================================================
+#  momiji-stack — MomijiStore OS Docker Compose 定義
+# =============================================================
+#  正本: GitHub (houzyou777-creator/inventory-management)
+#  実行: UGREEN NAS (UGOS Container Manager) の Project として配置
+#
+#  このファイル1つで会社のインフラを再現できる状態を目指す。
+#  NAS故障時も、新しい機材とこのファイルから復元する。
+#
+#  【Phase3 STEP2 時点の状態】
+#  器のみ。services は未定義(コメントで雛形を用意)。
+#  デプロイしていないため、コンテナ・イメージ・ネットワーク・
+#  ボリュームはいずれも実体が存在しない。
+#
+#  【命名規則】Architecture.md Naming Convention 準拠
+#    サービス/コンテナ : momiji-<name>   (小文字ケバブケース)
+#    ボリューム/NW     : momiji_<name>   (スネークケース)
+#    環境変数          : MOMIJI_<NAME>   (大文字スネークケース)
+#    イメージ          : バージョンタグを固定(latest 禁止)
+#
+#  【制約】RAM 8GB (NAS本体と共有)
+#    常駐は momiji-postgres と momiji-mcp の2つのみ。
+#    それ以外はジョブ実行型(常駐させない)。
+#    メモリ配分の実測値は STEP5 で確定する (Plan OQ-6)。
+# =============================================================
+
+name: momiji-stack
+
+# -------------------------------------------------------------
+#  ネットワーク — スタック内部の通信のみ。外部公開しない。
+#  ※ deploy するまで実体は作られない
+# -------------------------------------------------------------
+networks:
+  momiji_net:
+    name: momiji_net
+    driver: bridge
+
+# -------------------------------------------------------------
+#  ボリューム — 永続データの置き場
+#  配置: SSD ボリューム1 (RAID1 / Btrfs) = 業務データ正本領域
+#  ※ deploy するまで実体は作られない
+# -------------------------------------------------------------
+volumes:
+  momiji_pg_data:
+    name: momiji_pg_data
+
+# -------------------------------------------------------------
+#  サービス
+#  Phase3 STEP2 では未定義。STEP5 以降で下記を有効化する。
+# -------------------------------------------------------------
+services: {}
+
+# =============================================================
+#  以下は STEP5 以降で有効化する雛形(現在は無効)
+# =============================================================
+#
+#  --- STEP5: PostgreSQL --------------------------------------
+#  momiji-postgres:
+#    image: postgres:16-alpine      # STEP5でパッチバージョンまで固定する
+#    container_name: momiji-postgres
+#    restart: unless-stopped
+#    environment:
+#      POSTGRES_DB: ${MOMIJI_DB_NAME}
+#      POSTGRES_USER: ${MOMIJI_DB_USER}
+#      POSTGRES_PASSWORD: ${MOMIJI_DB_PASSWORD}
+#      TZ: ${MOMIJI_TZ}
+#    volumes:
+#      - momiji_pg_data:/var/lib/postgresql/data
+#    networks:
+#      - momiji_net
+#    mem_limit: 1g                  # STEP5の実測後に調整する (OQ-6)
+#    healthcheck:
+#      test: ["CMD-SHELL", "pg_isready -U $${MOMIJI_DB_USER}"]
+#      interval: 30s
+#      timeout: 5s
+#      retries: 3
+#    # ports は開けない。スタック内部からのみ接続する(外部公開しない)
+#
+#  --- STEP6: MCP Server --------------------------------------
+#  momiji-mcp:
+#    # image は STEP6 で決定
+#    container_name: momiji-mcp
+#    restart: unless-stopped
+#    depends_on:
+#      momiji-postgres:
+#        condition: service_healthy
+#    networks:
+#      - momiji_net
+#    mem_limit: 512m                # STEP6の実測後に調整する
+#
+#  --- STEP6: Python Worker (ジョブ型・常駐しない) --------------
+#  ⚠️ 現行スクリプトは macOS + Microsoft Excel 依存のため
+#     Linux コンテナでは実行できない (Plan §8)。
+#     実処理の移行は Phase4 (DB移行) 以降。
+#  momiji-python-worker:
+#    # image は STEP6 で決定
+#    container_name: momiji-python-worker
+#    restart: "no"                  # ジョブ型のため自動再起動しない
+#    depends_on:
+#      - momiji-mcp
+#    networks:
+#      - momiji_net
+#    mem_limit: 512m
+#
+# =============================================================
+#  Redis / Ollama / Playwright は定義しない。
+#  Decision Log「必要になった時だけ追加する」(Always Simple)
+# =============================================================
