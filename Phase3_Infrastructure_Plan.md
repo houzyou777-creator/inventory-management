@@ -317,28 +317,28 @@ Redis・Ollama・Playwrightは**Phase3では定義しない**(Decision Log「必
 | OQ-2 | ファイルシステム | ✅ **解決**(2026-08-05 実機確認) | **ボリューム1 は Btrfs**・約1.89TB。**Snapshot設計はBtrfs前提で進めてよい** |
 | OQ-3 | HDDのRAID1化 | ✅ **暫定決定**(2026-08-05) | **2台目導入はPhase3のブロッカーとしない。** 現HDD ×1は**非冗長の補助領域**として扱い、Storage Policy(§1)で正本を置かない。RAID1化は2台目導入時に別途設計・承認 |
 | OQ-4 | NASのユーザー追加可否・権限モデルの粒度 | ⬜ **未解決** | §3の3ロール構成が実現できるか。UGOS管理画面(コントロールパネル→ユーザー)で確認 |
-| OQ-5 | Container ManagerでDocker Composeが使えるか | ⬜ **未解決** | §5の前提。文献では対応済だが**実機未確認**。UGOS App Center / Container Manager で確認 |
+| OQ-5 | Container ManagerでDocker Composeが使えるか | ✅ **解決**(2026-08-05 実機確認) | **UGREEN Dockerの「Project」がCompose機能である**ことを確認。`momiji-stack.yml` はProjectとして配置できる |
 | OQ-6 | PostgreSQL・MCPのメモリ配分 | ⬜ STEP5で実測 | RAM 8GBの配分。**実測前に数値を置かない。STEP2のブロッカーとしない** |
 | OQ-7 | **在庫の正本の文書不整合** | ⬜ **調査完了・判断待ち** | 2026-08-05に読み取り専用調査を実施。結論は §15。**Logical Design の確定が誤っていた可能性が高く、訂正の承認が必要** |
 
-**STEP2着手前に必要: OQ-4・OQ-5・OQ-7。** OQ-1〜OQ-3は解決済。OQ-6はSTEP5で実測する。
+**未解決は OQ-4(権限モデル)と OQ-7(在庫正本の訂正)のみ。** どちらもSTEP3(PostgreSQL)のブロッカーではない。OQ-6はSTEP3で実測する。
 
 ---
 
 ## 14. 実装順序と各STEPの完了条件
 
-| STEP | 内容 | 完了条件 | 前提 |
-|------|------|---------|------|
-| **STEP1** | **本計画の作成** | 本書の承認 | — |
-| **STEP2** | **Docker Project(Compose)の器** | ✅ **完了(2026-08-05)** — §16参照 | 承認 |
-| STEP2b | Storage / Folder | 共有フォルダが作成され、Macからマウントして読み書きできる。**目印ファイルが配置済** | **OQ-4** |
-| STEP3 | Git Mirror | NASのミラーがGitHubと同一のコミットを持つことを検証済 | STEP2b |
-| STEP4 | Docker Compose Core | `momiji-stack.yml` がデプロイでき、スタックの起動・停止ができる | STEP3 |
-| STEP5 | PostgreSQL | コンテナが起動し接続できる。**メモリ実測値を記録**(OQ-6の回答) | STEP4 |
-| STEP6 | MCP / Python Worker | 両コンテナが起動する。Python Workerは**Excel非依存処理のみ**が対象 | STEP5 |
-| STEP7 | Backup / Monitoring | バックアップが自動実行され、ログが残り、**復元テストに成功する** | STEP6 |
+| STEP | 内容 | 状態 | 完了条件 |
+|------|------|------|---------|
+| STEP0 | 本計画の作成 | ✅ 完了 | 本書の承認 |
+| **STEP1** | **Docker導入** | ✅ **完了(2026-08-05)** | UGOSにDockerが導入され、Project(Compose)機能が使える |
+| **STEP2** | **Compose準備** | ✅ **完了(2026-08-05)** — §16参照 | `momiji-stack.yml` の器がGit管理下にある |
+| **STEP3** | **PostgreSQL構築** | ⬜ **次回** | コンテナが起動し接続できる。**メモリ実測値を記録**(OQ-6の回答) |
+| STEP4 | MCP / Python Worker | ⬜ 未着手 | 両コンテナが起動する。Python Workerは**Excel非依存処理のみ**が対象 |
+| STEP5 | Storage / Folder | ⬜ 未着手 | 共有フォルダが作成され、Macからマウントして読み書きできる。**目印ファイルが配置済**(前提: OQ-4) |
+| STEP6 | Git Mirror | ⬜ 未着手 | NASのミラーがGitHubと同一のコミットを持つことを検証済(前提: STEP5) |
+| STEP7 | Backup / Monitoring | ⬜ 未着手 | バックアップが自動実行され、ログが残り、**復元テストに成功する** |
 
-**各STEPは「設計 → 承認 → 小さく実装 → 検証 → 記録 → 次へ」の順で進める。** 一度に複数STEPを実装しない。各STEPの完了時にDecision Logへ記録する(Change Management)。
+**各STEPは「小さく実装 → 検証 → 記録 → 次へ」の順で進める。** 一度に複数STEPを実装しない。各STEPの完了時にDecision Logへ記録する(Change Management)。
 
 ---
 
@@ -419,7 +419,7 @@ Redis・Ollama・Playwrightは**Phase3では定義しない**(Decision Log「必
 
 | 成果物 | 内容 |
 |--------|------|
-| `MomijiStore_OS/05_Infrastructure/docker/momiji-stack.yml` | Compose定義の器。`name` / `networks` / `volumes` を確定。`services` は空(`{}`)。STEP5以降で有効化するPostgreSQL・MCP・Python Workerの雛形をコメントで用意 |
+| `MomijiStore_OS/05_Infrastructure/docker/momiji-stack.yml` | Compose定義の器。`name` / `networks` / `volumes` を確定。`services` は空(`{}`)。STEP3以降で有効化するPostgreSQL・MCP・Python Workerの雛形をコメントで用意 |
 | `MomijiStore_OS/05_Infrastructure/docker/.env.example` | 環境変数テンプレート(値は空)。`MOMIJI_` プレフィックス |
 | `.gitignore` | `.env` を明示的に除外し、`.env.example` は追跡する例外を追加 |
 
@@ -449,5 +449,5 @@ Redis・Ollama・Playwrightは**Phase3では定義しない**(Decision Log「必
 
 ---
 
-**次のステップ:** STEP5(PostgreSQL)— `momiji-stack.yml` のコメントを外し、パッチバージョンを固定してデプロイする。
-※ STEP2b(共有フォルダ)・STEP3(Git Mirror)はOQ-4の確認後に実施。
+**次のステップ:** **STEP3(PostgreSQL構築)**— `momiji-stack.yml` のコメントを外し、パッチバージョンを固定してデプロイする。
+※ STEP5(共有フォルダ)・STEP6(Git Mirror)はOQ-4の確認後に実施。
