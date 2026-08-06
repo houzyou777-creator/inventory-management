@@ -332,7 +332,7 @@ Redis・Ollama・Playwrightは**Phase3では定義しない**(Decision Log「必
 | STEP0 | 本計画の作成 | ✅ 完了 | 本書の承認 |
 | **STEP1** | **Docker導入** | ✅ **完了(2026-08-05)** | UGOSにDockerが導入され、Project(Compose)機能が使える |
 | **STEP2** | **Compose準備** | ✅ **完了(2026-08-05)** — §16参照 | `momiji-stack.yml` の器がGit管理下にある |
-| **STEP3** | **PostgreSQL構築** | ⬜ **次回** | コンテナが起動し接続できる。**メモリ実測値を記録**(OQ-6の回答) |
+| **STEP3** | **PostgreSQL構築** | ⏸ **STEP3-1 定義完了・デプロイ待ち** — §17参照 | コンテナが起動し接続できる。**メモリ実測値を記録**(OQ-6の回答) |
 | STEP4 | MCP / Python Worker | ⬜ 未着手 | 両コンテナが起動する。Python Workerは**Excel非依存処理のみ**が対象 |
 | STEP5 | Storage / Folder | ⬜ 未着手 | 共有フォルダが作成され、Macからマウントして読み書きできる。**目印ファイルが配置済**(前提: OQ-4) |
 | STEP6 | Git Mirror | ⬜ 未着手 | NASのミラーがGitHubと同一のコミットを持つことを検証済(前提: STEP5) |
@@ -449,5 +449,62 @@ Redis・Ollama・Playwrightは**Phase3では定義しない**(Decision Log「必
 
 ---
 
-**次のステップ:** **STEP3(PostgreSQL構築)**— `momiji-stack.yml` のコメントを外し、パッチバージョンを固定してデプロイする。
+---
+
+## 17. STEP3-1 実施記録 — PostgreSQLコンテナ
+
+**実施日:** 2026-08-05 / **状態:** ⏸ **定義完了・デプロイ待ち**(下記「実施できなかったこと」参照)
+
+### やったこと(Mac側で完了)
+
+`momiji-stack.yml` の `momiji-postgres` を有効化した。
+
+| 項目 | 確定値 | 根拠 |
+|------|--------|------|
+| イメージ | **`postgres:16.14-alpine`** | Docker Hubで16系の最新パッチを確認して固定(`latest`禁止) |
+| コンテナ名 | `momiji-postgres` | Naming Convention |
+| ボリューム | `momiji_pg_data` → `/var/lib/postgresql/data` | SSD ボリューム1(業務データ正本領域) |
+| ネットワーク | `momiji_net` のみ | **`ports` を定義しない = 外部公開しない** |
+| メモリ上限 | `mem_limit: 1g`(暫定) | RAM 8GB制約。STEP3-1の実測後に調整(OQ-6) |
+| 再起動 | `unless-stopped` | NAS再起動後も自動復帰 |
+| ヘルスチェック | `pg_isready`(30秒間隔・起動猶予30秒) | 起動確認の自動化 |
+| 認証情報 | `.env` から注入(Git管理外) | 平文をリポジトリに置かない(CHARTER §4) |
+
+**検証済み:** YAML構文OK / サービス名・ボリューム名が命名規則準拠 / `latest`不使用 / **パスワードの直書きなし** / **ports未定義(外部公開なし)**。
+
+### 実施できなかったこと(理由)
+
+**コンテナ作成・ボリューム作成・起動確認・ログ確認・メモリ実測は未実施。** 以下の制約による:
+
+1. **Macに Docker CLI が存在しない** — Mac側からデプロイできない
+2. **NAS共有が現在マウントされていない** — ファイル配置経路が使えない
+3. **UGOS Container Manager はログインが必要** — Claudeは認証情報を扱わない(FOUNDATION AI Constitution 第9条)
+
+したがって**デプロイはユーザー操作**となる。手順は下記。
+
+### デプロイ手順(ユーザー操作)
+
+1. UGOS管理画面 `http://192.168.0.8:9999` にログイン
+2. Docker → Project → 新規作成。プロジェクト名 **`momiji-stack`**
+3. `momiji-stack.yml` の内容を貼り付ける(またはNAS共有へ配置して読み込む)
+4. 環境変数を設定する — `MOMIJI_DB_NAME=momiji` / `MOMIJI_DB_USER=momiji_app` / `MOMIJI_TZ=Asia/Tokyo` / **`MOMIJI_DB_PASSWORD` はご自身で設定**(Claudeは扱わない)
+5. デプロイ → 起動
+6. 確認する3点: **①コンテナが running か ②ログにエラーがないか ③メモリ使用量**
+
+### 起動後に記録すること
+
+| 確認項目 | 記録先 |
+|---------|--------|
+| コンテナの状態(running / healthy) | 本節へ追記 |
+| 起動ログのエラー有無 | 本節へ追記 |
+| **メモリ実測値** | 本節へ追記 → **OQ-6の回答となる**。`mem_limit: 1g` の妥当性を判断する |
+
+### ロールバック方法
+
+Container ManagerでProject `momiji-stack` を停止・削除し、ボリューム `momiji_pg_data` を削除する。
+**Phase3時点でDBは空のため、削除しても失うデータはない。会社への影響なし。**
+
+---
+
+**次のステップ:** 上記デプロイ手順の実施 → 起動確認・ログ・メモリ実測の結果を本節へ記録 → **STEP3-2**(Database / User / Schema作成)
 ※ STEP5(共有フォルダ)・STEP6(Git Mirror)はOQ-4の確認後に実施。

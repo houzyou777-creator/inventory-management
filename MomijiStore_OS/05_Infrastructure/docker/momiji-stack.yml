@@ -46,35 +46,40 @@ volumes:
 
 # -------------------------------------------------------------
 #  サービス
-#  Phase3 STEP2 では未定義。STEP3 以降で下記を有効化する。
 # -------------------------------------------------------------
-services: {}
+services:
+
+  # --- STEP3: PostgreSQL ---
+  #  Phase4(Excel→DB移行)の受け皿。
+  #  ⚠️ Phase4完了までDB上のデータは一切「正本」ではない。
+  #     この期間にDBを参照して業務判断してはならない (Plan §6)。
+  momiji-postgres:
+    image: postgres:16.14-alpine
+    container_name: momiji-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${MOMIJI_DB_NAME}
+      POSTGRES_USER: ${MOMIJI_DB_USER}
+      POSTGRES_PASSWORD: ${MOMIJI_DB_PASSWORD}
+      TZ: ${MOMIJI_TZ}
+    volumes:
+      - momiji_pg_data:/var/lib/postgresql/data
+    networks:
+      - momiji_net
+    # RAM 8GB制約。STEP3-1の実測後に調整する (Plan OQ-6)
+    mem_limit: 1g
+    healthcheck:
+      # POSTGRES_USER はコンテナ内の環境変数。$$ でCompose展開を避ける
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # ports は開けない。スタック内部からのみ接続する(外部公開しない)
 
 # =============================================================
-#  以下は STEP3 以降で有効化する雛形(現在は無効)
+#  以下は STEP4 以降で有効化する雛形(現在は無効)
 # =============================================================
-#
-#  --- STEP3: PostgreSQL --------------------------------------
-#  momiji-postgres:
-#    image: postgres:16-alpine      # STEP3でパッチバージョンまで固定する
-#    container_name: momiji-postgres
-#    restart: unless-stopped
-#    environment:
-#      POSTGRES_DB: ${MOMIJI_DB_NAME}
-#      POSTGRES_USER: ${MOMIJI_DB_USER}
-#      POSTGRES_PASSWORD: ${MOMIJI_DB_PASSWORD}
-#      TZ: ${MOMIJI_TZ}
-#    volumes:
-#      - momiji_pg_data:/var/lib/postgresql/data
-#    networks:
-#      - momiji_net
-#    mem_limit: 1g                  # STEP3の実測後に調整する (OQ-6)
-#    healthcheck:
-#      test: ["CMD-SHELL", "pg_isready -U $${MOMIJI_DB_USER}"]
-#      interval: 30s
-#      timeout: 5s
-#      retries: 3
-#    # ports は開けない。スタック内部からのみ接続する(外部公開しない)
 #
 #  --- STEP4: MCP Server --------------------------------------
 #  momiji-mcp:
