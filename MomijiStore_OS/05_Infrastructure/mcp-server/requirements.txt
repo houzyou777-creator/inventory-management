@@ -1,0 +1,3 @@
+mcp
+psycopg[binary]
+openpyxl
