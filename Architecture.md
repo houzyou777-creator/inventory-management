@@ -98,7 +98,7 @@ graph TB
 | データ | 正(現在) | 正(移行後) | 移行方針 |
 |--------|-----------|-------------|----------|
 | 商品マスター | Excel(商品マスターシート・原価の正) | PostgreSQL `products` | 列名・内部管理IDを変えずに移植(GS移行方針と同じ原則) |
-| 在庫 | 在庫管理システムv1.0.xlsm ※**正本は`MomijiStore_OS Logical Design v1.0`で確定する**(本番用xlsmの扱いも同時に再判断) | PostgreSQL `inventory` | 楽天=管理番号×SKUペアで照合する現行ルールを維持 |
+| 在庫 | **`SourceData/在庫管理テーブル_v1.1.xlsm`**(2026-08-11確定・554件) | PostgreSQL `inventory` | 楽天=管理番号×SKUペアで照合する現行ルールを維持 |
 | 広告 | 楽天RPP/AmazonSP分析シート | PostgreSQL `ads_*` | モールCSV→取込の現行パイプラインをPythonジョブ化 |
 | 会計 | 月次KPIシート(経費・限界利益) | PostgreSQL `finance_*` | 月次確定の運用(黄色塗り→確定)をステータス列で再現 |
 | マニュアル | 04_Manual(Markdown/Excel) | Git管理のMarkdown | すでにGit管理下。継続 |
@@ -247,6 +247,7 @@ AIのすべての作業は次のフローに従う:
 
 | 日時 | 決定事項 | 理由 | 代替案 | 採用理由 | 影響範囲 |
 |------|----------|------|--------|----------|----------|
+| 2026-08-11 | **【訂正】在庫の正本を `SourceData/在庫管理テーブル_v1.1.xlsm` とする**(OQ-7解決)。`Excel/在庫管理システム_v1.0.xlsm` はサンプル入りプロトタイプと確定。**削除・移動はせず現状のまま保管する** | 2026-08-05の確定(在庫管理システム_v1.0.xlsm)は根拠3点がいずれも誤りまたは検証不足だった。実データを開いた結果、旧系統は実データ2件・`P000001`が商品マスターと不一致(サンプル)、在庫管理テーブルは554件を保持 | 旧確定を維持する / 両方を正本とする | 運用マニュアル全7文書とRULE 08、棚卸確定の実装(`Module_InventoryOps`)、実データ件数のすべてが在庫管理テーブルを指している。両方を正本にすることはBL-5違反 | `MomijiStore_OS_Logical_Design_v1.0.md` §3・§3.1(訂正の経緯も併記)、`Architecture.md` Data Layer、`Phase3_Infrastructure_Plan.md` OQ-7。**本番用xlsm削除の結論は変わらない**(削除理由の記述のみ訂正) |
 | 2026-08-05 | **Phase3 STEP3-1: PostgreSQLを `postgres:16.14-alpine` で定義。** メモリ上限1g(暫定)・**外部ポート非公開**・認証情報は`.env`注入・ヘルスチェックは`pg_isready` | Phase4(Excel→DB移行)の受け皿を用意する。バージョンはDocker Hubで16系の最新パッチを確認して固定 | 17系を採用 / `16-alpine`のまま(パッチ非固定) | 16系は既存DB設計書の想定に近く実績がある。パッチまで固定しないと再現性が失われる(Naming Convention「latest禁止」) | `momiji-stack.yml`。メモリ上限はSTEP3-1の実測後に調整(OQ-6) |
 | 2026-08-05 | **Phase3より実装モードへ移行。設計品質は十分に確保できたため、今後は安全性を維持しながら実装速度を優先する** | Phase1〜Phase2.5で FOUNDATION・Architecture・Logical Design・3カタログが揃い、設計の土台が固まった。これ以上の設計追加は速度を落とすだけになる | 従来どおり全変更を設計→承認→実装で進める | 承認が必要な範囲を「データ削除・セキュリティ変更・外部公開・金銭が発生する変更・設計思想の変更」に限定し、それ以外は既定値を採用してDecision Logへ記録する。**安全性(承認制の核)は維持したまま、確認の往復だけを減らせる** | Phase3以降の進め方。新しい設計書は原則作成せず既存文書へ追記する。実装は30分以内の単位に分割する |
 | 2026-08-05 | **Phase3のSTEP番号を実施実態に合わせて再編**(STEP1 Docker導入 ✅ / STEP2 Compose準備 ✅ / STEP3 PostgreSQL構築 / STEP4 MCP・Python Worker / STEP5 Storage・Folder / STEP6 Git Mirror / STEP7 Backup・Monitoring) | 当初計画のSTEP順(Storage→Git→Docker)に対し、実際はDocker導入が先行した。番号と実態がずれると進捗を追えなくなる | 当初のSTEP順を維持する | 実態に合わせる方が正確。OQ-4(権限モデル)待ちのStorage/Git Mirrorを後ろへ回すことで、待ちのない作業から進められる | `Phase3_Infrastructure_Plan.md` §14・§16、`momiji-stack.yml` のコメント |
@@ -320,7 +321,8 @@ AIのすべての作業は次のフローに従う:
 | HDD / Volume / 空きベイ | ⬜ **Infrastructure実装開始条件。** 現状はM.2 SSDのみ。HDD構成は未確定 |
 | **NAS永続マウント方式** | ✅ **Finderの「ログイン項目」を正式採用**(2026-08-05・Always Simple優先)。launchd / autofs は将来必要になった時だけ検討。設定作業はPhase2で実施 |
 | Phase番号統一 | ✅ 完了(本書Roadmapを正とし、`PROJECT_CHARTER.md`を統一済み) |
-| 本番用xlsmの扱い | ✅ **削除確定**(2026-08-05)。在庫の正本が`在庫管理システム_v1.0.xlsm`に確定したため保留を解除。内容はgit履歴(blob `cac3c98`)に永続保存 |
+| 本番用xlsmの扱い | ✅ **削除確定**(2026-08-05・実施済)。内容はgit履歴(blob `cac3c98`)に永続保存 ※当時の削除理由に記載した正本は2026-08-11に訂正済(下記) |
+| 在庫の正本 | ✅ **`SourceData/在庫管理テーブル_v1.1.xlsm`**(2026-08-11 OQ-7解決)。`Excel/在庫管理システム_v1.0.xlsm` はサンプル入りプロトタイプとして現状保管 |
 
 ---
 
