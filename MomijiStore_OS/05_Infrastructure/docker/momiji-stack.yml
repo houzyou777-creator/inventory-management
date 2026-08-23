@@ -84,6 +84,10 @@ services:
     build:
       context: ./mcp-server
       dockerfile: Dockerfile
+      # ビルド中の RUN はDockerデーモンのDNS設定を継承するため、
+      # NAS側のDNSが引き継がれず pip install が名前解決に失敗する。
+      # host ネットワークを使ってホストの名前解決をそのまま利用する。
+      network: host
     container_name: momiji-mcp
     restart: unless-stopped
 
