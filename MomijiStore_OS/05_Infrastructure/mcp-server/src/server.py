@@ -16,6 +16,7 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import openpyxl
@@ -34,6 +35,13 @@ mcp = MCPServer(SERVICE_NAME)
 # 読み取り専用マウント (:ro) されたスナップショット
 PRODUCTS_XLSX = os.environ.get(
     "MOMIJI_PRODUCTS_XLSX", "/app/data/products/商品マスター_単品_v1.0.xlsx"
+)
+# 起動時点で「実際にどのパスを見るか」をログへ残す。
+# 環境変数で上書きされていた場合、ここで判明する。
+logger.info(
+    "起動 参照パス=%s (環境変数指定=%s)",
+    PRODUCTS_XLSX,
+    "あり" if os.environ.get("MOMIJI_PRODUCTS_XLSX") else "なし(既定値)",
 )
 
 SHEET_MASTER = "商品マスター"
@@ -74,6 +82,28 @@ class ProductDataError(Exception):
     """商品マスターを読めなかった。メッセージは利用者へそのまま返せる内容にする。"""
 
 
+def _path_diagnostics(exc: BaseException) -> str:
+    """アクセス失敗時に、原因を特定できるだけの情報を組み立てる。
+
+    例外を握り潰すと調査ができなくなるため、実際の例外型・メッセージと、
+    参照パス・存在確認・親ディレクトリの内容を必ず添える。
+    ここで扱うのはコンテナ内部のパスであり、秘密情報は含まない。
+    """
+    target = Path(PRODUCTS_XLSX)
+    parent = target.parent
+    try:
+        entries: Any = sorted(os.listdir(parent))
+    except OSError as list_exc:
+        entries = f"<一覧取得不可: {type(list_exc).__name__}: {list_exc}>"
+    return (
+        f"商品マスターへアクセスできません({type(exc).__name__}: {exc})。"
+        f" 参照パス={PRODUCTS_XLSX}"
+        f" / exists={target.exists()} is_file={target.is_file()}"
+        f" / 親={parent} exists={parent.exists()} is_dir={parent.is_dir()}"
+        f" / 親の内容={entries}"
+    )
+
+
 def _verify_headers(sheet, expected: dict[int, str], sheet_name: str) -> None:
     """列見出しが想定どおりかを確認する。
 
@@ -99,23 +129,19 @@ def _load_products() -> list[dict[str, Any]]:
     ASIN・楽天SKUは出品テーブル側にあり、1商品が複数の出品行を持つ場合がある
     (楽天とAmazonの両方など)。値が存在しない場合は推測せず None を返す。
     """
+    logger.info("商品マスターを開きます path=%s", PRODUCTS_XLSX)
     try:
         wb = openpyxl.load_workbook(PRODUCTS_XLSX, read_only=True, data_only=True)
-    except FileNotFoundError:
-        raise ProductDataError(
-            "商品マスターのファイルが見つかりません。"
-            "NASへのスナップショット配置とマウント設定を確認してください。"
-        ) from None
-    except PermissionError:
-        raise ProductDataError(
-            "商品マスターのファイルを読み取る権限がありません。"
-        ) from None
+    except (FileNotFoundError, PermissionError, OSError) as exc:
+        logger.exception("商品マスターを開けません path=%s", PRODUCTS_XLSX)
+        raise ProductDataError(_path_diagnostics(exc)) from exc
     except Exception as exc:
-        # 破損ファイル・非対応形式など。例外文には絶対パスが含まれるため転記しない。
+        # 破損ファイル・非対応形式など
+        logger.exception("商品マスターの読み込みに失敗 path=%s", PRODUCTS_XLSX)
         raise ProductDataError(
-            f"商品マスターのファイルを開けませんでした({type(exc).__name__})。"
+            f"商品マスターのファイルを開けませんでした({type(exc).__name__}: {exc})。"
             "ファイルが破損していないか確認してください。"
-        ) from None
+        ) from exc
 
     try:
         for sheet_name in (SHEET_MASTER, SHEET_LISTING):
@@ -178,11 +204,10 @@ def _ensure_loaded() -> list[dict[str, Any]]:
     global _cache, _cache_mtime
     try:
         mtime = os.path.getmtime(PRODUCTS_XLSX)
-    except OSError:
-        raise ProductDataError(
-            "商品マスターのファイルへアクセスできません。"
-            "NASのマウント状態を確認してください。"
-        ) from None
+    except OSError as exc:
+        # 例外を握り潰さない。実際の型・メッセージとパス診断を必ず残す。
+        logger.exception("商品マスターへアクセスできません path=%s", PRODUCTS_XLSX)
+        raise ProductDataError(_path_diagnostics(exc)) from exc
 
     with _cache_lock:
         if _cache_mtime != mtime:
