@@ -7,10 +7,10 @@
 #  このファイル1つで会社のインフラを再現できる状態を目指す。
 #  NAS故障時も、新しい機材とこのファイルから復元する。
 #
-#  【Phase3 STEP2 時点の状態】
-#  器のみ。services は未定義(コメントで雛形を用意)。
-#  デプロイしていないため、コンテナ・イメージ・ネットワーク・
-#  ボリュームはいずれも実体が存在しない。
+#  【Phase3 STEP4 時点の状態】
+#  momiji-postgres と momiji-mcp を定義済み。
+#  Python Worker は STEP5 以降(雛形をコメントで用意)。
+
 #
 #  【命名規則】Architecture.md Naming Convention 準拠
 #    サービス/コンテナ : momiji-<name>   (小文字ケバブケース)
@@ -77,28 +77,63 @@ services:
       start_period: 30s
     # ports は開けない。スタック内部からのみ接続する(外部公開しない)
 
+  # --- STEP4 / STEP5-1: MCP Server ---
+  #  公式SDK(mcp)の標準サーバー。streamable-http を待ち受ける。
+  #  tool: health_check(STEP4)/ search_products(STEP5-1・読み取り専用)
+  momiji-mcp:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    container_name: momiji-mcp
+    restart: unless-stopped
+
+    # NASのLAN側IPにバインドし、全インターフェースへの公開を避ける。
+    # ⚠️ 認証は未実装。同一LAN内からは誰でもtoolを呼べる状態である。
+    #    DB参照toolを追加する前に認証設計が必要(Phase3 Plan §3)。
+    ports:
+      - "192.168.0.8:8000:8000"
+
+    # 商品マスターのスナップショットを読み取り専用でマウントする。
+    # ⚠️ これは正本ではない。正本は Mac側 SourceData/商品マスター_単品_v1.0.xlsx。
+    volumes:
+      - ./data/products:/app/data/products:ro
+
+    environment:
+      MOMIJI_DB_HOST: momiji-postgres
+      MOMIJI_DB_PORT: "5432"
+      MOMIJI_DB_NAME: ${MOMIJI_DB_NAME}
+      MOMIJI_DB_USER: ${MOMIJI_DB_USER}
+      MOMIJI_DB_PASSWORD: ${MOMIJI_DB_PASSWORD}
+      TZ: ${MOMIJI_TZ}
+      # 検索結果の返却件数(未設定なら 50 / 500)
+      MOMIJI_DEFAULT_LIMIT: ${MOMIJI_DEFAULT_LIMIT:-50}
+      MOMIJI_MAX_LIMIT: ${MOMIJI_MAX_LIMIT:-500}
+    depends_on:
+      momiji-postgres:
+        condition: service_healthy
+    networks:
+      - momiji_net
+    mem_limit: 512m
+    healthcheck:
+      # 現在: TCPソケットで待ち受け確認(依存を増やさないため)
+      # 将来: MCPサーバーに HTTP /health を実装したら下記へ置き換える
+      #   test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "import socket; s = socket.create_connection(('127.0.0.1', 8000), 3); s.close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
 # =============================================================
-#  以下は STEP4 以降で有効化する雛形(現在は無効)
+#  以下は STEP5 以降で有効化する雛形(現在は無効)
 # =============================================================
 #
-#  --- STEP4: MCP Server --------------------------------------
-#  momiji-mcp:
-#    # image は STEP4 で決定
-#    container_name: momiji-mcp
-#    restart: unless-stopped
-#    depends_on:
-#      momiji-postgres:
-#        condition: service_healthy
-#    networks:
-#      - momiji_net
-#    mem_limit: 512m                # STEP4の実測後に調整する
-#
-#  --- STEP4: Python Worker (ジョブ型・常駐しない) --------------
+#  --- STEP5: Python Worker (ジョブ型・常駐しない) --------------
 #  ⚠️ 現行スクリプトは macOS + Microsoft Excel 依存のため
 #     Linux コンテナでは実行できない (Plan §8)。
 #     実処理の移行は Phase4 (DB移行) 以降。
 #  momiji-python-worker:
-#    # image は STEP4 で決定
+#    # image は STEP5 で決定
 #    container_name: momiji-python-worker
 #    restart: "no"                  # ジョブ型のため自動再起動しない
 #    depends_on:
@@ -111,3 +146,4 @@ services:
 #  Redis / Ollama / Playwright は定義しない。
 #  Decision Log「必要になった時だけ追加する」(Always Simple)
 # =============================================================
+
