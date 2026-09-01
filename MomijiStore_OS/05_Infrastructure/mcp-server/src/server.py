@@ -18,7 +18,7 @@ import secrets
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import openpyxl
 from mcp.server import MCPServer
@@ -36,10 +36,28 @@ SERVICE_NAME = "momiji-mcp"
 #  /mcp 配下は全て認証必須。MCPのツールはすべて /mcp を通るため、
 #  今後ツールを追加しても自動的に認証が適用される(個別対応は不要)。
 #  /health のみ認証不要(監視用)。
-API_KEY = os.environ.get("MOMIJI_API_KEY", "").strip()
+#
+#  MOMIJI_API_KEYS はカンマ区切りで複数指定できる(ローテーション用)。
+#  新旧の鍵を並べておき、クライアント移行後に旧鍵を消す運用を想定する。
+#  MOMIJI_API_KEY(単数)は旧設定との互換のためのフォールバック。
+def _load_api_keys() -> list[str]:
+    raw = os.environ.get("MOMIJI_API_KEYS", "") or os.environ.get("MOMIJI_API_KEY", "")
+    return [k for k in (part.strip() for part in raw.split(",")) if k]
+
+
+API_KEYS = _load_api_keys()
 PUBLIC_PATHS = frozenset({"/health"})
 # 認証失敗時に返すヘッダー。MCP仕様は 401 + WWW-Authenticate: Bearer を求める。
 WWW_AUTHENTICATE = 'Bearer error="invalid_token"'
+
+# レート制限(IP単位)。メモリ上の固定ウィンドウ方式。
+RATE_LIMIT_PER_MINUTE = int(os.getenv("MOMIJI_RATE_LIMIT_PER_MINUTE", "100"))
+RATE_LIMIT_WINDOW_SEC = 60
+
+
+def key_id(token: str) -> str:
+    """ログ用の識別子。トークン全文は絶対に出さず、先頭8文字だけを使う。"""
+    return token[:8]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -336,31 +354,104 @@ def _extract_bearer_token(request: Request) -> str:
     return token.strip()
 
 
-class BearerAuthMiddleware(BaseHTTPMiddleware):
-    """/health 以外のすべてのパスで Bearer トークンを必須にする。
+class TokenVerifier(Protocol):
+    """トークン検証の共通インターフェース。
 
-    MCPのツール呼び出しはすべて /mcp を通るため、この1箇所で
-    既存・将来を問わず全ツールが保護される。
-
-    将来 OAuth2 / JWT へ移行する場合は、_verify_token() の中身を
-    差し替えるだけでよい(呼び出し側とレスポンス形式は変えなくて済む)。
+    OAuth2 / JWT へ移行する際は、このインターフェースを満たす
+    OAuthTokenVerifier / JWTTokenVerifier を実装して差し替える。
+    ミドルウェア本体・レスポンス形式・クライアント設定は変更不要。
     """
 
-    @staticmethod
-    def _verify_token(token: str) -> bool:
-        """トークンを検証する。現在は静的トークンとの定数時間比較。
+    def verify(self, token: str) -> str | None:
+        """有効ならログ用の識別子(key_id)を、無効なら None を返す。"""
+        ...
 
-        OAuth2 / JWT へ移行する際は、このメソッドを署名検証や
-        イントロスペクションに置き換える。
-        """
-        return bool(token) and secrets.compare_digest(token, API_KEY)
+
+class StaticTokenVerifier:
+    """環境変数で与えた静的トークンと突き合わせる。
+
+    複数トークンを許可し、どれか1つに一致すれば有効とする(ローテーション用)。
+    比較は secrets.compare_digest による定数時間比較。
+    """
+
+    def __init__(self, keys: list[str]) -> None:
+        self._keys = list(keys)
+
+    def verify(self, token: str) -> str | None:
+        if not token:
+            return None
+        for key in self._keys:
+            if secrets.compare_digest(token, key):
+                return key_id(key)
+        return None
+
+
+class RateLimiter:
+    """IP単位の固定ウィンドウ方式レート制限(メモリ保持)。"""
+
+    def __init__(self, limit: int, window_sec: int) -> None:
+        self._limit = limit
+        self._window = window_sec
+        self._hits: dict[str, tuple[float, int]] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, client_ip: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            window_start, count = self._hits.get(client_ip, (now, 0))
+            if now - window_start >= self._window:
+                window_start, count = now, 0
+            count += 1
+            self._hits[client_ip] = (window_start, count)
+            # 古いエントリを掃除してメモリの増え続けを防ぐ
+            if len(self._hits) > 1024:
+                self._hits = {
+                    ip: v
+                    for ip, v in self._hits.items()
+                    if now - v[0] < self._window
+                }
+            return count <= self._limit
+
+
+class BearerAuthMiddleware(BaseHTTPMiddleware):
+    """レート制限とBearerトークン認証を行う。
+
+    MCPのツール呼び出しはすべて /mcp を通るため、この1箇所で
+    既存・将来を問わず全ツールが保護される。/health のみ認証不要。
+    """
+
+    def __init__(self, app, verifier: TokenVerifier, limiter: RateLimiter) -> None:
+        super().__init__(app)
+        self._verifier = verifier
+        self._limiter = limiter
 
     async def dispatch(self, request: Request, call_next):
+        # レート制限は認証前に適用する(総当たり攻撃も抑止するため)
+        client_ip = request.client.host if request.client else "unknown"
+        if not self._limiter.allow(client_ip):
+            logger.warning(
+                "レート制限 method=%s path=%s ip=%s",
+                request.method,
+                request.url.path,
+                client_ip,
+            )
+            return JSONResponse(
+                {
+                    "error": "rate_limit_exceeded",
+                    "error_description": (
+                        f"1分あたり {RATE_LIMIT_PER_MINUTE} 回までです。"
+                    ),
+                },
+                status_code=429,
+                headers={"Retry-After": str(RATE_LIMIT_WINDOW_SEC)},
+            )
+
         if request.url.path in PUBLIC_PATHS:
             return await call_next(request)
 
-        if not self._verify_token(_extract_bearer_token(request)):
-            # トークンの値は絶対に記録しない。パスとメソッドのみ。
+        matched = self._verifier.verify(_extract_bearer_token(request))
+        if matched is None:
+            # トークンの値は一切記録しない。method と path のみ。
             logger.warning(
                 "認証失敗 method=%s path=%s", request.method, request.url.path
             )
@@ -373,6 +464,13 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
                 headers={"WWW-Authenticate": WWW_AUTHENTICATE},
             )
 
+        # どの鍵で認証されたかを追えるようにする(先頭8文字のみ)
+        logger.info(
+            "認証成功 method=%s path=%s key_id=%s",
+            request.method,
+            request.url.path,
+            matched,
+        )
         return await call_next(request)
 
 
@@ -383,17 +481,24 @@ async def health_endpoint(request: Request) -> JSONResponse:
 
 if __name__ == "__main__":
     # トークン未設定なら起動しない(認証なしで公開される事故を防ぐ)
-    if not API_KEY:
+    if not API_KEYS:
         raise SystemExit("MOMIJI_API_KEY が設定されていません")
 
     import uvicorn
 
     app = mcp.streamable_http_app()
-    app.add_middleware(BearerAuthMiddleware)
+    app.add_middleware(
+        BearerAuthMiddleware,
+        verifier=StaticTokenVerifier(API_KEYS),
+        limiter=RateLimiter(RATE_LIMIT_PER_MINUTE, RATE_LIMIT_WINDOW_SEC),
+    )
     app.add_route("/health", health_endpoint, methods=["GET"])
 
     logger.info(
-        "起動します 認証=Bearer(Authorization ヘッダー必須) 認証不要パス=%s",
+        "起動します 認証=Bearer 有効鍵=%d本(key_id=%s) レート制限=%d回/分 認証不要=%s",
+        len(API_KEYS),
+        ",".join(key_id(k) for k in API_KEYS),
+        RATE_LIMIT_PER_MINUTE,
         sorted(PUBLIC_PATHS),
     )
     # ポートはコンテナ内部で待ち受け、公開範囲は compose の ports で制御する。
