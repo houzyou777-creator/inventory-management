@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import threading
 import time
 from pathlib import Path
@@ -22,7 +23,21 @@ from typing import Any
 import openpyxl
 from mcp.server import MCPServer
 
+# starlette / uvicorn は mcp SDK の依存として既に入っている。
+# 認証ミドルウェアと /health を足すために直接importする(新規の追加依存ではない)。
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
 SERVICE_NAME = "momiji-mcp"
+
+# --- 認証 -----------------------------------------------------------------
+#  /mcp 配下は全てAPIキー必須。MCPのツールはすべて /mcp を通るため、
+#  今後ツールを追加しても自動的に認証が適用される(個別対応は不要)。
+#  /health のみ認証不要(監視用)。
+API_KEY = os.environ.get("MOMIJI_API_KEY", "").strip()
+API_KEY_HEADER = "X-API-Key"
+PUBLIC_PATHS = frozenset({"/health"})
 
 logging.basicConfig(
     level=logging.INFO,
@@ -306,6 +321,53 @@ def search_products(
     }
 
 
+class ApiKeyMiddleware(BaseHTTPMiddleware):
+    """/health 以外のすべてのパスでAPIキーを必須にする。
+
+    MCPのツール呼び出しはすべて /mcp を通るため、この1箇所で
+    既存・将来を問わず全ツールが保護される。
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path in PUBLIC_PATHS:
+            return await call_next(request)
+
+        provided = request.headers.get(API_KEY_HEADER, "")
+        # タイミング攻撃を避けるため定数時間で比較する
+        if not (provided and secrets.compare_digest(provided, API_KEY)):
+            logger.warning(
+                "認証失敗 path=%s header=%s",
+                request.url.path,
+                "あり" if provided else "なし",
+            )
+            return JSONResponse({"error": "Forbidden"}, status_code=403)
+
+        return await call_next(request)
+
+
+async def health_endpoint(request: Request) -> JSONResponse:
+    """認証不要の監視用エンドポイント。データには一切触れない。"""
+    return JSONResponse({"status": "ok", "service": SERVICE_NAME})
+
+
 if __name__ == "__main__":
-    # ポートはコンテナ内部(momiji_net)でのみ使用し、外部公開しない。
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=8000)
+    # APIキー未設定なら起動しない(認証なしで公開される事故を防ぐ)
+    if not API_KEY:
+        raise SystemExit(
+            "起動できません: 環境変数 MOMIJI_API_KEY が未設定です。"
+            " .env に設定してください。"
+        )
+
+    import uvicorn
+
+    app = mcp.streamable_http_app()
+    app.add_middleware(ApiKeyMiddleware)
+    app.add_route("/health", health_endpoint, methods=["GET"])
+
+    logger.info(
+        "起動します 認証=有効(%s ヘッダー必須) 認証不要パス=%s",
+        API_KEY_HEADER,
+        sorted(PUBLIC_PATHS),
+    )
+    # ポートはコンテナ内部で待ち受け、公開範囲は compose の ports で制御する。
+    uvicorn.run(app, host="0.0.0.0", port=8000)

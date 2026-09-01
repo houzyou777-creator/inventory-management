@@ -1,3 +1,7 @@
 mcp
 psycopg[binary]
 openpyxl
+
+# 以下は mcp SDK の依存だが、認証ミドルウェアと /health で直接importするため明示する
+starlette
+uvicorn

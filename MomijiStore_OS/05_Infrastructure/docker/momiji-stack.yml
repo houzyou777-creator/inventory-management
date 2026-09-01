@@ -112,6 +112,9 @@ services:
       # 検索結果の返却件数(未設定なら 50 / 500)
       MOMIJI_DEFAULT_LIMIT: ${MOMIJI_DEFAULT_LIMIT:-50}
       MOMIJI_MAX_LIMIT: ${MOMIJI_MAX_LIMIT:-500}
+      # API認証キー。既定値を置かない = 未設定なら起動時に失敗させる。
+      # 値は .env にのみ置き、リポジトリには絶対に含めない(CHARTER §4)。
+      MOMIJI_API_KEY: ${MOMIJI_API_KEY:?MOMIJI_API_KEY を .env に設定してください}
     depends_on:
       momiji-postgres:
         condition: service_healthy
@@ -119,10 +122,8 @@ services:
       - momiji_net
     mem_limit: 512m
     healthcheck:
-      # 現在: TCPソケットで待ち受け確認(依存を増やさないため)
-      # 将来: MCPサーバーに HTTP /health を実装したら下記へ置き換える
-      #   test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
-      test: ["CMD", "python", "-c", "import socket; s = socket.create_connection(('127.0.0.1', 8000), 3); s.close()"]
+      # /health は認証不要のため、APIキーなしで死活監視できる(STEP5-2で実装)
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
