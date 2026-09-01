@@ -92,8 +92,7 @@ services:
     restart: unless-stopped
 
     # NASのLAN側IPにバインドし、全インターフェースへの公開を避ける。
-    # ⚠️ 認証は未実装。同一LAN内からは誰でもtoolを呼べる状態である。
-    #    DB参照toolを追加する前に認証設計が必要(Phase3 Plan §3)。
+    # /mcp 配下は Bearer トークン必須(STEP5-2)。/health のみ認証不要。
     ports:
       - "192.168.0.8:8000:8000"
 
@@ -112,7 +111,7 @@ services:
       # 検索結果の返却件数(未設定なら 50 / 500)
       MOMIJI_DEFAULT_LIMIT: ${MOMIJI_DEFAULT_LIMIT:-50}
       MOMIJI_MAX_LIMIT: ${MOMIJI_MAX_LIMIT:-500}
-      # API認証キー。既定値を置かない = 未設定なら起動時に失敗させる。
+      # Bearer認証トークン。既定値を置かない = 未設定なら起動時に失敗させる。
       # 値は .env にのみ置き、リポジトリには絶対に含めない(CHARTER §4)。
       MOMIJI_API_KEY: ${MOMIJI_API_KEY:?MOMIJI_API_KEY を .env に設定してください}
     depends_on:

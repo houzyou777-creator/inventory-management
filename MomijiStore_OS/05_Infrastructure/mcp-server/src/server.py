@@ -32,12 +32,14 @@ from starlette.responses import JSONResponse
 SERVICE_NAME = "momiji-mcp"
 
 # --- 認証 -----------------------------------------------------------------
-#  /mcp 配下は全てAPIキー必須。MCPのツールはすべて /mcp を通るため、
+#  OAuth 2.1 と同じ Bearer トークン方式を使う(MCP仕様が定める形)。
+#  /mcp 配下は全て認証必須。MCPのツールはすべて /mcp を通るため、
 #  今後ツールを追加しても自動的に認証が適用される(個別対応は不要)。
 #  /health のみ認証不要(監視用)。
 API_KEY = os.environ.get("MOMIJI_API_KEY", "").strip()
-API_KEY_HEADER = "X-API-Key"
 PUBLIC_PATHS = frozenset({"/health"})
+# 認証失敗時に返すヘッダー。MCP仕様は 401 + WWW-Authenticate: Bearer を求める。
+WWW_AUTHENTICATE = 'Bearer error="invalid_token"'
 
 logging.basicConfig(
     level=logging.INFO,
@@ -321,26 +323,55 @@ def search_products(
     }
 
 
-class ApiKeyMiddleware(BaseHTTPMiddleware):
-    """/health 以外のすべてのパスでAPIキーを必須にする。
+def _extract_bearer_token(request: Request) -> str:
+    """Authorization ヘッダーから Bearer トークンを取り出す。
+
+    形式が違えば空文字を返す。scheme の判定は大文字小文字を区別しない
+    (RFC 6750 に従う)。
+    """
+    header = request.headers.get("Authorization", "")
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer":
+        return ""
+    return token.strip()
+
+
+class BearerAuthMiddleware(BaseHTTPMiddleware):
+    """/health 以外のすべてのパスで Bearer トークンを必須にする。
 
     MCPのツール呼び出しはすべて /mcp を通るため、この1箇所で
     既存・将来を問わず全ツールが保護される。
+
+    将来 OAuth2 / JWT へ移行する場合は、_verify_token() の中身を
+    差し替えるだけでよい(呼び出し側とレスポンス形式は変えなくて済む)。
     """
+
+    @staticmethod
+    def _verify_token(token: str) -> bool:
+        """トークンを検証する。現在は静的トークンとの定数時間比較。
+
+        OAuth2 / JWT へ移行する際は、このメソッドを署名検証や
+        イントロスペクションに置き換える。
+        """
+        return bool(token) and secrets.compare_digest(token, API_KEY)
 
     async def dispatch(self, request: Request, call_next):
         if request.url.path in PUBLIC_PATHS:
             return await call_next(request)
 
-        provided = request.headers.get(API_KEY_HEADER, "")
-        # タイミング攻撃を避けるため定数時間で比較する
-        if not (provided and secrets.compare_digest(provided, API_KEY)):
+        if not self._verify_token(_extract_bearer_token(request)):
+            # トークンの値は絶対に記録しない。パスとメソッドのみ。
             logger.warning(
-                "認証失敗 path=%s header=%s",
-                request.url.path,
-                "あり" if provided else "なし",
+                "認証失敗 method=%s path=%s", request.method, request.url.path
             )
-            return JSONResponse({"error": "Forbidden"}, status_code=403)
+            return JSONResponse(
+                {
+                    "error": "invalid_token",
+                    "error_description": "Authentication required",
+                },
+                status_code=401,
+                headers={"WWW-Authenticate": WWW_AUTHENTICATE},
+            )
 
         return await call_next(request)
 
@@ -351,22 +382,18 @@ async def health_endpoint(request: Request) -> JSONResponse:
 
 
 if __name__ == "__main__":
-    # APIキー未設定なら起動しない(認証なしで公開される事故を防ぐ)
+    # トークン未設定なら起動しない(認証なしで公開される事故を防ぐ)
     if not API_KEY:
-        raise SystemExit(
-            "起動できません: 環境変数 MOMIJI_API_KEY が未設定です。"
-            " .env に設定してください。"
-        )
+        raise SystemExit("MOMIJI_API_KEY が設定されていません")
 
     import uvicorn
 
     app = mcp.streamable_http_app()
-    app.add_middleware(ApiKeyMiddleware)
+    app.add_middleware(BearerAuthMiddleware)
     app.add_route("/health", health_endpoint, methods=["GET"])
 
     logger.info(
-        "起動します 認証=有効(%s ヘッダー必須) 認証不要パス=%s",
-        API_KEY_HEADER,
+        "起動します 認証=Bearer(Authorization ヘッダー必須) 認証不要パス=%s",
         sorted(PUBLIC_PATHS),
     )
     # ポートはコンテナ内部で待ち受け、公開範囲は compose の ports で制御する。
