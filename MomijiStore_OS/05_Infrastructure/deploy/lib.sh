@@ -192,11 +192,15 @@ check_search_products() {
         -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_products","arguments":{"internal_id":"P000021"}}}' \
         | sed -n 's/^data: //p')
 
-    if [[ "$result" != *'"内部管理ID"'* ]] || [[ "$result" == *'"error"'* ]]; then
+    # tools/call の結果はJSON文字列として入れ子になり、引用符がエスケープされる。
+    # そのため引用符を含まない部分文字列で判定する。
+    if [[ "$result" != *'内部管理ID'* ]] || [[ "$result" == *'"isError":true'* ]]; then
         log_err "search_products の応答: ${result:-なし}"
         fail "search_products が想定どおりに応答しません"
     fi
-    SEARCH_RESULT="P000021 を1件取得"
+    local count
+    count=$(printf '%s' "$result" | sed -n 's/.*\\"count\\": \([0-9]*\).*/\1/p' | head -1)
+    SEARCH_RESULT="P000021 を ${count:-1} 件取得"
     log_ok "search_products OK (${SEARCH_RESULT})"
 }
 
