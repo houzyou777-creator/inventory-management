@@ -98,16 +98,8 @@ for item in "${DEPLOY_ITEMS[@]}"; do
         | tar -x -C "$STAGE" || fail "git archive に失敗しました (${item})"
 done
 
-rsync -a --checksum --delete --exclude='*_backup_*' \
-    -e 'ssh -o BatchMode=yes' \
-    "${STAGE}/${REPO_SUBDIR}/mcp-server/" \
-    "${NAS_HOST}:${NAS_DIR}/mcp-server/" \
-    || fail "mcp-server の転送に失敗しました"
-
-rsync -a --checksum -e 'ssh -o BatchMode=yes' \
-    "${STAGE}/${REPO_SUBDIR}/docker/${COMPOSE_FILE}" \
-    "${NAS_HOST}:${NAS_DIR}/${COMPOSE_FILE}" \
-    || fail "${COMPOSE_FILE} の転送に失敗しました"
+sync_dir "${STAGE}/${REPO_SUBDIR}/mcp-server" "${NAS_DIR}/mcp-server"
+sync_file "${STAGE}/${REPO_SUBDIR}/docker/${COMPOSE_FILE}" "${NAS_DIR}"
 log_ok "転送完了"
 
 # --- 6. ビルド -----------------------------------------------

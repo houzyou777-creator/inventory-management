@@ -54,6 +54,17 @@ WWW_AUTHENTICATE = 'Bearer error="invalid_token"'
 RATE_LIMIT_PER_MINUTE = int(os.getenv("MOMIJI_RATE_LIMIT_PER_MINUTE", "100"))
 RATE_LIMIT_WINDOW_SEC = 60
 
+# SDKのDNSリバインディング対策。既定では localhost しか許可されず、
+# LAN内のIP(192.168.0.8:8000)で叩くと 421 Misdirected Request になる。
+# 到達を許すホストを明示する。既定はNASのLAN側アドレスとループバック。
+ALLOWED_HOSTS = [
+    h.strip()
+    for h in os.getenv(
+        "MOMIJI_ALLOWED_HOSTS", "192.168.0.8:8000,localhost:*,127.0.0.1:*"
+    ).split(",")
+    if h.strip()
+]
+
 
 def key_id(token: str) -> str:
     """ログ用の識別子。トークン全文は絶対に出さず、先頭8文字だけを使う。"""
@@ -485,8 +496,15 @@ if __name__ == "__main__":
         raise SystemExit("MOMIJI_API_KEY が設定されていません")
 
     import uvicorn
+    from mcp.server.transport_security import TransportSecuritySettings
 
-    app = mcp.streamable_http_app()
+    app = mcp.streamable_http_app(
+        transport_security=TransportSecuritySettings(
+            allowed_hosts=ALLOWED_HOSTS,
+            # Originはブラウザからの利用を想定していないため許可しない
+            allowed_origins=[],
+        )
+    )
     app.add_middleware(
         BearerAuthMiddleware,
         verifier=StaticTokenVerifier(API_KEYS),
@@ -495,11 +513,13 @@ if __name__ == "__main__":
     app.add_route("/health", health_endpoint, methods=["GET"])
 
     logger.info(
-        "起動します 認証=Bearer 有効鍵=%d本(key_id=%s) レート制限=%d回/分 認証不要=%s",
+        "起動します 認証=Bearer 有効鍵=%d本(key_id=%s) レート制限=%d回/分"
+        " 認証不要=%s 許可ホスト=%s",
         len(API_KEYS),
         ",".join(key_id(k) for k in API_KEYS),
         RATE_LIMIT_PER_MINUTE,
         sorted(PUBLIC_PATHS),
+        ALLOWED_HOSTS,
     )
     # ポートはコンテナ内部で待ち受け、公開範囲は compose の ports で制御する。
     uvicorn.run(app, host="0.0.0.0", port=8000)

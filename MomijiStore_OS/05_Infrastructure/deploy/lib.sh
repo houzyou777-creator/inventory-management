@@ -71,7 +71,16 @@ self_check() {
 }
 
 # --- SSH -----------------------------------------------------
-nas() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$NAS_HOST" "$@"; }
+#  UGOSでは momiji-admin のホーム(/home/momiji-admin)が存在せず、
+#  作成もできない(root でも Operation not permitted)。
+#  docker CLI は起動時に HOME を作ろうとして失敗するため、
+#  書き込み可能な場所を HOME として与える。
+NAS_HOME="${NAS_HOME:-/tmp/momiji-deploy-home}"
+
+nas() {
+    ssh -o BatchMode=yes -o ConnectTimeout=10 "$NAS_HOST" \
+        "export HOME='${NAS_HOME}'; mkdir -p \"\$HOME\" 2>/dev/null; $*"
+}
 
 require_ssh() {
     nas true 2>/dev/null || fail "NASへSSH接続できません (host=${NAS_HOST})。~/.ssh/config と鍵を確認してください。"
@@ -83,6 +92,31 @@ require_docker() {
     nas 'docker ps >/dev/null 2>&1' \
         || fail "NAS上でdockerを実行できません。'sudo usermod -aG docker momiji-admin' 実施後、SSHを再接続してください。"
     log_ok "docker 実行権限 OK"
+}
+
+# --- 転送 ----------------------------------------------------
+#  rsync は使えない。UGOSのrsyncは独自改変版で、一般ユーザーだと
+#    "cannot set euid as root" → "invalid path" で失敗する(UGOS仕様)。
+#  そのため tar over SSH を使う。追加依存はなく、確実に動く。
+#  COPYFILE_DISABLE=1 は macOS が ._* (AppleDouble) を混ぜるのを防ぐ。
+#
+#  ※ 差分削除は行わない(上書きと追加のみ)。Gitから削除されたファイルが
+#     NASに残る場合は、スナップショットを確認のうえ手動で整理する。
+
+sync_dir() {
+    local src="$1" dst="$2"
+    [[ -d "$src" ]] || fail "転送元がありません: $src"
+    COPYFILE_DISABLE=1 tar -C "$src" -czf - . \
+        | nas "mkdir -p '$dst' && tar -xzf - -C '$dst'" \
+        || fail "ディレクトリの転送に失敗しました: $src → $dst"
+}
+
+sync_file() {
+    local src="$1" dst_dir="$2"
+    [[ -f "$src" ]] || fail "転送元がありません: $src"
+    COPYFILE_DISABLE=1 tar -C "$(dirname "$src")" -czf - "$(basename "$src")" \
+        | nas "tar -xzf - -C '$dst_dir'" \
+        || fail "ファイルの転送に失敗しました: $src → $dst_dir"
 }
 
 # --- トークン取得 --------------------------------------------
@@ -123,16 +157,25 @@ check_postgres() {
 #  search_products を実際に呼んで結果を確認する。
 #  トークンはヘッダーで渡し、コマンドラインにもログにも残さない。
 check_search_products() {
-    local token session result
+    local token session result headers code
     token="$(get_token)"
 
-    session=$(curl -s -D - -o /dev/null -m 10 -X POST "${NAS_URL}/mcp" \
+    headers=$(curl -s -D - -o /dev/null -m 10 -X POST "${NAS_URL}/mcp" \
         -H "Authorization: Bearer ${token}" \
         -H 'Content-Type: application/json' \
         -H 'Accept: application/json, text/event-stream' \
         -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"deploy","version":"1"}}}' \
-        | tr -d '\r' | awk 'tolower($1)=="mcp-session-id:"{print $2}')
-    [[ -n "$session" ]] || fail "MCP initialize に失敗しました(認証エラーの可能性)"
+        | tr -d '\r')
+    session=$(echo "$headers" | awk 'tolower($1)=="mcp-session-id:"{print $2}')
+    code=$(echo "$headers" | awk 'NR==1{print $2}')
+
+    if [[ -z "$session" ]]; then
+        # 原因を推測しない。実際のHTTPステータスとサーバーログを提示する。
+        log_err "MCP initialize が失敗しました (HTTP ${code:-不明})"
+        log_err "サーバーログ(直近10行):"
+        nas 'docker logs --tail 10 momiji-mcp 2>&1' | sed 's/^/      /' >&2 || true
+        fail "MCP initialize に失敗しました"
+    fi
 
     curl -s -m 10 -X POST "${NAS_URL}/mcp" \
         -H "Authorization: Bearer ${token}" \
