@@ -1,0 +1,53 @@
+# =============================================================
+#  requirements.lock — 依存関係の正本
+# =============================================================
+#  ビルドはこのファイルを使う。requirements.txt は「何を直接使うか」
+#  を人が宣言するためのもので、実際に入るバージョンはここが決める。
+#
+#  【なぜ固定するか】
+#  2026-09-03、無指定だった mcp が 2.0.0 → 2.1.1 へ上がり、
+#  新しく入ったDNSリバインディング対策で 421 Misdirected Request が
+#  発生した。動作確認済みの組み合わせを固定して再発を防ぐ。
+#
+#  【更新方法】
+#   1. requirements.txt を編集(直接依存の追加・削除)
+#   2. 一時的に Dockerfile を requirements.txt 参照へ戻してビルド
+#   3. docker exec momiji-mcp pip freeze でこのファイルを再生成
+#   4. Deploy.sh で反映し、動作確認まで通す
+#   5. 更新理由を Decision Log へ記録する
+#
+#  取得元: 稼働中コンテナ momiji-mcp / 2026-09-03 / python:3.12-slim
+# =============================================================
+
+PyJWT==2.13.0
+annotated-types==0.8.0
+anyio==4.15.0
+attrs==26.1.0
+cffi==2.1.1
+click==8.5.0
+cryptography==50.0.1
+et_xmlfile==2.0.0
+h11==0.16.0
+httpcore2==2.12.0
+httpx2==2.12.0
+idna==3.19
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+mcp==2.1.1
+mcp-types==2.1.1
+openpyxl==3.1.5
+opentelemetry-api==1.44.0
+psycopg==3.3.5
+psycopg-binary==3.3.5
+pycparser==3.0
+pydantic==2.13.5
+pydantic_core==2.46.5
+python-multipart==0.0.32
+referencing==0.37.0
+rpds-py==2026.6.3
+sse-starlette==3.4.8
+starlette==1.6.0
+truststore==0.10.4
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+uvicorn==0.52.4

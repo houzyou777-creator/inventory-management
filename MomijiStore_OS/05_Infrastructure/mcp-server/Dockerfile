@@ -10,8 +10,10 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # 依存だけ先に入れる(ソース変更時のリビルドを速くするため)
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# requirements.lock が正本。動作確認済みのバージョンで固定してビルドする。
+# requirements.txt は「何を直接使うか」の宣言で、記録として同梱する。
+COPY requirements.lock requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.lock
 
 # MCPServer が現在のSDKの正式APIであることを build 時点で確認する。
 # SDKのAPIが変わっていれば、ここで build が失敗する(実行時まで発覚を遅らせない)。

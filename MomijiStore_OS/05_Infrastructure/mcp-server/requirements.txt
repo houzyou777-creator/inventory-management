@@ -1,6 +1,9 @@
-mcp
-psycopg[binary]
-openpyxl
+# 直接使うライブラリの宣言。実際に入るバージョンは requirements.lock が決める。
+# ここを変更したら requirements.lock を再生成すること(手順は lock 冒頭に記載)。
+
+mcp                 # MCP公式SDK(サーバー本体)
+psycopg[binary]     # PostgreSQL接続(STEP5以降で使用。現在は未接続)
+openpyxl            # Excel読み取り(search_products)
 
 # 以下は mcp SDK の依存だが、認証ミドルウェアと /health で直接importするため明示する
 starlette
