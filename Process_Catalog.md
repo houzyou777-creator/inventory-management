@@ -164,7 +164,7 @@ graph LR
 | **出力** | 楽天RPP広告分析シート、AmazonSP広告分析シート |
 | **関連Business ID** | BIZ-ADS-01, BIZ-ADS-02 |
 | **関連Decision ID** | **なし**(§4参照) |
-| **Business Logic** | BL-3(広告は利益を増やすために存在する) |
+| **Business Logic** | BL-3(すべての経営判断は利益を最大化するために存在する) |
 | **担当** | Python(`build_rakuten_rpp_month.py`, `build_amazon_sp_month.py`) |
 | **AI関与** | **生成から分析まで完全に任せられる**(確定を伴わないため) |
 | **承認** | 不要(分析結果の生成まで) |
