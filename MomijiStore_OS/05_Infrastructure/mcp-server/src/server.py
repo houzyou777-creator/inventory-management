@@ -4,10 +4,15 @@
 
 Phase3 STEP4: health_check
 Phase3 STEP5-1: search_products(商品マスター検索・読み取り専用)
+Phase3 STEP6:   Intelligence Layer(判断・施策・結果の記録)
 
-⚠️ 読み取り専用。Excelの書き込み・更新・削除は一切行わない。
+⚠️ Excelに対しては読み取り専用。書き込み・更新・削除は一切行わない。
    NAS上のExcelは「MCP検索用の読み取り専用スナップショット」であり正本ではない。
    正本は Mac側 SourceData/商品マスター_単品_v1.0.xlsx。
+
+   書き込みが許されるのは intelligence スキーマの2表のみ。
+   これらはExcelに対応物を持たない「DBで生まれるデータ」であり、
+   正本が二重化しない(BL-5)。詳細は src/intelligence.py 冒頭。
 """
 
 from __future__ import annotations
@@ -22,6 +27,9 @@ from typing import Any, Protocol
 
 import openpyxl
 from mcp.server import MCPServer
+
+import intelligence
+from intelligence import IntelligenceError
 
 # starlette / uvicorn は mcp SDK の依存として既に入っている。
 # 認証ミドルウェアと /health を足すために直接importする(新規の追加依存ではない)。
@@ -350,6 +358,230 @@ def search_products(
         "truncated": matched > len(results),
         "elapsed_ms": round(elapsed_ms, 1),
     }
+
+
+# --- Intelligence Layer(知識層)-------------------------------------------
+#  判断・施策・結果を記録する。分析だけではAIは成長しないため、
+#  「何を判断し / なぜそう判断し / 結果どうなったか」を対で残す。
+#
+#  ⚠️ 記録は追記専用。書き換え・削除はできない(DBトリガーでも拒否される)。
+#     訂正は supersedes に旧IDを入れた新しい記録で行う。
+#
+#  各ツールのdocstringは、AIがこの層を正しく使うための唯一の説明になる。
+#  実装を変えるときはdocstringも必ず合わせる。
+
+
+def _intel(operation: str, func, /, **kwargs) -> dict:
+    """Intelligence Layer の共通の呼び出し口。
+
+    例外は握り潰さず、必ずログへ残したうえで利用者に読めるメッセージを返す。
+    """
+
+    def failure(message: str) -> dict:
+        # 記録系は「記録できていない」ことが伝わらないと危険なので明示する。
+        # 参照系は search_products と同じ形(results/count)に揃える。
+        if operation.startswith("record_"):
+            return {"error": message, "recorded": False}
+        return {"error": message, "results": [], "count": 0, "matched": 0}
+
+    try:
+        return func(**kwargs)
+    except IntelligenceError as exc:
+        logger.error("%s 失敗: %s", operation, exc)
+        return failure(str(exc))
+    except Exception as exc:
+        logger.exception("%s で予期しないエラー", operation)
+        return failure(f"{operation} に失敗しました({type(exc).__name__}: {exc})。")
+
+
+@mcp.tool()
+def record_decision(
+    decision_type: str,
+    action: str,
+    action_kind: str,
+    reason: str,
+    decided_by: str,
+    subject_type: str | None = None,
+    subject_id: str | None = None,
+    subject_label: str | None = None,
+    alternatives: str | None = None,
+    expected: str | None = None,
+    expected_metric: str | None = None,
+    expected_value: float | None = None,
+    review_due: str | None = None,
+    decided_at: str | None = None,
+    proposed_by: str | None = None,
+    business_logic: str | None = None,
+    supersedes: int | None = None,
+    note: str | None = None,
+) -> dict:
+    """経営判断を1件記録する(追記専用)。
+
+    仕入・価格改定・広告・在庫など、何かを決めたら必ずここへ残す。
+    **「今回は変更しない」「この候補は見送る」も判断であり、記録する**
+    (BL-11)。却下理由が残らないと、AIは同じ提案を繰り返す。
+
+    Args:
+        decision_type: 判断の型。Decision_Catalog.md のID(例: DEC-SAL-01)
+        action: 実際に取った施策(例:「1,980円へ値下げ」「価格を据え置いた」)
+        action_kind: changed(変更した)/ unchanged(変更しなかった)/ rejected(却下した)
+        reason: なぜそう判断したか。**この層の中心。曖昧に書かない**
+        decided_by: 判断した人の名前。AIは指定できない(AI Constitution 第1条)
+        subject_type: 対象の種類(product / campaign / supplier / system 等)
+        subject_id: 対象の識別子(内部管理ID / ASIN / 楽天SKU / キャンペーンID)
+        subject_label: 対象の名称(人が読むため)
+        alternatives: 検討したが採らなかった案
+        expected: 期待した結果(定性)
+        expected_metric: 検証する指標名(利益額 / TACOS / ROAS / 回転率 等)
+        expected_value: 期待値(数値)
+        review_due: いつ結果を確認するか(YYYY-MM-DD)。**未設定にしない**
+        decided_at: 判断日時。省略時は現在時刻
+        proposed_by: 提案者。AI提案なら 'ai:claude' 等
+        business_logic: 根拠にしたBL番号(例: "BL-3,BL-4")
+        supersedes: 過去の記録を訂正する場合、その decision_id
+        note: 補足
+    """
+    return _intel(
+        "record_decision",
+        intelligence.record_decision,
+        decision_type=decision_type,
+        action=action,
+        action_kind=action_kind,
+        reason=reason,
+        decided_by=decided_by,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        subject_label=subject_label,
+        alternatives=alternatives,
+        expected=expected,
+        expected_metric=expected_metric,
+        expected_value=expected_value,
+        review_due=review_due,
+        decided_at=decided_at,
+        proposed_by=proposed_by,
+        business_logic=business_logic,
+        supersedes=supersedes,
+        note=note,
+    )
+
+
+@mcp.tool()
+def record_outcome(
+    decision_id: int,
+    assessment: str,
+    summary: str,
+    measured_by: str,
+    metric: str | None = None,
+    actual_value: float | None = None,
+    period_start: str | None = None,
+    period_end: str | None = None,
+    learning: str | None = None,
+    measured_at: str | None = None,
+    note: str | None = None,
+) -> dict:
+    """判断の結果を記録する(追記専用)。同じ判断に何度でも記録してよい。
+
+    **記録した判断は必ず結果まで残す。** やりっぱなしにすると、
+    AIは自分の提案が正しかったかを学習できない。
+
+    Args:
+        decision_id: 対象の判断ID(record_decision の戻り値)
+        assessment: success / partial / failure / unclear。
+            他要因が大きく切り分けられない場合は無理に成否を付けず unclear
+        summary: 何が起きたか
+        measured_by: 測定・評価した人の名前
+        metric: 測った指標名(判断時の expected_metric と揃える)
+        actual_value: 実績値
+        period_start: 測定対象期間の開始(YYYY-MM-DD)
+        period_end: 測定対象期間の終了(YYYY-MM-DD)
+        learning: 次に活かす学び。**なぜそうなったかまで書く**
+        measured_at: 測定日時。省略時は現在時刻
+        note: 補足
+    """
+    return _intel(
+        "record_outcome",
+        intelligence.record_outcome,
+        decision_id=decision_id,
+        assessment=assessment,
+        summary=summary,
+        measured_by=measured_by,
+        metric=metric,
+        actual_value=actual_value,
+        period_start=period_start,
+        period_end=period_end,
+        learning=learning,
+        measured_at=measured_at,
+        note=note,
+    )
+
+
+@mcp.tool()
+def search_decisions(
+    decision_type: str | None = None,
+    subject_id: str | None = None,
+    action_kind: str | None = None,
+    decided_by: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    keyword: str | None = None,
+    with_outcomes: bool = True,
+    limit: int = intelligence.DEFAULT_LIMIT,
+) -> dict:
+    """過去の判断と、その結果を検索する。
+
+    **新しい施策を提案する前に、まずここを引く。** 同じ対象を過去に
+    どう判断し、それがどうなったかを見ずに提案してはならない。
+    action_kind="rejected" を引けば「過去に見送った理由」が分かる。
+
+    Args:
+        decision_type: 判断の型で絞る(例: DEC-SAL-01)
+        subject_id: 対象の識別子で絞る(内部管理ID / ASIN 等)
+        action_kind: changed / unchanged / rejected で絞る
+        decided_by: 判断者で絞る
+        since: この日時以降(YYYY-MM-DD または ISO8601)
+        until: この日時以前
+        keyword: 施策・理由・対象名の部分一致
+        with_outcomes: 結果も併せて返すか(既定 true)
+        limit: 返却する最大件数(既定50・上限500)
+    """
+    return _intel(
+        "search_decisions",
+        intelligence.search_decisions,
+        decision_type=decision_type,
+        subject_id=subject_id,
+        action_kind=action_kind,
+        decided_by=decided_by,
+        since=since,
+        until=until,
+        keyword=keyword,
+        with_outcomes=with_outcomes,
+        limit=limit,
+    )
+
+
+@mcp.tool()
+def list_pending_reviews(
+    as_of: str | None = None,
+    only_due: bool = True,
+    limit: int = intelligence.DEFAULT_LIMIT,
+) -> dict:
+    """結果がまだ記録されていない判断の一覧を返す。
+
+    「やりっぱなし」を可視化する。ここが溜まっている状態は、
+    施策を打ちっぱなしで検証していないことを意味する。
+
+    Args:
+        as_of: 基準日(YYYY-MM-DD)。省略時は今日
+        only_due: true なら確認期限が到来したもの(と期限未設定のもの)だけ返す
+        limit: 返却する最大件数(既定50・上限500)
+    """
+    return _intel(
+        "list_pending_reviews",
+        intelligence.list_pending_reviews,
+        as_of=as_of,
+        only_due=only_due,
+        limit=limit,
+    )
 
 
 def _extract_bearer_token(request: Request) -> str:

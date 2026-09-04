@@ -13,6 +13,11 @@
 #  触れないもの:
 #    momiji-postgres / momiji_pg_data / .env / docker-compose.yaml
 #    data/products(商品マスターは SyncData.sh で別途扱う)
+#    **DBスキーマ**(Migrate.sh の領分)
+#
+#  ⚠️ スキーマ変更はここでは行わない。コードの入れ替えとDBの構造変更を
+#     同じ操作にすると、どちらが原因で壊れたか切り分けられなくなる。
+#     Intelligence Layer のような新機能は Migrate.sh → Deploy.sh の順で行う。
 # =============================================================
 set -euo pipefail
 
@@ -30,14 +35,14 @@ echo " MomijiStore OS — Deploy"
 echo "════════════════════════════════════════════"
 
 # --- 1. 事前チェック -----------------------------------------
-log_step "1/8 事前チェック"
+log_step "1/9 事前チェック"
 require_ssh
 require_docker
 nas "test -f ${NAS_DIR}/.env" || fail "${NAS_DIR}/.env がありません"
 log_ok "NAS上の .env を確認"
 
 # --- 2. GitHubから最新を取得 ---------------------------------
-log_step "2/8 GitHub から取得"
+log_step "2/9 GitHub から取得"
 cd "$REPO_ROOT"
 git fetch --quiet origin main || fail "git fetch に失敗しました"
 TARGET_COMMIT=$(git rev-parse origin/main)
@@ -76,7 +81,7 @@ if [[ "$ASSUME_YES" == false ]]; then
 fi
 
 # --- 4. スナップショット取得(ロールバック用) ----------------
-log_step "3/8 スナップショット取得"
+log_step "3/9 スナップショット取得"
 SNAPSHOT_ID=$(date +%Y%m%d_%H%M%S)
 SNAP_PATH="${SNAPSHOT_DIR}/${SNAPSHOT_ID}"
 nas "mkdir -p '${SNAP_PATH}' \
@@ -89,7 +94,7 @@ log_ok "スナップショット: ${SNAPSHOT_ID}"
 # --- 5. origin/main の内容を転送 -----------------------------
 #  作業ツリーではなく git archive を使う。これによりローカルの
 #  未コミット変更は構造上NASへ入らない。
-log_step "4/8 転送 (origin/main → NAS)"
+log_step "4/9 転送 (origin/main → NAS)"
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
@@ -103,24 +108,27 @@ sync_file "${STAGE}/${REPO_SUBDIR}/docker/${COMPOSE_FILE}" "${NAS_DIR}"
 log_ok "転送完了"
 
 # --- 6. ビルド -----------------------------------------------
-log_step "5/8 ビルド"
+log_step "5/9 ビルド"
 nas "cd '${NAS_DIR}' && docker compose -f '${COMPOSE_FILE}' build ${SERVICE}" \
     || fail "docker build に失敗しました"
 log_ok "ビルド完了"
 
 # --- 7. 起動(momiji-mcp のみ。DBには触れない) ---------------
-log_step "6/8 起動"
+log_step "6/9 起動"
 nas "cd '${NAS_DIR}' && docker compose -f '${COMPOSE_FILE}' up -d ${SERVICE}" \
     || fail "コンテナの起動に失敗しました"
 log_ok "${SERVICE} を起動"
 
 # --- 8. 動作確認 ---------------------------------------------
-log_step "7/8 ヘルスチェック"
+log_step "7/9 ヘルスチェック"
 check_health 30
 check_postgres
 
-log_step "8/8 search_products 疎通確認"
+log_step "8/9 search_products 疎通確認"
 check_search_products
+
+log_step "9/9 MCPツールの登録確認"
+check_tools
 
 # --- 9. デプロイ済みコミットを記録 ---------------------------
 nas "printf '%s' '${TARGET_COMMIT}' > '${DEPLOYED_COMMIT_FILE}'" \
@@ -134,6 +142,7 @@ echo "════════════════════════�
 echo "  Commit          : ${TARGET_SHORT}  ${TARGET_SUBJECT}"
 echo "  Health          : /health 200 / ${DB_SERVICE} healthy"
 echo "  search_products : ${SEARCH_RESULT}"
+echo "  MCP Tools       : ${TOOLS_RESULT}"
 echo "  Elapsed Time    : ${ELAPSED}"
 echo "  Snapshot        : ${SNAPSHOT_ID}  (Rollback.sh ${SNAPSHOT_ID})"
 echo "  Log             : ${LOG_FILE}"

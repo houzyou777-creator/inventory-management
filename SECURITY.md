@@ -74,6 +74,32 @@ Authorization: Bearer <TOKEN>
 
 ---
 
+## 2.5 データへの書き込み範囲(2026-09-05 追加)
+
+Intelligence Layer の実装により、**MCPサーバーに初めて書き込みが発生した。** 範囲を明確に定める。
+
+| 対象 | 権限 | 根拠 |
+|------|------|------|
+| NAS上のExcel(`data/products/`) | **読み取りのみ**(`:ro` マウント) | 正本はMac側。ここは検索用スナップショット |
+| `intelligence.decisions` / `intelligence.outcomes` | **追記のみ** | Excelに対応物を持たない「DBで生まれるデータ」。ここが正本 |
+| `public` スキーマ(Phase4の移行先) | **触らない** | 移行は別の手順で行う |
+| その他すべて | なし | — |
+
+**追記のみという制約は、アプリの作法ではなくDBの構造で守られている。**
+
+- `intelligence` の2表には `BEFORE UPDATE OR DELETE` トリガーがあり、UPDATE / DELETE は**必ず例外になる**
+- 訂正は `supersedes` に旧IDを入れた**新しい行**で行う(BL-7「記録なき変更を認めない」)
+- したがって、**トークンが漏れても過去の判断記録を書き換えたり消したりはできない**(追記はできる)
+
+### スキーマ変更の扱い
+
+`deploy/Migrate.sh` は **`DROP TABLE` / `DROP SCHEMA` / `DROP COLUMN` / `TRUNCATE` / `DELETE FROM` を含むSQLの適用を拒否する**(`lib.sh` の `self_check` と同じ考え方)。
+データを削除する変更は、影響範囲と復元方法を提示し、承認を得たうえで個別に実施する。
+
+適用履歴は `public.schema_migrations` に**チェックサム付きで**残る。適用済みファイルが後から変更されていれば、Migrate.sh は適用も無視もせず**停止する**。
+
+---
+
 ## 3. APIキーの更新方法
 
 **キーはNASの `.env` にのみ置く。** カンマ区切りで複数指定できる。

@@ -154,12 +154,10 @@ check_postgres() {
     log_ok "${DB_SERVICE} healthy を維持"
 }
 
-#  search_products を実際に呼んで結果を確認する。
+#  MCPセッションを開いてセッションIDを返す。
 #  トークンはヘッダーで渡し、コマンドラインにもログにも残さない。
-check_search_products() {
-    local token session result headers code
-    token="$(get_token)"
-
+mcp_open_session() {
+    local token="$1" headers session code
     headers=$(curl -s -D - -o /dev/null -m 10 -X POST "${NAS_URL}/mcp" \
         -H "Authorization: Bearer ${token}" \
         -H 'Content-Type: application/json' \
@@ -184,13 +182,29 @@ check_search_products() {
         -H "mcp-session-id: ${session}" \
         -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' >/dev/null
 
-    result=$(curl -s -m 15 -X POST "${NAS_URL}/mcp" \
+    printf '%s' "$session"
+}
+
+#  開いているセッションでJSON-RPCを1回呼ぶ。応答本文(data:行)を返す。
+mcp_call() {
+    local token="$1" session="$2" payload="$3"
+    curl -s -m 15 -X POST "${NAS_URL}/mcp" \
         -H "Authorization: Bearer ${token}" \
         -H 'Content-Type: application/json' \
         -H 'Accept: application/json, text/event-stream' \
         -H "mcp-session-id: ${session}" \
-        -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_products","arguments":{"internal_id":"P000021"}}}' \
-        | sed -n 's/^data: //p')
+        -d "$payload" \
+        | sed -n 's/^data: //p'
+}
+
+#  search_products を実際に呼んで結果を確認する。
+check_search_products() {
+    local token session result
+    token="$(get_token)"
+    session="$(mcp_open_session "$token")"
+
+    result=$(mcp_call "$token" "$session" \
+        '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_products","arguments":{"internal_id":"P000021"}}}')
 
     # tools/call の結果はJSON文字列として入れ子になり、引用符がエスケープされる。
     # そのため引用符を含まない部分文字列で判定する。
@@ -202,6 +216,40 @@ check_search_products() {
     count=$(printf '%s' "$result" | sed -n 's/.*\\"count\\": \([0-9]*\).*/\1/p' | head -1)
     SEARCH_RESULT="P000021 を ${count:-1} 件取得"
     log_ok "search_products OK (${SEARCH_RESULT})"
+}
+
+#  期待するツールが実際に登録されているかを確認する。
+#  「デプロイできた」と「ツールが使える」は別。必ず列挙して確かめる。
+#  ※ 記録系は呼び出さない(確認のためにダミーの判断を残さない)。
+EXPECTED_TOOLS=(
+    health_check
+    search_products
+    record_decision
+    record_outcome
+    search_decisions
+    list_pending_reviews
+)
+
+check_tools() {
+    local token session result name
+    local missing=()
+    token="$(get_token)"
+    session="$(mcp_open_session "$token")"
+
+    result=$(mcp_call "$token" "$session" '{"jsonrpc":"2.0","id":3,"method":"tools/list"}')
+
+    for name in "${EXPECTED_TOOLS[@]}"; do
+        [[ "$result" == *"\"${name}\""* ]] || missing+=("$name")
+    done
+
+    if (( ${#missing[@]} > 0 )); then
+        log_err "登録されていないツール: ${missing[*]}"
+        log_err "tools/list の応答: ${result:-なし}"
+        fail "MCPツールの登録を確認できません"
+    fi
+
+    TOOLS_RESULT="${#EXPECTED_TOOLS[@]}種すべて登録済"
+    log_ok "MCPツール OK (${TOOLS_RESULT})"
 }
 
 fmt_elapsed() {
