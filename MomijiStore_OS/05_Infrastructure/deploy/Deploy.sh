@@ -127,8 +127,9 @@ check_postgres
 log_step "8/9 search_products 疎通確認"
 check_search_products
 
-log_step "9/9 MCPツールの登録確認"
+log_step "9/9 MCPツールの登録と疎通確認"
 check_tools
+check_intelligence
 
 # --- 9. デプロイ済みコミットを記録 ---------------------------
 nas "printf '%s' '${TARGET_COMMIT}' > '${DEPLOYED_COMMIT_FILE}'" \
@@ -143,6 +144,7 @@ echo "  Commit          : ${TARGET_SHORT}  ${TARGET_SUBJECT}"
 echo "  Health          : /health 200 / ${DB_SERVICE} healthy"
 echo "  search_products : ${SEARCH_RESULT}"
 echo "  MCP Tools       : ${TOOLS_RESULT}"
+echo "  Intelligence    : ${INTEL_RESULT}"
 echo "  Elapsed Time    : ${ELAPSED}"
 echo "  Snapshot        : ${SNAPSHOT_ID}  (Rollback.sh ${SNAPSHOT_ID})"
 echo "  Log             : ${LOG_FILE}"

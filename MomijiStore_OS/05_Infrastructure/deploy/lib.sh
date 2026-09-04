@@ -252,6 +252,37 @@ check_tools() {
     log_ok "MCPツール OK (${TOOLS_RESULT})"
 }
 
+#  Intelligence Layer が実際にDBへ届くかを確認する。
+#
+#  ツールが登録されていることと、それが動くことは別。
+#  2026-09-05、DBパスワードの不整合が「最初にツールを呼んだ時」まで
+#  表面化しなかった。Migrate.sh は docker exec のローカルソケット
+#  (trust認証)を通るためパスワードを検証できず、素通りしていた。
+#  デプロイのたびに実際の接続経路を通す。
+#
+#  ※ 読み取りのみ。確認のために判断記録を作らない(記録は追記専用で消せない)。
+check_intelligence() {
+    local token session result
+    token="$(get_token)"
+    session="$(mcp_open_session "$token")"
+
+    result=$(mcp_call "$token" "$session" \
+        '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_pending_reviews","arguments":{"only_due":false}}}')
+
+    if [[ "$result" == *'"isError":true'* ]] || [[ "$result" == *'error'* ]] \
+       || [[ "$result" != *'matched'* ]]; then
+        log_err "list_pending_reviews の応答: ${result:-なし}"
+        log_err "サーバーログ(直近10行):"
+        nas 'docker logs --tail 10 momiji-mcp 2>&1' | sed 's/^/      /' >&2 || true
+        fail "Intelligence Layer がDBへ到達できません"
+    fi
+
+    local pending
+    pending=$(printf '%s' "$result" | sed -n 's/.*\\"matched\\": \([0-9]*\).*/\1/p' | head -1)
+    INTEL_RESULT="DB接続OK / 結果未記録 ${pending:-?} 件"
+    log_ok "Intelligence Layer OK (${INTEL_RESULT})"
+}
+
 fmt_elapsed() {
     local sec=$(( $(date +%s) - START_TIME ))
     printf '%dm%02ds' $((sec / 60)) $((sec % 60))
