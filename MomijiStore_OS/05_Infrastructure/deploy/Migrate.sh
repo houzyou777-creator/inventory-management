@@ -105,9 +105,19 @@ sql_safety_check "$MIG_DIR"
 
 # --- 3. 適用履歴テーブルを用意 -------------------------------
 #  「何をいつ適用したか」が残らない変更は認めない(BL-7)。
+#
+#  ※ --status は何も変更しない。テーブルが無ければ「履歴なし」として扱い、
+#     作成はしない(確認のつもりで実行したらDBが変わっていた、を起こさない)。
 log_step "3/5 適用履歴の確認"
-printf '%s\n' "
-CREATE TABLE IF NOT EXISTS public.schema_migrations (
+HISTORY_EXISTS=$(psql_value "SELECT to_regclass('public.schema_migrations') IS NOT NULL;") \
+    || fail "適用履歴テーブルの有無を確認できません"
+
+if [[ "$HISTORY_EXISTS" != "t" ]]; then
+    if [[ "$MODE" == "status" ]]; then
+        log "適用履歴テーブルは未作成です(--status のため作成しません)"
+    else
+        printf '%s\n' "
+CREATE TABLE public.schema_migrations (
     filename    text        PRIMARY KEY,
     checksum    text        NOT NULL,
     applied_at  timestamptz NOT NULL DEFAULT now(),
@@ -115,9 +125,14 @@ CREATE TABLE IF NOT EXISTS public.schema_migrations (
 );
 COMMENT ON TABLE public.schema_migrations IS 'Migrate.sh の適用履歴。checksum で適用後の改変を検出する。';
 " | psql_pipe || fail "適用履歴テーブルを用意できません"
-
-APPLIED_LIST=$(psql_value "SELECT filename || ' ' || checksum FROM public.schema_migrations;") \
-    || fail "適用履歴を取得できません"
+        log_ok "適用履歴テーブルを作成しました"
+    fi
+    APPLIED_LIST=""
+else
+    APPLIED_LIST=$(psql_value "SELECT filename || ' ' || checksum FROM public.schema_migrations;") \
+        || fail "適用履歴を取得できません"
+    log_ok "適用履歴テーブルを確認"
+fi
 
 # --- 4. 差分の判定 -------------------------------------------
 log_step "4/5 差分の判定"
