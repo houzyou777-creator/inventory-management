@@ -1,11 +1,11 @@
 Attribute VB_Name = "Module_Inventory"
 Option Explicit
 
-Const SH_MASTER    As String = "ï¿½ï¿½ï¿½iï¿½}ï¿½Xï¿½^ï¿½["
-Const SH_INVENTORY As String = "ï¿½İŒÉŠÇ—ï¿½"
-Const SH_PURCHASE  As String = "ï¿½dï¿½ï¿½ï¿½ï¿½Ç—ï¿½"
-Const SH_LOG       As String = "ï¿½İŒÉˆÙ“ï¿½ï¿½ï¿½ï¿½O"
-Const SH_ALERT     As String = "ï¿½ï¿½ï¿½ï¿½ï¿½Aï¿½ï¿½ï¿½[ï¿½g"
+Const SH_MASTER    As String = "¤•iƒ}ƒXƒ^["
+Const SH_INVENTORY As String = "İŒÉŠÇ—"
+Const SH_PURCHASE  As String = "d“ü‚êŠÇ—"
+Const SH_LOG       As String = "İŒÉˆÙ“®ƒƒO"
+Const SH_ALERT     As String = "”­’ƒAƒ‰[ƒg"
 
 Const PM_ID       As Integer = 1
 Const PM_NAME     As Integer = 2
@@ -57,17 +57,17 @@ Private Sub WriteLog(intId As String, prodName As String, ch As String, _
         logRow = logRow + 1
     Loop
     With wsLog
-        .Cells(logRow, LOG_ID).Value      = logRow - 1
-        .Cells(logRow, LOG_DATE).Value    = Now()
-        .Cells(logRow, LOG_INTID).Value   = intId
-        .Cells(logRow, LOG_NAME).Value    = prodName
+        .Cells(logRow, LOG_ID).Value = logRow - 1
+        .Cells(logRow, LOG_DATE).Value = Now()
+        .Cells(logRow, LOG_INTID).Value = intId
+        .Cells(logRow, LOG_NAME).Value = prodName
         .Cells(logRow, LOG_CHANNEL).Value = ch
-        .Cells(logRow, LOG_TYPE).Value    = txType
-        .Cells(logRow, LOG_BEFORE).Value  = before
-        .Cells(logRow, LOG_CHANGE).Value  = change
-        .Cells(logRow, LOG_AFTER).Value   = after
-        .Cells(logRow, LOG_REF).Value     = refId
-        .Cells(logRow, LOG_NOTES).Value   = note
+        .Cells(logRow, LOG_TYPE).Value = txType
+        .Cells(logRow, LOG_BEFORE).Value = before
+        .Cells(logRow, LOG_CHANGE).Value = change
+        .Cells(logRow, LOG_AFTER).Value = after
+        .Cells(logRow, LOG_REF).Value = refId
+        .Cells(logRow, LOG_NOTES).Value = note
     End With
     wsLog.Protect Password:="log2024"
 End Sub
@@ -80,19 +80,20 @@ Sub RegisterProduct()
     Set wsI = ThisWorkbook.Sheets(SH_INVENTORY)
     masterRow = ActiveCell.Row
     If masterRow <= 1 Then
-        MsgBox "ï¿½ï¿½ï¿½iï¿½}ï¿½Xï¿½^ï¿½[ï¿½Ì“oï¿½^ï¿½sï¿½ï¿½Iï¿½ï¿½ï¿½ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½ï¿½sï¿½ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½B", vbExclamation
+        MsgBox "¤•iƒ}ƒXƒ^[‚Ì“o˜^s‚ğ‘I‘ğ‚µ‚Ä‚©‚çÀs‚µ‚Ä‚­‚¾‚³‚¢B", vbExclamation
         Exit Sub
     End If
     intId = Trim(wsM.Cells(masterRow, PM_ID).Value)
     If intId = "" Then
-        MsgBox "ï¿½ï¿½ï¿½ï¿½ï¿½Ç—ï¿½IDï¿½iAï¿½ï¿½jï¿½ï¿½ï¿½ï¿½Í‚ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½B", vbExclamation
-        Exit Sub
+        intId = NextInternalId()
+        wsM.Cells(masterRow, PM_ID).Value = intId
+        MsgBox "“à•”ŠÇ—ID [" & intId & "] ‚ğ©“®Ì”Ô‚µ‚Ü‚µ‚½B", vbInformation
     End If
     Dim invRow As Long
     lastInvRow = wsI.Cells(wsI.Rows.Count, INV_INTID).End(xlUp).Row
     For invRow = 2 To lastInvRow
         If wsI.Cells(invRow, INV_INTID).Value = intId Then
-            If MsgBox("[" & intId & "] ï¿½ÌİŒÉsï¿½ï¿½ï¿½ï¿½ï¿½É‘ï¿½ï¿½İ‚ï¿½ï¿½Ü‚ï¿½ï¿½Bï¿½Ç‰ï¿½ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½ï¿½H", vbYesNo + vbExclamation) = vbNo Then
+            If MsgBox("[" & intId & "] ‚ÌİŒÉs‚ªŠù‚É‘¶İ‚µ‚Ü‚·B’Ç‰Á‚µ‚Ü‚·‚©H", vbYesNo + vbExclamation) = vbNo Then
                 Exit Sub
             End If
             Exit For
@@ -101,20 +102,20 @@ Sub RegisterProduct()
     wsM.Cells(masterRow, PM_CREATED).Value = Now()
     wsM.Cells(masterRow, PM_UPDATED).Value = Now()
     If Trim(wsM.Cells(masterRow, PM_STATUS).Value) = "" Then
-        wsM.Cells(masterRow, PM_STATUS).Value = "”Ì”„’†"
+        wsM.Cells(masterRow, PM_STATUS).Value = "active"
     End If
     Dim channels As Variant
-    channels = Array("©ŒÈ”­‘—", "FBA", "Šy“V")
+    channels = Array("self", "fba", "rakuten")
     Dim ch As Variant
     For Each ch In channels
         lastInvRow = wsI.Cells(wsI.Rows.Count, INV_INTID).End(xlUp).Row + 1
-        wsI.Cells(lastInvRow, INV_INTID).Value    = intId
-        wsI.Cells(lastInvRow, INV_CHANNEL).Value  = ch
-        wsI.Cells(lastInvRow, INV_STOCK).Value    = 0
+        wsI.Cells(lastInvRow, INV_INTID).Value = intId
+        wsI.Cells(lastInvRow, INV_CHANNEL).Value = ch
+        wsI.Cells(lastInvRow, INV_STOCK).Value = 0
         wsI.Cells(lastInvRow, INV_RESERVED).Value = 0
-        wsI.Cells(lastInvRow, INV_UPDATED).Value  = Now()
+        wsI.Cells(lastInvRow, INV_UPDATED).Value = Now()
     Next ch
-    MsgBox "ï¿½oï¿½^ï¿½ï¿½ï¿½ï¿½: [" & intId & "] ï¿½ï¿½ ©ŒÈ”­‘— / FBA / Šy“V ï¿½ï¿½3ï¿½`ï¿½ï¿½ï¿½lï¿½ï¿½ï¿½Å’Ç‰ï¿½ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½ï¿½B", vbInformation
+    MsgBox "“o˜^Š®—¹: [" & intId & "] ‚ğ self / fba / rakuten ‚Ì3ƒ`ƒƒƒlƒ‹‚Å’Ç‰Á‚µ‚Ü‚µ‚½B", vbInformation
     ThisWorkbook.Sheets(SH_INVENTORY).Activate
 End Sub
 
@@ -124,29 +125,29 @@ Sub ConfirmPurchase()
     Dim intId As String, dest As String, prodName As String
     Dim qtyRcv As Long, purchId As String
     Set wsPO = ThisWorkbook.Sheets(SH_PURCHASE)
-    Set wsI  = ThisWorkbook.Sheets(SH_INVENTORY)
+    Set wsI = ThisWorkbook.Sheets(SH_INVENTORY)
     poRow = ActiveCell.Row
     If poRow <= 1 Then
-        MsgBox "ï¿½dï¿½ï¿½ï¿½ï¿½Ç—ï¿½ï¿½Ì‘ÎÛsï¿½ï¿½Iï¿½ï¿½ï¿½ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½ï¿½sï¿½ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½B", vbExclamation
+        MsgBox "d“ü‚êŠÇ—‚Ì‘ÎÛs‚ğ‘I‘ğ‚µ‚Ä‚©‚çÀs‚µ‚Ä‚­‚¾‚³‚¢B", vbExclamation
         Exit Sub
     End If
     If Trim(CStr(wsPO.Cells(poRow, PO_REFLECTED).Value)) <> "" Then
-        MsgBox "ï¿½ï¿½ï¿½Ìsï¿½Í‚ï¿½ï¿½Å‚ÉİŒÉ”ï¿½ï¿½fï¿½Ï‚İ‚Å‚ï¿½ï¿½B" & Chr(10) & _
-               "ï¿½ï¿½ï¿½fï¿½ï¿½ï¿½ï¿½: " & wsPO.Cells(poRow, PO_REFLECTED).Value, vbExclamation
+        MsgBox "‚±‚Ìs‚Í‚·‚Å‚ÉİŒÉ”½‰fÏ‚İ‚Å‚·B" & Chr(10) & _
+               "”½‰f“ú: " & wsPO.Cells(poRow, PO_REFLECTED).Value, vbExclamation
         Exit Sub
     End If
-    intId   = Trim(wsPO.Cells(poRow, PO_INTID).Value)
-    dest    = Trim(wsPO.Cells(poRow, PO_DEST).Value)
-    qtyRcv  = Val(wsPO.Cells(poRow, PO_QTY_RCV).Value)
+    intId = Trim(wsPO.Cells(poRow, PO_INTID).Value)
+    dest = Trim(wsPO.Cells(poRow, PO_DEST).Value)
+    qtyRcv = Val(wsPO.Cells(poRow, PO_QTY_RCV).Value)
     purchId = Trim(wsPO.Cells(poRow, PO_ID).Value)
     prodName = Trim(wsPO.Cells(poRow, PO_NAME).Value)
-    If intId = ""  Then MsgBox "“à•”ŠÇ—ID ï¿½ï¿½ï¿½ï¿½Å‚ï¿½ï¿½B",       vbExclamation : Exit Sub
-    If qtyRcv <= 0 Then MsgBox "ï¿½ï¿½ï¿½×ï¿½ï¿½iIï¿½ï¿½jï¿½ï¿½ 0 ï¿½È‰ï¿½ï¿½Å‚ï¿½ï¿½B", vbExclamation : Exit Sub
-    If dest = ""   Then MsgBox "ï¿½ï¿½ï¿½Éï¿½iNï¿½ï¿½jï¿½ï¿½ï¿½ï¿½ï¿½İ’ï¿½Å‚ï¿½ï¿½B",  vbExclamation : Exit Sub
-    If MsgBox("ï¿½yï¿½dï¿½ï¿½ï¿½ï¿½mï¿½ï¿½z" & Chr(10) & _
-              "ï¿½ï¿½ï¿½iID: " & intId & Chr(10) & _
-              "ï¿½ï¿½ï¿½×ï¿½: " & qtyRcv & "  ï¿½ï¿½ï¿½Éï¿½: " & dest & Chr(10) & Chr(10) & _
-              "ï¿½İŒÉ‚ï¿½ï¿½ï¿½ï¿½Zï¿½ï¿½ï¿½Aï¿½Ù“ï¿½ï¿½ï¿½ï¿½Oï¿½ï¿½ï¿½Lï¿½^ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½Bï¿½ï¿½ë‚µï¿½ï¿½ï¿½Å‚ï¿½ï¿½ï¿½ï¿½H", _
+    If intId = "" Then MsgBox "internal_id ‚ª‹ó‚Å‚·B", vbExclamation: Exit Sub
+    If qtyRcv <= 0 Then MsgBox "“ü‰×”iI—ñj‚ª 0 ˆÈ‰º‚Å‚·B", vbExclamation: Exit Sub
+    If dest = "" Then MsgBox "“üŒÉæiN—ñj‚ª–¢İ’è‚Å‚·B", vbExclamation: Exit Sub
+    If MsgBox("yd“ü‚êŠm’èz" & Chr(10) & _
+              "¤•iID: " & intId & Chr(10) & _
+              "“ü‰×”: " & qtyRcv & "  “üŒÉæ: " & dest & Chr(10) & Chr(10) & _
+              "İŒÉ‚ğ‰ÁZ‚µAˆÙ“®ƒƒO‚ğ‹L˜^‚µ‚Ü‚·B‚æ‚ë‚µ‚¢‚Å‚·‚©H", _
               vbYesNo + vbQuestion) = vbNo Then Exit Sub
     lastInvRow = wsI.Cells(wsI.Rows.Count, INV_INTID).End(xlUp).Row
     Dim found As Boolean
@@ -156,23 +157,23 @@ Sub ConfirmPurchase()
            wsI.Cells(invRow, INV_CHANNEL).Value = dest Then
             Dim prev As Long
             prev = Val(wsI.Cells(invRow, INV_STOCK).Value)
-            wsI.Cells(invRow, INV_STOCK).Value   = prev + qtyRcv
+            wsI.Cells(invRow, INV_STOCK).Value = prev + qtyRcv
             wsI.Cells(invRow, INV_STOCKED).Value = Now()
             wsI.Cells(invRow, INV_UPDATED).Value = Now()
-            Call WriteLog(intId, prodName, dest, "d“ü“üŒÉ", _
-                          prev, qtyRcv, prev + qtyRcv, purchId, "ï¿½dï¿½ï¿½ï¿½ï¿½mï¿½ï¿½}ï¿½Nï¿½ï¿½")
+            Call WriteLog(intId, prodName, dest, "purchase_in", _
+                          prev, qtyRcv, prev + qtyRcv, purchId, "d“ü‚êŠm’èƒ}ƒNƒ")
             found = True
             Exit For
         End If
     Next invRow
     If Not found Then
-        MsgBox "[" & intId & "-" & dest & "] ï¿½ï¿½ï¿½İŒÉŠÇ—ï¿½ï¿½ÉŒï¿½ï¿½Â‚ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½B" & Chr(10) & _
-               "ï¿½ï¿½Éï¿½ï¿½iï¿½oï¿½^ï¿½}ï¿½Nï¿½ï¿½ï¿½iRegisterProductï¿½jï¿½ï¿½ï¿½ï¿½ï¿½sï¿½ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½B", vbExclamation
+        MsgBox "[" & intId & "-" & dest & "] ‚ªİŒÉŠÇ—‚ÉŒ©‚Â‚©‚è‚Ü‚¹‚ñB" & Chr(10) & _
+               "æ‚É¤•i“o˜^ƒ}ƒNƒiRegisterProductj‚ğÀs‚µ‚Ä‚­‚¾‚³‚¢B", vbExclamation
         Exit Sub
     End If
-    wsPO.Cells(poRow, PO_STATUS).Value    = "“üŒÉÏ"
+    wsPO.Cells(poRow, PO_STATUS).Value = "received"
     wsPO.Cells(poRow, PO_REFLECTED).Value = Now()
-    MsgBox "ï¿½İŒÉ”ï¿½ï¿½fï¿½ï¿½ï¿½ï¿½ï¿½Bï¿½Xï¿½eï¿½[ï¿½^ï¿½Xï¿½ï¿½ received ï¿½ÉXï¿½Vï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½ï¿½B", vbInformation
+    MsgBox "İŒÉ”½‰fŠ®—¹BƒXƒe[ƒ^ƒX‚ğ received ‚ÉXV‚µ‚Ü‚µ‚½B", vbInformation
 End Sub
 
 Sub AdjustInventory()
@@ -183,56 +184,56 @@ Sub AdjustInventory()
     Set wsI = ThisWorkbook.Sheets(SH_INVENTORY)
     invRow = ActiveCell.Row
     If invRow <= 1 Then
-        MsgBox "ï¿½İŒÉŠÇ—ï¿½ï¿½Ì‘ÎÛsï¿½ï¿½Iï¿½ï¿½ï¿½ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½ï¿½sï¿½ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½B", vbExclamation
+        MsgBox "İŒÉŠÇ—‚Ì‘ÎÛs‚ğ‘I‘ğ‚µ‚Ä‚©‚çÀs‚µ‚Ä‚­‚¾‚³‚¢B", vbExclamation
         Exit Sub
     End If
-    intId    = Trim(wsI.Cells(invRow, INV_INTID).Value)
-    ch       = Trim(wsI.Cells(invRow, INV_CHANNEL).Value)
+    intId = Trim(wsI.Cells(invRow, INV_INTID).Value)
+    ch = Trim(wsI.Cells(invRow, INV_CHANNEL).Value)
     curStock = Val(wsI.Cells(invRow, INV_STOCK).Value)
     prodName = Trim(wsI.Cells(invRow, INV_NAME).Value)
-    If intId = "" Then MsgBox "ï¿½ï¿½ï¿½ï¿½ï¿½Ç—ï¿½IDï¿½ï¿½ï¿½ï¿½Å‚ï¿½ï¿½B", vbExclamation : Exit Sub
+    If intId = "" Then MsgBox "“à•”ŠÇ—ID‚ª‹ó‚Å‚·B", vbExclamation: Exit Sub
     Dim typeNum As String
-    typeNum = InputBox("ï¿½Cï¿½ï¿½ï¿½ï¿½Ê‚ï¿½ï¿½ï¿½Íi1ï¿½`5ï¿½j:" & Chr(10) & _
-        "1: ’I‰µ’²®ï¿½iï¿½Iï¿½ï¿½ï¿½ï¿½ï¿½j" & Chr(10) & _
-        "2: ”pŠüˆ•ªï¿½iï¿½pï¿½ï¿½ï¿½j"     & Chr(10) & _
-        "3: •Ô•i“üŒÉï¿½iï¿½Ô•iï¿½j"    & Chr(10) & _
-        "4: ”Ì”„oŒÉï¿½iï¿½oï¿½Éj"     & Chr(10) & _
-        "5: FBAˆÚ‘—ï¿½iFBAï¿½]ï¿½ï¿½ï¿½j", "ï¿½İŒÉCï¿½ï¿½")
+    typeNum = InputBox("C³í•Ê‚ğ“ü—Íi1`5j:" & Chr(10) & _
+        "1: adjustmenti’I‰µ‚µj" & Chr(10) & _
+        "2: disposali”pŠüj" & Chr(10) & _
+        "3: return_ini•Ô•ij" & Chr(10) & _
+        "4: sale_outioŒÉj" & Chr(10) & _
+        "5: fba_transferiFBA“]‘—j", "İŒÉC³")
     Dim txType As String
     Select Case typeNum
-        Case "1": txType = "’I‰µ’²®"
-        Case "2": txType = "”pŠüˆ•ª"
-        Case "3": txType = "•Ô•i“üŒÉ"
-        Case "4": txType = "”Ì”„oŒÉ"
-        Case "5": txType = "FBAˆÚ‘—"
+        Case "1": txType = "adjustment"
+        Case "2": txType = "disposal"
+        Case "3": txType = "return_in"
+        Case "4": txType = "sale_out"
+        Case "5": txType = "fba_transfer"
         Case Else: Exit Sub
     End Select
     Dim newStockStr As String
-    newStockStr = InputBox("ï¿½ï¿½ï¿½İŒÉï¿½: " & curStock & Chr(10) & "ï¿½Cï¿½ï¿½ï¿½ï¿½ÌİŒÉï¿½ï¿½ï¿½ï¿½ï¿½ï¿½:", "ï¿½İŒÉCï¿½ï¿½")
+    newStockStr = InputBox("Œ»İŒÉ”: " & curStock & Chr(10) & "C³Œã‚ÌİŒÉ”‚ğ“ü—Í:", "İŒÉC³")
     If newStockStr = "" Or Not IsNumeric(newStockStr) Then Exit Sub
     newStock = CLng(newStockStr)
-    If newStock < 0 Then MsgBox "0ï¿½Èï¿½Ì’lï¿½ï¿½ï¿½ï¿½Í‚ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½B", vbExclamation : Exit Sub
+    If newStock < 0 Then MsgBox "0ˆÈã‚Ì’l‚ğ“ü—Í‚µ‚Ä‚­‚¾‚³‚¢B", vbExclamation: Exit Sub
     Dim diff As Long
     diff = newStock - curStock
     Dim noteStr As String
-    noteStr = InputBox("ï¿½ï¿½ï¿½lï¿½iï¿½È—ï¿½ï¿½Âj:", "ï¿½İŒÉCï¿½ï¿½ï¿½ï¿½ï¿½l")
-    If noteStr = "" Then noteStr = txType & " ï¿½É‚ï¿½ï¿½è“®ï¿½ï¿½ï¿½ï¿½"
+    noteStr = InputBox("”õliÈ—ª‰Âj:", "İŒÉC³”õl")
+    If noteStr = "" Then noteStr = txType & " ‚É‚æ‚éè“®’²®"
     Dim msg As String
-    msg = "ï¿½mï¿½ï¿½: " & intId & "/" & ch & "  " & curStock & " ï¿½ï¿½ " & newStock
+    msg = "Šm’è: " & intId & "/" & ch & "  " & curStock & " ¨ " & newStock
     If diff >= 0 Then msg = msg & " (+" & diff & ")" Else msg = msg & " (" & diff & ")"
     If MsgBox(msg, vbYesNo + vbQuestion) = vbNo Then Exit Sub
-    wsI.Cells(invRow, INV_STOCK).Value   = newStock
+    wsI.Cells(invRow, INV_STOCK).Value = newStock
     wsI.Cells(invRow, INV_UPDATED).Value = Now()
     Call WriteLog(intId, prodName, ch, txType, curStock, diff, newStock, "", noteStr)
-    MsgBox "ï¿½İŒÉCï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Bï¿½Ù“ï¿½ï¿½ï¿½ï¿½Oï¿½Ö‚Ì‹Lï¿½^ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½ï¿½B", vbInformation
+    MsgBox "İŒÉC³Š®—¹BˆÙ“®ƒƒO‚Ö‚Ì‹L˜^‚àŠ®—¹‚µ‚Ü‚µ‚½B", vbInformation
 End Sub
 
 Sub UpdateReorderAlert()
     Dim wsI As Worksheet, wsAlert As Worksheet, wsM As Worksheet
     Dim invRow As Long, alertRow As Long, lastInvRow As Long
-    Set wsI     = ThisWorkbook.Sheets(SH_INVENTORY)
+    Set wsI = ThisWorkbook.Sheets(SH_INVENTORY)
     Set wsAlert = ThisWorkbook.Sheets(SH_ALERT)
-    Set wsM     = ThisWorkbook.Sheets(SH_MASTER)
+    Set wsM = ThisWorkbook.Sheets(SH_MASTER)
     Dim lastAlert As Long
     lastAlert = wsAlert.Cells(wsAlert.Rows.Count, 1).End(xlUp).Row
     If lastAlert >= 3 Then wsAlert.Range("A3:I" & lastAlert).ClearContents
@@ -240,8 +241,8 @@ Sub UpdateReorderAlert()
     alertRow = 3
     For invRow = 2 To lastInvRow
         Dim intId As String, avail As Long, reorder As Long
-        intId   = Trim(wsI.Cells(invRow, INV_INTID).Value)
-        avail   = Val(wsI.Cells(invRow, 7).Value)
+        intId = Trim(wsI.Cells(invRow, INV_INTID).Value)
+        avail = Val(wsI.Cells(invRow, 7).Value)
         reorder = Val(wsI.Cells(invRow, INV_REORDER).Value)
         If intId = "" Then GoTo NextRow
         If reorder = 0 Then GoTo NextRow
@@ -267,11 +268,35 @@ NextRow:
     Dim cnt As Long
     cnt = alertRow - 3
     If cnt = 0 Then
-        MsgBox "ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Kï¿½vï¿½Èï¿½ï¿½iï¿½Í‚ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½B", vbInformation
+        MsgBox "”­’‚ª•K—v‚È¤•i‚Í‚ ‚è‚Ü‚¹‚ñB", vbInformation
     Else
-        MsgBox cnt & " ï¿½ï¿½ï¿½Ì”ï¿½ï¿½ï¿½ï¿½Aï¿½ï¿½ï¿½[ï¿½gï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½B", vbInformation
+        MsgBox cnt & " Œ‚Ì”­’ƒAƒ‰[ƒg‚ª‚ ‚è‚Ü‚·B", vbInformation
     End If
     wsAlert.Activate
+End Sub
+
+Sub CheckDuplicateIds()
+    Dim wsM As Worksheet
+    Dim lastRow As Long, i As Long, j As Long
+    Dim idA As String
+    Dim dupCount As Long
+    Set wsM = ThisWorkbook.Sheets(SH_MASTER)
+    lastRow = wsM.Cells(wsM.Rows.Count, PM_ID).End(xlUp).Row
+    dupCount = 0
+    For i = 2 To lastRow
+        idA = Trim(wsM.Cells(i, PM_ID).Value)
+        If idA = "" Then GoTo NextI
+        For j = i + 1 To lastRow
+            If Trim(wsM.Cells(j, PM_ID).Value) = idA Then
+                MsgBox "d•¡ŒŸo: s" & i & " ‚Æ s" & j & " ‚É [" & idA & "] ‚ªd•¡‚µ‚Ä‚¢‚Ü‚·B", vbExclamation
+                dupCount = dupCount + 1
+            End If
+        Next j
+NextI:
+    Next i
+    If dupCount = 0 Then
+        MsgBox "d•¡ƒ`ƒFƒbƒNŠ®—¹: “à•”ŠÇ—ID‚Ìd•¡‚Í‚ ‚è‚Ü‚¹‚ñB", vbInformation
+    End If
 End Sub
 
 Function NextInternalId() As String
@@ -292,5 +317,6 @@ Function NextInternalId() As String
 End Function
 
 Sub ShowNextId()
-    MsgBox "ï¿½ï¿½ï¿½Ì“ï¿½ï¿½ï¿½ï¿½Ç—ï¿½ID: " & NextInternalId(), vbInformation, "ï¿½ï¿½ï¿½ï¿½ï¿½Ç—ï¿½IDï¿½Ì”ï¿½"
+    MsgBox "Ÿ‚Ì“à•”ŠÇ—ID: " & NextInternalId(), vbInformation, "“à•”ŠÇ—IDÌ”Ô"
 End Sub
+
