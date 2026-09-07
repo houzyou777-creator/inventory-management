@@ -3,7 +3,7 @@
 > **This document follows FOUNDATION.md.**
 > **If any conflict exists, FOUNDATION.md takes precedence.**
 
-ステータス: **ドラフト v1.0 — 設計レビュー待ち(実装は承認後)**
+ステータス: **v1.0 — 設計フェーズ完了(2026-09-08 区切り)。実装は8月分析による正本確定後に再開**
 作成日: 2026-09-07
 位置づけ: **v1.0 スコープの第3段**(`Architecture.md` Definition of Done 条件8)
 階層: ARCHITECTURE層(`Master_Design.md` と同階層)
