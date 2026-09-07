@@ -47,29 +47,109 @@ HEADERS = ['商品名', 'SKU', 'ASIN', '親ASIN', 'セッション数', 'ユニ�
 
 
 def yen(s):
-    return int(s.replace('￥', '').replace(',', '').strip() or 0)
+    # 通貨記号は全角￥・半角¥のどちらもありうる。桁区切りと空白も除く
+    return int(re.sub(r'[￥¥,\s]', '', str(s)) or 0)
 
 
 def num(s):
-    return int(s.replace(',', '').strip() or 0)
+    return int(re.sub(r'[,\s]', '', str(s)) or 0)
 
 
 def pct(s):
-    s = s.replace('%', '').strip()
+    s = str(s).replace('%', '').strip()
     return float(s) / 100 if s else None
+
+
+# --- 列の解決 ---------------------------------------------------------------
+#  ⚠️ 固定の列番号で読んではならない。
+#  2026-09-08、Amazonのビジネスレポートから「SKU」列(7月時点の4列目)が消え、
+#  以降の列がすべて1つずつ左へずれた。固定番号で読んでいたため、
+#  売上・個数・注文数がすべて隣の「- B2B」列を指し、
+#  8月の売上が ¥5,610,675 → ¥227,580 と誤って集計された。
+#
+#  以後は見出し名で解決する。列が追加・削除・並べ替えされても壊れない。
+REQUIRED_COLUMNS = {
+    'parent':   ['（親）ASIN'],
+    'asin':     ['（子）ASIN'],
+    'name':     ['タイトル'],
+    'sessions': ['セッション数 - 合計'],
+    'usr':      ['ユニットセッション率'],
+    'units':    ['注文された商品点数'],
+    'sales':    ['注文商品の売上額'],
+    'orders':   ['注文品目総数'],
+}
+# SKU は 2026年8月のレポートから消えた。原価解決はASINで代替できるため任意扱いとする
+OPTIONAL_COLUMNS = {
+    'sku': ['SKU'],
+}
+
+
+def resolve_columns(header):
+    """見出し名から列位置を解決する。必須列が無ければ異常終了する。
+
+    🚫 部分一致で引かないこと。
+       'セッション数 - 合計' は 'セッション数 - 合計 - B2B' にも含まれるため、
+       部分一致にすると B2B 列を掴む危険がある(今回の事故と同じ結果になる)。
+    """
+    pos = {}
+    for i, h in enumerate(header):
+        pos.setdefault(h.strip(), i)     # 同名が複数あれば最初の列を採る
+
+    idx, missing = {}, []
+    for key, names in REQUIRED_COLUMNS.items():
+        hit = next((pos[n] for n in names if n in pos), None)
+        if hit is None:
+            missing.append(f'{key} … 期待した見出し: ' + ' / '.join(names))
+        else:
+            idx[key] = hit
+    if missing:
+        detail = ''.join(f'    - {m}\n' for m in missing)
+        actual = ''.join(f'    {i:2d}: {h}\n' for i, h in enumerate(header))
+        sys.exit(
+            '❌ 必須列が見つかりません。レポートの仕様が変わった可能性があります。\n'
+            f'  見つからなかった列({len(missing)}件):\n{detail}'
+            f'  実際の見出し({len(header)}列):\n{actual}'
+            '  → REQUIRED_COLUMNS の見出し名を実際のレポートに合わせて更新してください。'
+        )
+
+    for key, names in OPTIONAL_COLUMNS.items():
+        hit = next((pos[n] for n in names if n in pos), None)
+        if hit is not None:
+            idx[key] = hit
+    return idx
 
 
 def read_report(path):
     with open(path, encoding='utf-8-sig') as f:
         rows = list(csv.reader(f))
+    if not rows:
+        sys.exit('❌ レポートが空です: ' + path)
+
+    col = resolve_columns(rows[0])
+    optional_missing = [k for k in OPTIONAL_COLUMNS if k not in col]
+    if optional_missing:
+        print(f'  ※ 任意列が見つかりません(処理は続行): {", ".join(optional_missing)}')
+
+    def cell(r, key):
+        i = col.get(key)
+        return r[i] if i is not None and i < len(r) else ''
+
     data = []
     for r in rows[1:]:
-        if len(r) < 21 or not any(x.strip() for x in r):
+        if not any(x.strip() for x in r):
+            continue
+        if not cell(r, 'asin').strip():      # ASINが無い行は集計対象外
             continue
         data.append({
-            'parent': r[0].strip(), 'asin': r[1].strip(), 'name': r[2].strip(),
-            'sku': r[3].strip(), 'sessions': num(r[4]), 'usr': pct(r[16]),
-            'units': num(r[14]), 'sales': yen(r[18]), 'orders': num(r[20]),
+            'parent': cell(r, 'parent').strip(),
+            'asin': cell(r, 'asin').strip(),
+            'name': cell(r, 'name').strip(),
+            'sku': cell(r, 'sku').strip(),
+            'sessions': num(cell(r, 'sessions')),
+            'usr': pct(cell(r, 'usr')),
+            'units': num(cell(r, 'units')),
+            'sales': yen(cell(r, 'sales')),
+            'orders': num(cell(r, 'orders')),
         })
     data.sort(key=lambda d: -d['sales'])
     return data
