@@ -35,7 +35,33 @@ BASE = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS'
 OUT_FILE = os.environ.get(
     'AMZ_KPI_FILE_OVERRIDE',
     BASE + '/02_Analytics/SourceData/Amazon運営 KPI管理シート.xlsx')
+MASTER_FILE = BASE + '/01_InventoryManagement/SourceData/商品マスター_単品_v1.0.xlsx'
+OUTPUT_DIR = BASE + '/01_InventoryManagement/SourceData/Output'
 NOFILL = PatternFill(fill_type=None)
+
+
+# --- 識別子の解決 -----------------------------------------------------------
+#  ⚠️ 単一キーに依存しないこと。
+#  2026-09-08、Amazonのビジネスレポートから「SKU」列が消え、
+#  KPIシートのSKU列が全行空になった。手数料はSKUだけで突合していたため
+#  281SKU・¥759,756 のうち 0件しか実額化できなかった。
+#
+#  以後は複数のキーで解決する。1つのキーが欠けても処理全体は止めない。
+#  将来 JAN など別のキーを足すときは、この関数と MATCH_ORDER を拡張する。
+def build_key_index():
+    """出品テーブルから 各識別子 → ASIN の対応表を作る。
+
+    ASIN を突合の共通軸にする。Amazonのレポートで最も欠けにくい identifier のため。
+    """
+    wb = load_workbook(MASTER_FILE, read_only=True, data_only=True)
+    amazon_sku2asin = {}
+    for r in wb['出品テーブル'].iter_rows(min_row=2, values_only=True):
+        asin, asku = r[5], r[6]
+        if asin and asku:
+            amazon_sku2asin.setdefault(str(asku).strip().upper(), str(asin).strip().upper())
+    wb.close()
+    # 将来キーを増やすときはここへ追加する(例: 'jan': jan2asin)
+    return {'amazon_sku': amazon_sku2asin}
 
 
 def num(s):
@@ -69,23 +95,49 @@ def apply(sheet_name, fee_by_sku, promo, ship, other):
     wb = load_workbook(OUT_FILE)
     ws = wb[sheet_name]
 
-    # 同一SKUが複数行に分かれている場合があるため、まず行を集めてから売上比で按分する
-    rows_by_sku = {}
+    # シート行を SKU と ASIN の両方で引けるようにする。
+    # 同一キーが複数行に分かれている場合があるため、行を集めてから売上比で按分する。
+    rows_by_sku, rows_by_asin = {}, {}
     row = 8
     while ws.cell(row, 3).value is not None:     # C列(ASIN)が空になるまでがデータ
         sku = str(ws.cell(row, 2).value or '').strip().upper()
+        asin = str(ws.cell(row, 3).value or '').strip().upper()
         sales = ws.cell(row, 9).value or 0
-        rows_by_sku.setdefault(sku, []).append((row, sales))
+        if sku:
+            rows_by_sku.setdefault(sku, []).append((row, sales))
+        if asin:
+            rows_by_asin.setdefault(asin, []).append((row, sales))
         row += 1
+    data_rows = row - 8
 
-    matched = unmatched = 0
+    # --- 突合 ---------------------------------------------------------------
+    #  優先順位: ① SKU一致  ② SKUで一致しない場合のみ AmazonSKU→ASIN 経由
+    #  SKUが取れているならSKUを必ず優先する(最も細かい粒度のため)。
+    key_index = build_key_index()
+    groups = {}                      # 突合先キー -> [(行, 売上)]
+    fee_by_group = defaultdict(float)   # 同一ASINへ複数SKU(旧SKU等)が集まる場合を合算
+    via_count = defaultdict(int)
+    unresolved = []                  # (SKU, 手数料, 理由)
+
+    for sku, fee in fee_by_sku.items():
+        if sku in rows_by_sku:                                   # ① SKU一致
+            key, rlist, via = ('SKU', sku), rows_by_sku[sku], 'SKU一致'
+        else:
+            asin = key_index['amazon_sku'].get(sku)              # ② ASIN経由
+            if asin and asin in rows_by_asin:
+                key, rlist, via = ('ASIN', asin), rows_by_asin[asin], 'ASIN経由'
+            else:
+                reason = '出品テーブルにAmazonSKUが無い' if not asin else 'シートに該当ASINが無い'
+                unresolved.append((sku, fee, reason))
+                continue
+        groups[key] = rlist
+        fee_by_group[key] += fee
+        via_count[via] += 1
+
+    matched_rows = set()
     matched_fee = 0.0
-    for sku, rlist in rows_by_sku.items():
-        fee = fee_by_sku.get(sku)
-        if fee is None:
-            unmatched += len(rlist)               # 暫定15%の数式のまま
-            continue
-        total_fee = round(-fee, 2)
+    for key, rlist in groups.items():
+        total_fee = round(-fee_by_group[key], 2)
         total_sales = sum(s for _, s in rlist)
         assigned = 0.0
         for i, (r, s) in enumerate(rlist):
@@ -96,8 +148,11 @@ def apply(sheet_name, fee_by_sku, promo, ship, other):
                 v = round(total_fee * share, 2)
                 assigned += v
             ws.cell(r, 11).value = int(v) if v == int(v) else v
-            matched += 1
+            matched_rows.add(r)
         matched_fee += total_fee
+
+    matched = len(matched_rows)
+    unmatched = data_rows - matched               # 暫定15%の数式のまま残る行
 
     # 経費ブロックはM列のラベルで行を特定する(行番号のハードコード回避)
     label_row = {}
@@ -117,7 +172,51 @@ def apply(sheet_name, fee_by_sku, promo, ship, other):
     ws.cell(5, 2).value = '実額(トランザクションレポートより)。未マッチSKUのみ暫定15%'
 
     wb.save(OUT_FILE)
-    return matched, unmatched, matched_fee
+    return matched, unmatched, matched_fee, via_count, unresolved
+
+
+def write_shortage_list(sheet_name, unresolved, total_fee):
+    """未反映SKUを「商品情報不足一覧」として Output へ出す。
+
+    🚫 エラーとして落とさない。**商品マスター・出品テーブルの整備対象**として扱う。
+    キーが1つ欠けただけで処理全体を止めないための出口である。
+    """
+    if not unresolved:
+        return None
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    path = f'{OUTPUT_DIR}/商品情報不足_AmazonSKU未解決_{sheet_name}_{date.today():%Y%m%d}.xlsx'
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'AmazonSKU未解決'
+    ws['A1'] = f'商品情報不足一覧 — Amazon手数料が突合できなかったSKU({sheet_name})'
+    ws['A1'].font = Font(bold=True, size=12)
+    ws['A2'] = (f'作成日 {date.today():%Y-%m-%d} / 未反映 {len(unresolved)}件 / '
+                f'未反映金額 ¥{-sum(f for _, f, _ in unresolved):,.0f} '
+                f'(トランザクション総額 ¥{-total_fee:,.0f} に対して '
+                f'{sum(f for _, f, _ in unresolved) / total_fee * 100:.1f}%)')
+    ws['A3'] = '※ エラーではない。商品マスター・出品テーブルの整備対象として扱う。'
+    head = ['AmazonSKU', '手数料(実額)', '未解決の理由', '想定される対応']
+    for i, h in enumerate(head, 1):
+        c = ws.cell(5, i); c.value = h; c.font = Font(bold=True)
+    ACTION = {
+        '出品テーブルにAmazonSKUが無い':
+            '旧SKU/終了SKUの可能性。出品テーブルへ登録するか、対象外と判断する',
+        'シートに該当ASINが無い':
+            '当月の販売が無いASIN。決済が翌月へずれた注文の可能性',
+    }
+    for i, (sku, fee, reason) in enumerate(
+            sorted(unresolved, key=lambda x: x[1]), 6):
+        ws.cell(i, 1).value = sku
+        ws.cell(i, 2).value = round(-fee)
+        ws.cell(i, 3).value = reason
+        ws.cell(i, 4).value = ACTION.get(reason, '')
+    for col, w in zip('ABCD', (42, 14, 30, 52)):
+        ws.column_dimensions[col].width = w
+    ws.freeze_panes = 'A6'
+    wb.save(path)
+    return path
 
 
 def recalc_via_excel(path):
@@ -156,8 +255,32 @@ def main():
     fee_by_sku, promo, ship, other = read_transactions(csv_path)
     print(f'トランザクション集計: SKU {len(fee_by_sku)}件 / プロモ費 ¥{promo:,.0f} / 送料 ¥{ship:,.0f} / その他 ¥{other:,.0f}')
 
-    matched, unmatched, matched_fee = apply(sheet_name, fee_by_sku, promo, ship, other)
+    matched, unmatched, matched_fee, via_count, unresolved = apply(
+        sheet_name, fee_by_sku, promo, ship, other)
     print(f'K列置換: 実額 {matched}行 (¥{matched_fee:,.0f}) / 暫定15%のまま {unmatched}行')
+
+    # --- 突合の検証レポート -------------------------------------------------
+    total_fee = sum(fee_by_sku.values())
+    un_fee = sum(f for _, f, _ in unresolved)
+    rate = (total_fee - un_fee) / total_fee * 100 if total_fee else 0.0
+    print()
+    print('═══ 手数料突合の検証 ═══')
+    print(f'  Transactionレポート総手数料 : ¥{-total_fee:,.0f} ({len(fee_by_sku)} SKU)')
+    print(f'  実額反映できた金額          : ¥{matched_fee:,.0f}')
+    print(f'  反映率                      : {rate:.1f}%')
+    print(f'  未反映件数                  : {len(unresolved)} SKU')
+    print(f'  未反映金額                  : ¥{-un_fee:,.0f}')
+    print('  突合の内訳                  : ' +
+          ' / '.join(f'{k} {v}SKU' for k, v in sorted(via_count.items())) or '(なし)')
+    diff = round(-total_fee - matched_fee - (-un_fee))
+    print(f'  差額(総額 − 反映 − 未反映)  : ¥{diff:,.0f}' +
+          ('  ✅ 完全一致' if abs(diff) < 1 else '  ❌ 不一致 — 要調査'))
+    if unresolved:
+        print(f'\n  未反映SKU一覧(金額の大きい順・上位10件 / 全{len(unresolved)}件):')
+        for sku, fee, reason in sorted(unresolved, key=lambda x: x[1])[:10]:
+            print(f'    ¥{-fee:>9,.0f}  {sku:<40s} {reason}')
+        path = write_shortage_list(sheet_name, unresolved, total_fee)
+        print(f'\n  → 商品情報不足一覧を出力: {path}')
 
     print('Excelで再計算中...')
     recalc_via_excel(OUT_FILE)
