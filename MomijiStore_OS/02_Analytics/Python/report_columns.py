@@ -84,6 +84,11 @@ def check_layout(source, header, month=''):
     if old == header:
         print(f'  {source} 列構成: 前回({rec.get("month") or rec["recorded"]})と同じ '
               f'{len(header)}列 ✓')
+        # 履歴は汚さないが「いつ確認したか」は残す。
+        # 記録が「7月」のまま止まっていると、確認していないのか変わっていないのか
+        # 区別できなくなるため
+        rec['last_seen'] = {'date': f'{date.today():%Y-%m-%d}', 'month': month}
+        _save_layouts(layouts)
         return
 
     added = [h for h in header if h not in old]
