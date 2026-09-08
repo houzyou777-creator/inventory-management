@@ -28,3 +28,11 @@ __pycache__/
 
 # Deployログ(ローカル記録・Git管理外)
 MomijiStore_OS/05_Infrastructure/deploy/logs/
+
+# MCP接続設定(Bearerトークンを含むためGit管理外。userスコープ ~/.claude.json を使う)
+.mcp.json
+
+# 月次生成物(Git管理外)
+#  Output/ は毎月スクリプトが作り直す成果物であり、
+#  Python・設計書・手順書とは性質が異なる。実体はローカルとNASに残す
+MomijiStore_OS/01_InventoryManagement/SourceData/Output/
