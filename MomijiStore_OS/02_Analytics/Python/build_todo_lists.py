@@ -67,7 +67,18 @@ def load_master_full():
 
 
 def load_stock():
-    """内部管理ID → 在庫数。在庫行が無い商品は含まれない(それ自体が情報)"""
+    """内部管理ID → 在庫数。在庫行が無い商品は含まれない(それ自体が情報)
+
+    🔴 2026-09-09 監査で判明: このテーブルの在庫数は554行すべて0で、
+       在庫ステータスは「未棚卸」。**実数が1件も入っていない。**
+       つまりここの 0 は「在庫が無い」ではなく「まだ数えていない」である。
+       在庫切れの根拠に使ってはならない。
+
+       実在庫は別の場所にある:
+         楽天   … 楽天在庫金額集計ツール_v1.0.xlsm「楽天CSV取込」
+         Amazon … Amazon在庫リスト_import.xlsx
+         統合   … 全体在庫サマリー_v1.0.xlsx
+    """
     wb = load_workbook(INV_FILE, read_only=True, data_only=True)
     stock = {}
     for r in wb['在庫管理テーブル'].iter_rows(min_row=2, values_only=True):
@@ -473,6 +484,57 @@ def _month_key(m):
         return 0
 
 
+def build_coverage(pm, sold, month_sheet):
+    """配送自動化の進み具合を「出荷個数カバー率(暫定)」で測る(ChatGPT指摘⑦)
+
+    ⚠️ **暫定である理由**: 本来のKPIは
+           自動処理可能な発送件数 ÷ 全発送件数
+       だが、OSは現在「発送件数」を持っていない(受注データが未連携)。
+       そこで当面は出荷個数で代用する。1注文に複数個入ると実態とずれる。
+       受注データが入ったら本KPIへ切り替える。
+
+    入力率(商品数ベース)も併記する。売れない商品を1件埋めても入力率は上がるが
+    カバー率は上がらない。2つ並べて初めて「効く整備をしているか」が分かる。
+    """
+    n = len(pm)
+    filled = {p for p, v in pm.items() if v.get('ship_size')}
+    tot_q = sum(sold.values())
+    cov_q = sum(q for p, q in sold.items() if p in filled)
+    rows = [
+        ['出荷個数カバー率(暫定) ★主KPI',
+         f'{cov_q:,} / {tot_q:,}個', f'{(cov_q / tot_q) if tot_q else 0:.1%}',
+         '発送サイズ区分が入った商品の出荷個数 ÷ 全出荷個数',
+         '⚠️ 本KPIは「自動処理可能な発送件数 ÷ 全発送件数」。'
+         '受注データ未連携のため出荷個数で代用中'],
+        ['商品マスター入力率(発送サイズ区分) サブKPI',
+         f'{len(filled):,} / {n:,}件', f'{(len(filled) / n) if n else 0:.1%}',
+         '発送サイズ区分が入った商品数 ÷ 全商品数',
+         '売れない商品を埋めても上がる。カバー率と併せて見ること'],
+    ]
+    w = {p for p, v in pm.items() if v.get('weight')}
+    rows.append(['商品マスター入力率(商品重量) サブKPI',
+                 f'{len(w):,} / {n:,}件', f'{(len(w) / n) if n else 0:.1%}',
+                 '商品重量が入った商品数 ÷ 全商品数', '監査(DQA)の前提'])
+
+    # どこまでやればどこまで届くか。全件を待つ必要がないことを示す
+    rank = sorted(sold.items(), key=lambda x: -x[1])
+    cum = 0
+    marks = {10: None, 20: None, 50: None, 100: None, 200: None, 300: None}
+    for i, (pid, q) in enumerate(rank, 1):
+        cum += q
+        if i in marks:
+            marks[i] = cum
+    rows.append(['', '', '', '', ''])
+    rows.append(['── 出荷上位から整備した場合の到達点 ──', '', '', '', ''])
+    for k, v in marks.items():
+        if v is None:
+            continue
+        rows.append([f'上位{k}商品を整備すると', f'{v:,} / {tot_q:,}個',
+                     f'{v / tot_q if tot_q else 0:.1%}', '',
+                     f'出荷実績のある商品は全{len(rank):,}件'])
+    return rows
+
+
 def build_expense_cells(month_sheet):
     """⑦ 月次経費(黄色セル) — どの値が未入力か / どこから取るか / 誰が入れるか
 
@@ -550,8 +612,10 @@ def build_retire_candidates(pm, lt, stock, sold, sold_prev, hist,
         amz = 'あり' if any(x['ch'] == 'Amazon' for x in ls) else 'なし'
         reasons = [f'{month_sheet}売上0', f'{prev_sheet}売上0']
         conf = '低'
+        # 🔴 在庫数0は「未棚卸」であって在庫切れではない(2026-09-09 監査)。
+        #    在庫を根拠に確信度を上げてはいけない
         if st == 0:
-            reasons.append('在庫0'); conf = '中'
+            reasons.append('在庫未確認(未棚卸)')
         else:
             reasons.append('在庫行なし')
         # 「残す価値」— 累計実績が大きいものは安易に切らない
@@ -568,15 +632,14 @@ def build_retire_candidates(pm, lt, stock, sold, sold_prev, hist,
         ad_c, ad_note = ('', '')
         if ad and ad[0]:
             ad_c = round(ad[0])
-            ad_note = ('★ 売上0なのに広告費を払っている。まず広告を止める'
+            ad_note = ('★ 2か月連続で売上0なのに広告費を払っている。まず広告を止める'
                        if not ad[1] else '広告経由では売れている。廃番判断は慎重に')
-            conf = '中' if not ad[1] else conf
         rows.append([pid, p['name'][:52], st if st is not None else '(行なし)',
                      h['last'] or '(なし)', '(データなし)',
                      h['qty'], round(h['profit']), rak, amz,
                      ' / '.join(reasons), conf, keep, ad_c, ad_note])
     # 広告費を払っている廃番候補を先頭へ。放置すると毎月お金が出ていく
-    rows.sort(key=lambda x: (not x[12], x[10] != '中', -x[5]))
+    rows.sort(key=lambda x: (not x[12], -x[5]))
     return rows
 
 
@@ -888,12 +951,23 @@ def main():
          'widths': (13, 40, 11, 12, 12, 11, 11, 9, 11, 30, 9, 30, 11, 13),
          'key_cols': [0],
          'how': '販売停止 / 取扱終了を人が判断',
-         'note': ('⚠️「最後の仕入日」は発注管理がOSの外(スプレッドシート)にあるため取得できない。'
+         'note': ('🔴 **在庫は根拠に使えない。** 在庫管理テーブルは554行すべて在庫数0・'
+                  '「未棚卸」で、実数が入っていない(2026-09-09 監査)。'
+                  'この一覧の判定根拠は「2か月連続で売上0」のみ有効。'
+                  '実在庫は 楽天在庫金額集計ツール / Amazon在庫リスト_import にある。'
+                  '⚠️「最後の仕入日」は発注管理がOSの外にあるため取得できない。'
                   '⚠️ 再仕入予定も未確認のため誤検知がある。'
-                  '⏸ 販売ステータスの設計は保留中のため、当面は一覧の確認のみ。'
-                  '★ 広告費の列に金額があれば、廃番候補に広告を出し続けている。'
-                  '「やめる」と「広告を止める」は別々の問題ではなく**ひとつの判断**')},
-        {'title': '07_月次経費(黄色セル)',
+                  '★ 広告費の列に金額があれば、廃番候補に広告を出し続けている')},
+        {'title': '07_配送自動化カバー率',
+         'headers': ['指標', '実数', '率', '定義', '注記'],
+         'rows': build_coverage(pm, sold, month_sheet),
+         'widths': (38, 20, 10, 46, 60),
+         'key_cols': [0],
+         'how': '出荷上位から発送サイズ区分を埋める',
+         'note': ('★最優先目標「配送ラベル自動作成」の進み具合を測る唯一の指標。'
+                  '入力率だけでは「効く整備をしているか」が分からないため、'
+                  '出荷個数カバー率を主KPIとする(2026-09-09 ChatGPT承認)')},
+        {'title': '08_月次経費(黄色セル)',
          'headers': ['チャネル', '費目', 'セル', '取得元', '入力者', '埋めないとどうなるか',
                      '入力済(記入)'],
          'rows': build_expense_cells(month_sheet),
