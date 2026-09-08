@@ -484,6 +484,91 @@ def _month_key(m):
         return 0
 
 
+# 粗利率の異常を疑う閾値。会社全体の粗利率が33%前後なので、そこからの外れ方で見る
+MARGIN_HIGH = 0.50      # これ以上は「仕入値が少なすぎる」疑い(セット品の1個分入力など)
+MARGIN_LOW = 0.10       # これ未満は「仕入値が多すぎる/売価が下がった」疑い
+MARGIN_SHIFT = 0.15     # 前月からこれ以上動いたら仕入値が変わった疑い
+
+
+def build_margin_outliers(month_sheet, prev_sheet):
+    """⑨ 利益率の異常値 — 仕入値の入力ミスを見つける
+
+    粗利率は「売価」と「仕入値」の2つでしか決まらない。
+    売価はモール側の実績なので間違いようがない。
+    **粗利率がおかしいときは、ほぼ仕入値が間違っている。**
+
+    よくある間違い方:
+      ・セット品なのに仕入値が1個分   → 粗利率が異常に高く出る
+      ・値下げしたのに仕入値が古いまま → 粗利率が低く/マイナスに出る
+      ・単位違い(ケース単価を個単価に) → どちらにも振れる
+    """
+    def load(path, kc, ch, sheet):
+        if not os.path.exists(path):
+            return {}
+        wb = load_workbook(path, read_only=True, data_only=True)
+        if sheet not in wb.sheetnames:
+            wb.close()
+            return {}
+        ws = wb[sheet]
+        out = {}
+        for row in ws.iter_rows(min_row=8, values_only=True):
+            if not row or row[2] is None:
+                break
+            key = S.norm(row[kc])
+            sales = row[8] if isinstance(row[8], (int, float)) else 0
+            if not sales or not key:
+                continue
+            out[key] = {'name': str(row[0] or '')[:46], 'ch': ch,
+                        'price': row[6], 'units': row[7], 'sales': sales,
+                        'cost': row[11], 'gp': row[13], 'rate': row[14]}
+        wb.close()
+        return out
+
+    rows = []
+    for path, kc, ch in ((S.KPI_FILE, 2, '楽天'), (S.AMZ_KPI_FILE, 2, 'Amazon')):
+        cur = load(path, kc, ch, month_sheet)
+        pre = load(path, kc, ch, prev_sheet)
+        for key, d in cur.items():
+            rate, price, cost = d['rate'], d['price'], d['cost']
+            if not isinstance(rate, float):
+                continue
+            why, pri = [], None
+            # 売価より仕入値が高い — 売るほど損。最も分かりやすい矛盾
+            if isinstance(price, (int, float)) and isinstance(cost, (int, float)) \
+                    and cost >= price:
+                why.append(f'仕入値 ¥{cost:,.0f} ≧ 平均単価 ¥{price:,.0f}(売るほど損)')
+                pri = '最優先'
+            if rate < 0:
+                why.append(f'粗利率がマイナス({rate:.1%})')
+                pri = '最優先'
+            elif rate < MARGIN_LOW:
+                why.append(f'粗利率が低すぎる({rate:.1%})。'
+                           '値下げ後に仕入値が古いままの可能性')
+                pri = pri or '高'
+            elif rate >= MARGIN_HIGH:
+                why.append(f'粗利率が高すぎる({rate:.1%})。'
+                           'セット品なのに仕入値が1個分の可能性')
+                pri = pri or '中'
+            # 前月から粗利率が大きく動いた = 仕入値が変わった/直された合図
+            p = pre.get(key)
+            if p and isinstance(p.get('rate'), float):
+                sh = rate - p['rate']
+                if abs(sh) >= MARGIN_SHIFT:
+                    why.append(f'前月から粗利率が {p["rate"]:.1%} → {rate:.1%} '
+                               f'({sh:+.1%})へ変動')
+                    pri = pri or '中'
+            if not why:
+                continue
+            rows.append([pri, ch, key, d['name'], d['units'], d['sales'],
+                         price, cost, rate,
+                         (pre.get(key) or {}).get('cost', ''),
+                         ' / '.join(why),
+                         '商品マスター E列(標準原価)を確認 → 直したら該当月のL列も直す', ''])
+    order = {'最優先': 0, '高': 1, '中': 2}
+    rows.sort(key=lambda x: (order.get(x[0], 9), -(x[5] or 0)))
+    return rows
+
+
 def build_coverage(pm, sold, month_sheet):
     """配送自動化の進み具合を「出荷個数カバー率(暫定)」で測る(ChatGPT指摘⑦)
 
@@ -958,7 +1043,20 @@ def main():
                   '⚠️「最後の仕入日」は発注管理がOSの外にあるため取得できない。'
                   '⚠️ 再仕入予定も未確認のため誤検知がある。'
                   '★ 広告費の列に金額があれば、廃番候補に広告を出し続けている')},
-        {'title': '07_配送自動化カバー率',
+        {'title': '07_利益率の異常値',
+         'headers': ['優先度', 'チャネル', '識別子', '商品名', f'{month_sheet}個数',
+                     f'{month_sheet}売上', '平均単価', '仕入値', '粗利率',
+                     f'{prev_sheet}の仕入値', '疑わしい理由', '対応方法', '確認済(記入)'],
+         'rows': build_margin_outliers(month_sheet, prev_sheet),
+         'widths': (9, 9, 20, 40, 9, 12, 11, 11, 9, 13, 56, 44, 12),
+         'key_cols': [1, 2],
+         'how': '商品マスター E列(標準原価)を確認する',
+         'note': ('粗利率は売価と仕入値だけで決まる。売価はモールの実績なので間違いようがない。'
+                  '**粗利率がおかしいときは、ほぼ仕入値が間違っている。**'
+                  f'閾値: {MARGIN_HIGH:.0%}以上=高すぎ / {MARGIN_LOW:.0%}未満=低すぎ / '
+                  f'前月から±{MARGIN_SHIFT:.0%}以上の変動。'
+                  '⚠️ 高粗利が実力の商品もあるので、機械的に直さず中身を見ること')},
+        {'title': '08_配送自動化カバー率',
          'headers': ['指標', '実数', '率', '定義', '注記'],
          'rows': build_coverage(pm, sold, month_sheet),
          'widths': (38, 20, 10, 46, 60),
@@ -967,7 +1065,7 @@ def main():
          'note': ('★最優先目標「配送ラベル自動作成」の進み具合を測る唯一の指標。'
                   '入力率だけでは「効く整備をしているか」が分からないため、'
                   '出荷個数カバー率を主KPIとする(2026-09-09 ChatGPT承認)')},
-        {'title': '08_月次経費(黄色セル)',
+        {'title': '09_月次経費(黄色セル)',
          'headers': ['チャネル', '費目', 'セル', '取得元', '入力者', '埋めないとどうなるか',
                      '入力済(記入)'],
          'rows': build_expense_cells(month_sheet),
