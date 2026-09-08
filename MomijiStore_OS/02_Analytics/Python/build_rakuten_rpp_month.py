@@ -67,12 +67,13 @@ ITEM_COLUMNS = {
 }
 
 
-def read_item_report(path):
+def read_item_report(path, month=''):
     with open(path, encoding='cp932') as f:
         rows = list(csv.reader(f))
     # 見出しより上にRMSの検索条件が入る。「コントロールカラム」が見出し行の目印
     hi = next(i for i, r in enumerate(rows) if r and r[0] == 'コントロールカラム')
     header = rows[hi]
+    C.check_layout('楽天RPP 商品別レポート', header, month)   # ⓪ 前月と突き合わせる
     idx = C.resolve(header, ITEM_COLUMNS, source='楽天RPP 商品別レポート')
     C.report(idx, header, '楽天RPP 商品別')
 
@@ -106,11 +107,12 @@ SUMMARY_COLUMNS = {
 }
 
 
-def read_summary(path):
+def read_summary(path, month=''):
     with open(path, encoding='cp932') as f:
         rows = list(csv.reader(f))
     hi = next(i for i, r in enumerate(rows) if r and r[0] == '日付')
     header = rows[hi]
+    C.check_layout('楽天RPP サマリーレポート', header, month)  # ⓪ 前月と突き合わせる
     idx = C.resolve(header, SUMMARY_COLUMNS, source='楽天RPP サマリーレポート')
     C.report(idx, header, '楽天RPP サマリー')
     row = rows[hi + 1]
@@ -243,15 +245,16 @@ def main():
         sys.exit(1)
     item_csv, summary_csv, month_sheet = sys.argv[1], sys.argv[2], sys.argv[3]
 
+    # ⓪ 列構成チェックは何よりも先。壊れたレポートで作業を始めない
+    items = read_item_report(item_csv, month_sheet)
+    summary = read_summary(summary_csv, month_sheet)
+
     if os.path.exists(OUT_FILE):
         bdir = os.path.dirname(OUT_FILE) + '/Backup'
         os.makedirs(bdir, exist_ok=True)
         base = os.path.splitext(os.path.basename(OUT_FILE))[0]
         shutil.copy2(OUT_FILE, f'{bdir}/{base}_backup_{date.today():%Y%m%d}_{month_sheet}生成前.xlsx')
         print('バックアップ取得済み')
-
-    items = read_item_report(item_csv)
-    summary = read_summary(summary_csv)
     kpi = load_kpi_month(month_sheet)
     print(f'{month_sheet}: 商品 {len(items)}件 / KPIシート結合 {sum(1 for d in items if d["ctrl"].lower() in kpi)}件')
 

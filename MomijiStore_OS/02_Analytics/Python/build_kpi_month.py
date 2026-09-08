@@ -27,18 +27,63 @@ import sys
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 
+import report_columns as C   # レポートは位置ではなく見出し名で読む
+
 from sync_cost_master import KPI_FILE, load_master, norm
 
 YELLOW = PatternFill('solid', fgColor='FFFF00')
 BACKUP_DIR = os.path.dirname(KPI_FILE) + '/Backup'
 
 
-def read_rms_csv(path):
-    """RMSのSKU別売上CSVを (ヘッダー6行, データ行list) で返す"""
+SOURCE = '楽天 SKU別売上CSV'
+
+# KPIシートのA〜J列は**この順番で固定**である。K列以降の数式
+# (K=販売手数料 I*0.15 / M=H*L / N=I-K-M / O=N/I)がこの並びに依存している。
+# したがって「CSVの並び」ではなく「シートの並び」を正とし、
+# CSV側は見出し名で引いて、この順に流し込む。
+# こうすればRMSが列を足しても並べ替えても、シートは同じ形のまま保たれる。
+SHEET_COLUMNS = [
+    ('name',     ['商品名']),          # A
+    ('sku_info', ['SKU情報']),         # B
+    ('ctrl',     ['商品管理番号']),      # C ← 仕入値の照合キー
+    ('pn',       ['商品番号']),         # D ← 「/仕入値」の埋め込み元
+    ('sku',      ['SKU管理番号']),      # E ← 仕入値の照合キー
+    ('sku_no',   ['SKU番号']),         # F
+    ('price',    ['平均単価']),         # G
+    ('units',    ['売上個数']),         # H ← 検証対象
+    ('sales',    ['売上']),            # I ← 検証対象
+    ('orders',   ['売上件数']),         # J ← 検証対象
+]
+
+
+COL = {k: i for i, (k, _) in enumerate(SHEET_COLUMNS)}   # 'ctrl' → 2 など
+
+
+def read_rms_csv(path, month=''):
+    """RMSのSKU別売上CSVを (ヘッダー6行, データ行list) で返す。
+
+    データ行は **SHEET_COLUMNS の順に並べ替えた list** にして返す。
+    以降の処理はシートの列順だけを知っていればよい。
+    """
     with open(path, encoding='utf-8-sig') as f:
         rows = list(csv.reader(f))
-    head6 = rows[:6]
-    data = [r for r in rows[7:] if any(x.strip() for x in r)]
+    # 見出しより上にRMSの検索条件(表示期間・端末・消費税など)が入る。
+    # 行数を決め打ちせず、「商品名」で始まる行を見出しとして探す
+    hi = next((i for i, r in enumerate(rows) if r and r[0].strip() == '商品名'), None)
+    if hi is None:
+        sys.exit(f'❌ {SOURCE} の見出し行(「商品名」で始まる行)が見つかりません: {path}')
+    header = rows[hi]
+
+    C.check_layout(SOURCE, header, month)            # ⓪ 前月と列構成を突き合わせる
+    idx = C.resolve(header, dict(SHEET_COLUMNS), source=SOURCE)
+    C.report(idx, header, SOURCE)
+
+    if hi != 6:
+        print(f'  ※ 見出し行が {hi} 行目にあります(通常は6)。'
+              'シート上部へ書き戻すのは先頭6行のみです')
+    head6 = rows[:hi][:6]
+    data = [[C.get(r, idx, k, '') for k, _ in SHEET_COLUMNS]
+            for r in rows[hi + 1:] if any(x.strip() for x in r)]
     return head6, data
 
 
@@ -116,14 +161,14 @@ def build_sheet(kpi_file, sheet_name, head6, data, resolve):
     missing = []
     for i, r in enumerate(data):
         row = 8 + i
-        for col in range(10):
-            ws.cell(row, col + 1).value = conv(r[col]) if col < len(r) else None
-        cost = resolve(r[2], r[3], r[4])
+        for col in range(len(SHEET_COLUMNS)):          # A〜J列。順番はシート側が正
+            ws.cell(row, col + 1).value = conv(r[col])
+        cost = resolve(r[COL['ctrl']], r[COL['pn']], r[COL['sku']])
         lc = ws.cell(row, 12)
         lc.value = int(cost) if isinstance(cost, float) and cost == int(cost) else cost
         lc.fill = PatternFill(fill_type=None) if cost is not None else YELLOW
         if cost is None:
-            missing.append((row, r[2], r[4]))
+            missing.append((row, r[COL['ctrl']], r[COL['sku']]))
         ws.cell(row, 11).value = f'=SUM(I{row}*0.15)'
         ws.cell(row, 13).value = f'=SUM(H{row}*L{row})'
         ws.cell(row, 14).value = f'=SUM(I{row}-K{row}-M{row})'
@@ -199,7 +244,7 @@ def verify(kpi_file, sheet_name, data, total_row):
     """再計算後の合計をCSVと突合し、数式エラーを検査する"""
     wb = load_workbook(kpi_file, data_only=True)
     ws = wb[sheet_name]
-    exp = [sum(int(r[c]) for r in data) for c in (7, 8, 9)]
+    exp = [sum(int(r[COL[k]]) for r in data) for k in ('units', 'sales', 'orders')]
     got = [ws.cell(total_row, c).value for c in (8, 9, 10)]
     ok = got == exp
     errs = [c.coordinate for row in ws.iter_rows() for c in row
@@ -223,6 +268,10 @@ def main():
 
     kpi_file = os.environ.get('KPI_FILE_OVERRIDE', KPI_FILE)
 
+    # ⓪ 列構成チェックは何よりも先。壊れたレポートで作業を始めない
+    head6, data = read_rms_csv(csv_path, sheet_name)
+    print(f'{sheet_name}: CSVデータ {len(data)}行')
+
     if kpi_file == KPI_FILE:
         os.makedirs(BACKUP_DIR, exist_ok=True)
         from datetime import date
@@ -231,9 +280,6 @@ def main():
         import shutil
         shutil.copy2(kpi_file, bak)
         print(f'バックアップ: {os.path.basename(bak)}')
-
-    head6, data = read_rms_csv(csv_path)
-    print(f'{sheet_name}: CSVデータ {len(data)}行')
 
     wb_values = load_workbook(kpi_file, data_only=True)
     resolve = build_cost_resolver(wb_values)

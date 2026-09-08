@@ -61,11 +61,12 @@ ITEM_OPTIONAL = {'sku': ['宣伝SKU', '宣伝 SKU']}
 TERM_COLUMNS = {'kw': ['カスタマーの検索キーワード'], **_METRICS}
 
 
-def _read(path, required, optional=None, source=''):
+def _read(path, required, optional=None, source='', month=''):
     """レポートの1枚目シートを見出し名で解決して行を返す"""
     wb = load_workbook(path, data_only=True)
     ws = wb[wb.sheetnames[0]]
     header = list(next(ws.iter_rows(min_row=1, max_row=1, values_only=True)))
+    C.check_layout(source, header, month)            # ⓪ 前月と突き合わせる
     idx = C.resolve(header, required, optional, source=source)
     C.report(idx, header, source)
     return ws, idx
@@ -76,9 +77,10 @@ def _sum_into(a, r, idx):
         a[k] += C.get(r, idx, k, 0) or 0
 
 
-def read_item_report(path):
+def read_item_report(path, month=''):
     """広告対象商品レポートを (SKU, ASIN) で集約して返す"""
-    ws, idx = _read(path, ITEM_COLUMNS, ITEM_OPTIONAL, source='AmazonSP 広告対象商品')
+    ws, idx = _read(path, ITEM_COLUMNS, ITEM_OPTIONAL,
+                    source='AmazonSP 広告対象商品', month=month)
     agg = {}
     for r in ws.iter_rows(min_row=2, values_only=True):
         asin = C.get(r, idx, 'asin')
@@ -92,9 +94,9 @@ def read_item_report(path):
     return items
 
 
-def read_search_terms(path):
+def read_search_terms(path, month=''):
     """検索用語レポートをキーワードで集約して返す"""
-    ws, idx = _read(path, TERM_COLUMNS, source='AmazonSP 検索用語')
+    ws, idx = _read(path, TERM_COLUMNS, source='AmazonSP 検索用語', month=month)
     agg = {}
     for r in ws.iter_rows(min_row=2, values_only=True):
         kw = str(C.get(r, idx, 'kw', '') or '').strip()
@@ -260,6 +262,11 @@ def main():
     item_xlsx, month_sheet = sys.argv[1], sys.argv[2]
     term_xlsx = sys.argv[3] if len(sys.argv) > 3 else None
 
+    # ⓪ 列構成チェックは何よりも先。壊れたレポートで作業を始めない
+    #    検索用語レポートも先に読んで、両方の列構成を確かめてから書き始める
+    items = read_item_report(item_xlsx, month_sheet)
+    terms = read_search_terms(term_xlsx, month_sheet) if term_xlsx else None
+
     if os.path.exists(OUT_FILE):
         bdir = os.path.dirname(OUT_FILE) + '/Backup'
         os.makedirs(bdir, exist_ok=True)
@@ -267,15 +274,13 @@ def main():
         shutil.copy2(OUT_FILE, f'{bdir}/{base}_backup_{date.today():%Y%m%d}_{month_sheet}生成前.xlsx')
         print('バックアップ取得済み')
 
-    items = read_item_report(item_xlsx)
     exp_spend = round(sum(d['spend'] for d in items), 2)
     by_asin, by_sku = load_kpi_month(month_sheet)
     joined = sum(1 for d in items if d['asin'].upper() in by_asin or d['sku'].upper() in by_sku)
     print(f'{month_sheet}: 商品 {len(items)}件 / KPIシート結合 {joined}件 / 費用合計 ¥{exp_spend:,.0f}')
 
     t = build_item_sheet(items, month_sheet, by_asin, by_sku)
-    if term_xlsx:
-        terms = read_search_terms(term_xlsx)
+    if terms is not None:
         build_term_sheet(terms, month_sheet)
         print(f'検索用語: {len(terms)}キーワード')
 

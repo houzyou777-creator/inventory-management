@@ -30,6 +30,8 @@ from datetime import date
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
 
+import report_columns as C   # レポートは位置ではなく見出し名で読む
+
 BASE = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS'
 OUT_FILE = os.environ.get(
     'AMZ_KPI_FILE_OVERRIDE',
@@ -67,7 +69,8 @@ def pct(s):
 #  売上・個数・注文数がすべて隣の「- B2B」列を指し、
 #  8月の売上が ¥5,610,675 → ¥227,580 と誤って集計された。
 #
-#  以後は見出し名で解決する。列が追加・削除・並べ替えされても壊れない。
+#  以後は見出し名で解決する(report_columns.resolve)。
+#  列が追加・削除・並べ替えされても壊れない。
 REQUIRED_COLUMNS = {
     'parent':   ['（親）ASIN'],
     'asin':     ['（子）ASIN'],
@@ -84,55 +87,21 @@ OPTIONAL_COLUMNS = {
 }
 
 
-def resolve_columns(header):
-    """見出し名から列位置を解決する。必須列が無ければ異常終了する。
-
-    🚫 部分一致で引かないこと。
-       'セッション数 - 合計' は 'セッション数 - 合計 - B2B' にも含まれるため、
-       部分一致にすると B2B 列を掴む危険がある(今回の事故と同じ結果になる)。
-    """
-    pos = {}
-    for i, h in enumerate(header):
-        pos.setdefault(h.strip(), i)     # 同名が複数あれば最初の列を採る
-
-    idx, missing = {}, []
-    for key, names in REQUIRED_COLUMNS.items():
-        hit = next((pos[n] for n in names if n in pos), None)
-        if hit is None:
-            missing.append(f'{key} … 期待した見出し: ' + ' / '.join(names))
-        else:
-            idx[key] = hit
-    if missing:
-        detail = ''.join(f'    - {m}\n' for m in missing)
-        actual = ''.join(f'    {i:2d}: {h}\n' for i, h in enumerate(header))
-        sys.exit(
-            '❌ 必須列が見つかりません。レポートの仕様が変わった可能性があります。\n'
-            f'  見つからなかった列({len(missing)}件):\n{detail}'
-            f'  実際の見出し({len(header)}列):\n{actual}'
-            '  → REQUIRED_COLUMNS の見出し名を実際のレポートに合わせて更新してください。'
-        )
-
-    for key, names in OPTIONAL_COLUMNS.items():
-        hit = next((pos[n] for n in names if n in pos), None)
-        if hit is not None:
-            idx[key] = hit
-    return idx
+SOURCE = 'Amazon ビジネスレポート'
 
 
-def read_report(path):
+def read_report(path, month=''):
     with open(path, encoding='utf-8-sig') as f:
         rows = list(csv.reader(f))
     if not rows:
         sys.exit('❌ レポートが空です: ' + path)
 
-    col = resolve_columns(rows[0])
-    optional_missing = [k for k in OPTIONAL_COLUMNS if k not in col]
-    if optional_missing:
-        print(f'  ※ 任意列が見つかりません(処理は続行): {", ".join(optional_missing)}')
+    C.check_layout(SOURCE, rows[0], month)          # ⓪ 前月と列構成を突き合わせる
+    col = C.resolve(rows[0], REQUIRED_COLUMNS, OPTIONAL_COLUMNS, source=SOURCE)
+    C.report(col, rows[0], SOURCE)
 
     def cell(r, key):
-        i = col.get(key)
-        return r[i] if i is not None and i < len(r) else ''
+        return C.get(r, col, key, '')
 
     data = []
     for r in rows[1:]:
@@ -329,6 +298,9 @@ def main():
         sys.exit(1)
     csv_path, sheet_name = sys.argv[1], sys.argv[2]
 
+    # ⓪ 列構成チェックは何よりも先。壊れたレポートで作業を始めない
+    data = read_report(csv_path, sheet_name)
+
     if os.path.exists(OUT_FILE):
         bdir = os.path.dirname(OUT_FILE) + '/Backup'
         os.makedirs(bdir, exist_ok=True)
@@ -336,7 +308,6 @@ def main():
         shutil.copy2(OUT_FILE, f'{bdir}/{base}_backup_{date.today():%Y%m%d}_{sheet_name}生成前.xlsx')
         print('バックアップ取得済み')
 
-    data = read_report(csv_path)
     print(f'{sheet_name}: レポート {len(data)}行 / 売上合計 ¥{sum(d["sales"] for d in data):,}')
     resolve = build_cost_resolver()
     total_row, missing = build_sheet(data, sheet_name, os.path.basename(csv_path), resolve)
