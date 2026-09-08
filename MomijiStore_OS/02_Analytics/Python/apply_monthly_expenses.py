@@ -2,11 +2,13 @@
 """apply_monthly_expenses.py — KPIシートの月次経費(黄色セル)を確認・入力する
 
 使い方:
-    python3 apply_monthly_expenses.py list <月>
+    python3 apply_monthly_expenses.py list <月>      未入力の黄色セルを一覧表示
+    python3 apply_monthly_expenses.py ad <月>        広告費の入れるべき額を算出
     python3 apply_monthly_expenses.py set <月> <チャネル> <費目> <金額> [...]
 
 例:
     python3 apply_monthly_expenses.py list 8月
+    python3 apply_monthly_expenses.py ad 8月
     python3 apply_monthly_expenses.py set 8月 楽天 広告費 53095 Amazon 広告費 111379
 
 なぜスクリプトにするか:
@@ -49,6 +51,44 @@ SOURCES = {
              '人(請求書から転記)。⚠️ 配送マスター完成後は自動算出へ'),
     '梱包資材': ('仕入先の月次請求書', '人(請求書から転記)'),
 }
+
+
+# 広告費のKPIシートへの入れ方は**チャネルで違う**。
+#   楽天  : RPPの「割引後実績額」は税抜。KPIシートは税込で持つ慣例
+#           (4月143,000 / 5月132,680 / 6月75,246 / 7月76,791 はいずれも税込)
+#   Amazon: 広告レポートの費用をそのまま入れる慣例(7月102,879)
+# ⚠️ 2026-09-08、この違いを見落として楽天へ税抜¥53,095を入れる誤りをした。
+#    手順書の1行では見落とすので、ここに置いて自動で計算する。
+AD_TAX = {'楽天': 1.1, 'Amazon': 1.0}
+
+
+def ad_cost(month):
+    """広告分析シートから、KPIシートへ入れるべき広告費を算出する。"""
+    out = {}
+    f = SD + '/楽天RPP広告分析.xlsx'
+    if os.path.exists(f):
+        wb = load_workbook(f, data_only=True)
+        if month in wb.sheetnames:
+            ws = wb[month]
+            d = {ws.cell(r, 1).value: ws.cell(r, 2).value for r in range(3, 12)}
+            net = d.get('広告費(割引後実績額)')
+            if isinstance(net, (int, float)):
+                out['楽天'] = (round(net * AD_TAX['楽天']), net,
+                               f'割引後実績額 ¥{net:,.0f} × 1.1(税込)')
+    f = SD + '/AmazonSP広告分析.xlsx'
+    if os.path.exists(f):
+        wb = load_workbook(f, data_only=True)
+        if month in wb.sheetnames:
+            ws = wb[month]
+            hr = next((r for r in range(1, 20) if ws.cell(r, 1).value == 'SKU'), None)
+            if hr:
+                r = hr + 1
+                while ws.cell(r, 1).value not in (None, '合計'):
+                    r += 1
+                v = ws.cell(r, 8).value
+                if isinstance(v, (int, float)):
+                    out['Amazon'] = (round(v), v, f'広告費合計 ¥{v:,.0f}(そのまま)')
+    return out
 
 
 def find_block(ws):
@@ -173,6 +213,20 @@ def main():
         print(__doc__)
         sys.exit(1)
     mode, month = sys.argv[1], sys.argv[2]
+
+    if mode == 'ad':
+        vals = ad_cost(month)
+        if not vals:
+            sys.exit(f'❌ {month} の広告分析シートがありません。先に広告分析を実行してください')
+        print(f'■ {month} の広告費(KPIシートへ入れる値)')
+        for ch, (v, raw, why) in vals.items():
+            print(f'  {ch:8} ¥{v:,}   ← {why}')
+        args = []
+        for ch, (v, _, _) in vals.items():
+            args += [ch, '広告費', str(v)]
+        print(f'\n  入力するには:\n    python3 {os.path.basename(__file__)} '
+              f'set {month} ' + ' '.join(args))
+        return
 
     if mode == 'list':
         rows = survey(month)
