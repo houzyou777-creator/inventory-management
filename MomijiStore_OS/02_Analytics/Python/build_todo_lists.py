@@ -10,7 +10,8 @@
 出力:
     01_InventoryManagement/SourceData/Output/要対応一覧_<月>_<YYYYMMDD>.xlsx
     00_サマリー / 01_新商品 / 02_原価確認 / 03_商品情報不足
-    04_データ不整合 / 05_廃番整理候補 / 06_Amazon手数料未反映
+    04_データ不整合 / 05_Amazon手数料未反映 / 06_廃番整理候補
+    ★ シートは「修正する順番」に並べる
 
 方針:
 - **修正が必要な行だけを出す。正常な行は出さない。**
@@ -37,8 +38,9 @@ INV_FILE = BASE + '/01_InventoryManagement/SourceData/在庫管理テーブル_v
 OUTPUT_DIR = BASE + '/01_InventoryManagement/SourceData/Output'
 
 HEAD_FILL = PatternFill('solid', fgColor='DDDDDD')
-S_FILL = PatternFill('solid', fgColor='FFC7CE')   # 重要度S
-A_FILL = PatternFill('solid', fgColor='FFEB9C')   # 重要度A
+S_FILL = PatternFill('solid', fgColor='FFC7CE')   # 優先度 最優先
+A_FILL = PatternFill('solid', fgColor='FFEB9C')   # 優先度 高
+CARRY_FILL = PatternFill('solid', fgColor='D9E1F2')  # 前月からの継続
 BOLD = Font(bold=True)
 
 
@@ -160,49 +162,63 @@ def _cost_row(ch, pid, r, mc, sold, month_sheet, mode):
 
 
 # --- ③ 商品情報不足 ---------------------------------------------------------
-def build_shortages(pm, lt, stock, sold):
-    """重要度 S/A/B/C を付ける。
+#  優先順位は「その項目を直すと何が動き出すか」で決める。件数ではなく効果で並べる。
+CRITICAL_ITEMS = {'発送サイズ区分', '商品重量',      # ラベル自動化の対象
+                  '標準原価', '商品名'}              # 利益計算に影響する
 
-    S: 業務が止まる・金額に直結  A: 自動化をブロック
-    B: 精度に影響              C: 将来必要
-    """
+
+def _priority(qty, stock, item):
+    """最優先 > 高 > 中 > 低"""
+    if qty > 0 and item in CRITICAL_ITEMS:
+        return '最優先'          # 出荷実績あり かつ ラベル自動化/利益計算に効く
+    if qty > 0:
+        return '高'              # 今月販売実績あり
+    if stock not in (None, 0):
+        return '中'              # 在庫ありだが販売なし
+    return '低'                  # 販売実績なし・在庫なし
+
+
+def build_shortages(pm, lt, stock, sold):
     by_pid = defaultdict(list)
     for x in lt:
         by_pid[str(x['pid'])].append(x)
     rows = []
     for pid, p in pm.items():
         qty = sold.get(pid, 0)
+        st = stock.get(pid)
         ls = by_pid.get(pid, [])
         has_rak = any(x['ch'] == '楽天' for x in ls)
         has_amz = any(x['ch'] == 'Amazon' for x in ls)
 
-        def add(sev, item, cur, action):
-            rows.append([sev, pid, p['name'][:60], item, cur if cur is not None else '',
-                         qty, action])
+        def add(item, cur, how, where):
+            rows.append([_priority(qty, st, item), pid, p['name'][:60], item,
+                         cur if cur is not None else '', qty,
+                         st if st is not None else '(行なし)', how, where])
 
         if not str(p['name'] or '').strip():
-            add('S', '商品名', '', 'ASIN/JANからカタログ照会して補完(自動更新しない)')
+            add('商品名', '', 'ASIN/JANからカタログ照会して補完(自動更新しない)',
+                '商品マスター C列')
         if p['cost'] in (None, '', 0):
-            add('S', '標準原価', p['cost'], '仕入実績またはKPIシートから確認して入力')
+            add('標準原価', p['cost'], '仕入実績またはKPIシートから確認して入力',
+                '商品マスター E列')
         if not p['jan']:
-            add('B', 'JAN', '', '商品番号/カタログから補完。照合精度に影響')
+            add('JAN', '', '商品番号/カタログから補完。照合精度に影響', '商品マスター B列')
         if has_amz and not any(x['asin'] for x in ls if x['ch'] == 'Amazon'):
-            add('B', 'ASIN', '', 'Amazon出品にASINが無い。出品テーブルへ登録')
+            add('ASIN', '', 'Amazon出品にASINが無い', '出品テーブル F列')
         if has_amz and not any(x['asku'] for x in ls if x['ch'] == 'Amazon'):
-            add('B', 'AmazonSKU', '', '手数料突合が効かなくなる。出品テーブルへ登録')
+            add('AmazonSKU', '', '手数料突合が効かなくなる', '出品テーブル G列')
         if has_rak and not any(x['rsku'] for x in ls if x['ch'] == '楽天'):
-            add('B', '楽天SKU', '', '出品テーブルへ登録')
+            add('楽天SKU', '', '在庫照合に必要', '出品テーブル E列')
         if pid not in stock:
-            add('B', '在庫行', '', '在庫管理テーブルへ行を作る(在庫0と未登録が区別できない)')
-        # 発送サイズ区分・商品重量は全件未入力。出荷実績の有無で優先度を分ける
+            add('在庫行', '', '在庫0と未登録が区別できない', '在庫管理テーブル')
         if not p['ship_size']:
-            add('A' if qty > 0 else 'C', '発送サイズ区分', '',
-                'PRC-10 の候補提示で埋める(ラベル自動化に必須)')
+            add('発送サイズ区分', '', 'PRC-10 の候補提示で埋める(ラベル自動化に必須)',
+                '商品マスター K列')
         if p['weight'] in (None, ''):
-            add('A' if qty > 0 else 'C', '商品重量', '',
-                'PRC-10 の候補提示で埋める(監査・ネコポス判定に必要)')
-    order = {'S': 0, 'A': 1, 'B': 2, 'C': 3}
-    rows.sort(key=lambda x: (order[x[0]], -x[5]))
+            add('商品重量', '', 'PRC-10 の候補提示で埋める(監査・ネコポス判定に必要)',
+                '商品マスター L列')
+    order = {'最優先': 0, '高': 1, '中': 2, '低': 3}
+    rows.sort(key=lambda x: (order[x[0]], -x[5], x[1]))
     return rows
 
 
@@ -330,31 +346,98 @@ def build_fee_unresolved(month_sheet, tx_csv):
     return rows, note
 
 
+# --- 前月比較 ---------------------------------------------------------------
+#  修正が済んだ行は今月の一覧から消える。それだけだと「何が片付いたか」が残らないため、
+#  前月のファイルを読んで 新規 / 継続 / 解決 を突き合わせる。
+#  一覧そのものは「要対応のみ」を保ち、履歴は 07_前月比較 と月次ファイルの蓄積で残す。
+def find_prev_file(prev_sheet):
+    if not os.path.isdir(OUTPUT_DIR):
+        return None
+    cands = sorted(f for f in os.listdir(OUTPUT_DIR)
+                   if f.startswith(f'要対応一覧_{prev_sheet}_') and f.endswith('.xlsx'))
+    return os.path.join(OUTPUT_DIR, cands[-1]) if cands else None
+
+
+def load_prev_keys(path, sheet_title, key_cols):
+    """前月ファイルの該当シートから突合キーの集合を作る"""
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        if sheet_title not in wb.sheetnames:
+            wb.close()
+            return set()
+        ws = wb[sheet_title]
+        keys = set()
+        for row in ws.iter_rows(min_row=5, values_only=True):   # 5行目から本文
+            if not row or row[0] is None:
+                continue
+            keys.add(tuple(str(row[c]) if c < len(row) and row[c] is not None else ''
+                           for c in key_cols))
+        wb.close()
+        return keys
+    except Exception as e:
+        print(f'  ※ 前月ファイルを読めません({e})')
+        return None
+
+
 # --- 出力 -------------------------------------------------------------------
-def write_sheet(wb, title, headers, rows, widths, note=''):
+def write_sheet(wb, spec, prev_path):
+    """共通の作業列(状態 / 担当 / 完了)を付けて書き出す"""
+    title, headers, rows, widths, note, key_cols = (
+        spec['title'], spec['headers'], spec['rows'],
+        spec['widths'], spec.get('note', ''), spec['key_cols'])
+
+    prev_keys = load_prev_keys(prev_path, title, key_cols)
+    def key_of(row):
+        return tuple(str(row[c]) if c < len(row) and row[c] is not None else ''
+                     for c in key_cols)
+    cur_keys = {key_of(r) for r in rows}
+    resolved = len(prev_keys - cur_keys) if prev_keys is not None else None
+    carried = len(prev_keys & cur_keys) if prev_keys is not None else None
+
     ws = wb.create_sheet(title)
     ws['A1'] = f'{title}  —  {len(rows)}件'
     ws['A1'].font = Font(bold=True, size=12)
-    if note:
-        ws['A2'] = note
-    for i, h in enumerate(headers, 1):
+    line = note
+    if prev_keys is not None:
+        line += (('  |  ' if line else '')
+                 + f'前月 {len(prev_keys)}件 → 今月 {len(rows)}件 '
+                   f'(新規 {len(cur_keys - prev_keys)} / 継続 {carried} / 解決 {resolved})')
+    ws['A2'] = line
+    ws['A3'] = '⚠️ 候補である。反映は人の承認後に行う(DEC-MST-05)'
+
+    full = headers + ['状態', '対応方法', '担当', '完了']
+    for i, h in enumerate(full, 1):
         c = ws.cell(4, i)
         c.value = h
         c.font = BOLD
         c.fill = HEAD_FILL
         c.alignment = Alignment(vertical='center', wrap_text=True)
+
     for r, row in enumerate(rows, 5):
         for i, v in enumerate(row, 1):
             ws.cell(r, i).value = v
-        if headers[0] == '重要度':
-            if row[0] == 'S':
+        n = len(headers)
+        state = '新規' if (prev_keys is not None and key_of(row) not in prev_keys) else (
+            '継続' if prev_keys is not None else '')
+        ws.cell(r, n + 1).value = state
+        ws.cell(r, n + 2).value = spec['how']
+        ws.cell(r, n + 3).value = '蛯名'
+        ws.cell(r, n + 4).value = ''            # 完了チェック欄(人が記入)
+        if state == '継続':
+            ws.cell(r, n + 1).fill = CARRY_FILL
+        if headers[0] == '優先度':
+            if row[0] == '最優先':
                 ws.cell(r, 1).fill = S_FILL
-            elif row[0] == 'A':
+            elif row[0] == '高':
                 ws.cell(r, 1).fill = A_FILL
-    for col, w in zip('ABCDEFGHIJK', widths):
-        ws.column_dimensions[col].width = w
+
+    for i, w in enumerate(list(widths) + [8, 40, 8, 8], 1):
+        ws.column_dimensions[ws.cell(1, i).column_letter].width = w
     ws.freeze_panes = 'A5'
-    return ws
+    return {'title': title, 'count': len(rows), 'new': len(cur_keys - (prev_keys or set())),
+            'carried': carried, 'resolved': resolved, 'prev': len(prev_keys) if prev_keys is not None else None}
 
 
 def main():
@@ -364,8 +447,14 @@ def main():
     month_sheet = sys.argv[1]
     tx_csv = sys.argv[2] if len(sys.argv) > 2 else None
     prev_sheet = f'{int(month_sheet.rstrip("月")) - 1}月'
+    prev_path = find_prev_file(prev_sheet)
 
     print(f'要対応一覧を生成します: {month_sheet}(前月比較: {prev_sheet})')
+    if prev_path:
+        print(f'  前月ファイル: {os.path.basename(prev_path)}')
+    else:
+        print(f'  前月ファイルなし — 今回は全件「新規」扱い')
+
     pm, lt = load_master_full()
     stock = load_stock()
     _, pair2pid, ctrl2pid = S.load_master()
@@ -373,75 +462,111 @@ def main():
     sold = load_sales(month_sheet, pair2pid, ctrl2pid, asin2pid, asku2pid)
     sold_prev = load_sales(prev_sheet, pair2pid, ctrl2pid, asin2pid, asku2pid)
 
-    new_products = build_new_products(month_sheet)
-    cost_conf = build_cost_conflicts(month_sheet, sold)
-    shortages = build_shortages(pm, lt, stock, sold)
-    inconsist = build_inconsistencies(pm, lt)
-    retire = build_retire_candidates(pm, stock, sold, sold_prev, month_sheet, prev_sheet)
     fees, fee_note = build_fee_unresolved(month_sheet, tx_csv)
+
+    # ★ シートは「修正する順番」で並べる
+    specs = [
+        {'title': '01_新商品',
+         'headers': ['チャネル', '商品名', '楽天商品管理番号', '楽天SKU', 'ASIN',
+                     'AmazonSKU', 'JAN(推定)', 'KPI仕入値', '登録コマンド'],
+         'rows': build_new_products(month_sheet),
+         'widths': (10, 46, 22, 22, 16, 26, 16, 12, 44),
+         'key_cols': [0, 2, 3, 4, 5],
+         'how': 'register コマンドを実行(承認後)',
+         'note': '修正場所: コマンド実行 → 商品マスター・出品テーブルへ自動追加'},
+        {'title': '02_原価確認',
+         'headers': ['チャネル', '内部管理ID', '商品名', '現在の原価', '新しい原価候補',
+                     '差額', '差額率(%)', f'{month_sheet}個数', '影響額', '承認(記入)',
+                     '適用コマンド'],
+         'rows': build_cost_conflicts(month_sheet, sold),
+         'widths': (10, 13, 40, 12, 14, 10, 11, 11, 12, 12, 44),
+         'key_cols': [1],
+         'how': '承認欄へ記入 → adopt コマンドを実行',
+         'note': '修正場所: 商品マスター E列(標準原価)。⚠️ 両方が空の行は adopt では解決しない'},
+        {'title': '03_商品情報不足',
+         'headers': ['優先度', '内部管理ID', '商品名', '不足項目', '現在値',
+                     f'{month_sheet}出荷', '在庫数', '対応方法(詳細)', '修正場所'],
+         'rows': build_shortages(pm, lt, stock, sold),
+         'widths': (9, 13, 44, 16, 12, 11, 10, 46, 22),
+         'key_cols': [1, 3],
+         'how': '修正場所の列を直接編集',
+         'note': ('最優先=出荷実績あり かつ ラベル自動化/利益計算に影響 / '
+                  '高=今月販売実績あり / 中=在庫ありだが販売なし / 低=販売実績なし・在庫なし')},
+        {'title': '04_データ不整合',
+         'headers': ['種別', '対象', '内部管理ID', '商品名', '詳細', '対応方法(詳細)'],
+         'rows': build_inconsistencies(pm, lt),
+         'widths': (20, 26, 26, 40, 38, 46),
+         'key_cols': [0, 1],
+         'how': '人が統合可否を判断(DEC-MST-01)',
+         'note': '修正場所: 商品マスター / 出品テーブル'},
+        {'title': '05_Amazon手数料未反映',
+         'headers': ['AmazonSKU', '手数料(実額)', '未解決の理由', '想定される対応'],
+         'rows': fees,
+         'widths': (42, 14, 30, 46),
+         'key_cols': [0],
+         'how': '出品テーブルへ AmazonSKU を登録',
+         'note': (fee_note + ' / 修正場所: 出品テーブル G列(AmazonSKU)')},
+        {'title': '06_廃番整理候補',
+         'headers': ['内部管理ID', '商品名', '在庫数', f'{month_sheet}売上',
+                     f'{prev_sheet}売上', '判定根拠', '確信度', '対応候補'],
+         'rows': build_retire_candidates(pm, stock, sold, sold_prev,
+                                         month_sheet, prev_sheet),
+         'widths': (13, 44, 10, 11, 11, 36, 9, 46),
+         'key_cols': [0],
+         'how': '販売停止 / 取扱終了を人が判断',
+         'note': ('⚠️ 再仕入予定を確認できないため誤検知がある。'
+                  '⏸ 販売ステータスの設計は保留中のため、当面は一覧の確認のみ')},
+    ]
 
     wb = Workbook()
     wb.remove(wb.active)
 
-    sev = Counter(r[0] for r in shortages)
     ws = wb.create_sheet('00_サマリー')
     ws['A1'] = f'要対応一覧 — {month_sheet}'
     ws['A1'].font = Font(bold=True, size=14)
     ws['A2'] = (f'作成 {date.today():%Y-%m-%d} / 商品マスター {len(pm)}件 / '
                 f'⚠️ すべて「修正が必要なものだけ」。正常な行は含まない')
-    ws['A3'] = '⚠️ 本一覧は候補である。反映は人の承認後に行う(DEC-MST-05)'
-    head = ['一覧', '件数', '内容', '対応']
+    ws['A3'] = '★ シートは「修正する順番」に並んでいる。上から順に対応する'
+
+    stats = []
+    for spec in specs:
+        stats.append(write_sheet(wb, spec, prev_path))
+
+    head = ['順', '一覧', '今月', '前月', '新規', '継続', '解決', '対応']
     for i, h in enumerate(head, 1):
         c = ws.cell(5, i); c.value = h; c.font = BOLD; c.fill = HEAD_FILL
-    summary = [
-        ('01_新商品', len(new_products), 'マスター未登録の商品', 'register で登録'),
-        ('02_原価確認', len(cost_conf), 'マスターとKPIで原価が不一致', '承認後 adopt で更新'),
-        ('03_商品情報不足', len(shortages),
-         f'S:{sev["S"]} A:{sev["A"]} B:{sev["B"]} C:{sev["C"]}', 'S→A の順で補完'),
-        ('04_データ不整合', len(inconsist), '重複登録・ASIN/JAN/SKUのずれ', '人が統合可否を判断'),
-        ('05_廃番整理候補', len(retire), '在庫0かつ2か月売上0', '販売停止/取扱終了を判断'),
-        ('06_Amazon手数料未反映', len(fees), fee_note, '出品テーブルへ登録'),
-    ]
-    for r, row in enumerate(summary, 6):
-        for i, v in enumerate(row, 1):
+    for r, (spec, st) in enumerate(zip(specs, stats), 6):
+        vals = [r - 5, st['title'], st['count'],
+                st['prev'] if st['prev'] is not None else '—',
+                st['new'], st['carried'] if st['carried'] is not None else '—',
+                st['resolved'] if st['resolved'] is not None else '—', spec['how']]
+        for i, v in enumerate(vals, 1):
             ws.cell(r, i).value = v
-    for col, w in zip('ABCD', (26, 8, 52, 40)):
-        ws.column_dimensions[col].width = w
 
-    write_sheet(wb, '01_新商品',
-                ['チャネル', '商品名', '楽天商品管理番号', '楽天SKU', 'ASIN',
-                 'AmazonSKU', 'JAN(推定)', 'KPI仕入値', '登録コマンド'],
-                new_products, (10, 46, 22, 22, 16, 26, 16, 12, 44))
-    write_sheet(wb, '02_原価確認',
-                ['チャネル', '内部管理ID', '商品名', '現在の原価', '新しい原価候補',
-                 '差額', '差額率(%)', f'{month_sheet}個数', '影響額', '承認(記入)', '適用コマンド'],
-                cost_conf, (10, 13, 40, 12, 14, 10, 11, 11, 12, 12, 44),
-                '⚠️ 承認列へ「承認」と記入したうえで、適用コマンドを実行すること')
-    write_sheet(wb, '03_商品情報不足',
-                ['重要度', '内部管理ID', '商品名', '不足項目', '現在値',
-                 f'{month_sheet}出荷', '対応'],
-                shortages, (9, 13, 46, 18, 14, 11, 52),
-                'S=業務が止まる / A=自動化をブロック / B=精度に影響 / C=将来必要')
-    write_sheet(wb, '04_データ不整合',
-                ['種別', '対象', '内部管理ID', '商品名', '詳細', '対応'],
-                inconsist, (20, 26, 26, 44, 40, 50))
-    write_sheet(wb, '05_廃番整理候補',
-                ['内部管理ID', '商品名', '在庫数', f'{month_sheet}売上',
-                 f'{prev_sheet}売上', '判定根拠', '確信度', '対応候補'],
-                retire, (13, 46, 10, 11, 11, 38, 9, 52),
-                '⚠️ 再仕入予定を確認できないため誤検知がある。最終判断は人')
-    write_sheet(wb, '06_Amazon手数料未反映',
-                ['AmazonSKU', '手数料(実額)', '未解決の理由', '想定される対応'],
-                fees, (42, 14, 30, 52), fee_note)
+    sev = Counter(r[0] for r in specs[2]['rows'])
+    ws.cell(13, 1).value = '03_商品情報不足の内訳'
+    ws.cell(13, 1).font = BOLD
+    for i, k in enumerate(['最優先', '高', '中', '低'], 14):
+        ws.cell(i, 1).value = k
+        ws.cell(i, 2).value = sev.get(k, 0)
+    ws.cell(19, 1).value = '月次標準フロー: ①分析 → ②要対応一覧 → ③商品マスター更新 → ④再分析(改善確認)'
+    ws.cell(19, 1).font = BOLD
+    for col, w in zip('ABCDEFGH', (5, 26, 8, 8, 8, 8, 8, 44)):
+        ws.column_dimensions[col].width = w
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     path = f'{OUTPUT_DIR}/要対応一覧_{month_sheet}_{date.today():%Y%m%d}.xlsx'
     wb.save(path)
 
     print()
-    print('═══ 要対応一覧 ═══')
-    for name, n, detail, _ in summary:
-        print(f'  {name:24s} {n:5d}件  {detail}')
+    print('═══ 要対応一覧(修正する順番) ═══')
+    for i, (spec, st) in enumerate(zip(specs, stats), 1):
+        extra = ''
+        if st['prev'] is not None:
+            extra = f"  [前月{st['prev']} 新規{st['new']} 解決{st['resolved']}]"
+        print(f"  {i}. {st['title']:24s} {st['count']:5d}件{extra}")
+    print(f"     └ 03の内訳: 最優先{sev.get('最優先',0)} / 高{sev.get('高',0)}"
+          f" / 中{sev.get('中',0)} / 低{sev.get('低',0)}")
     print(f'\n  → {path}')
 
 
