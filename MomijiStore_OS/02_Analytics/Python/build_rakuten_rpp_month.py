@@ -27,6 +27,8 @@ from datetime import date
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font
 
+import report_columns as C   # レポートは位置ではなく見出し名で読む
+
 BASE = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS'
 OUT_FILE = os.environ.get(
     'RPP_FILE_OVERRIDE',
@@ -49,30 +51,70 @@ def fnum(s, as_int=True):
     return int(v) if as_int and v == int(v) else v
 
 
+# 商品別レポートの必須列。**位置ではなく名前で読む**(決定事項1)
+#  売上・ROASは720時間(30日)アトリビューションが主指標。12時間は参考
+ITEM_COLUMNS = {
+    'ctrl':      ['商品管理番号'],
+    'bid':       ['入札単価'],
+    'ctr':       ['CTR(%)'],
+    'clicks':    ['クリック数(合計)'],
+    'spend':     ['実績額(合計)'],
+    'cpc':       ['CPC実績(合計)'],
+    'sales12':   ['売上金額(合計12時間)'],
+    'sales720':  ['売上金額(合計720時間)'],
+    'orders720': ['売上件数(合計720時間)'],
+    'cvr720':    ['CVR(合計720時間)(%)'],
+}
+
+
 def read_item_report(path):
     with open(path, encoding='cp932') as f:
         rows = list(csv.reader(f))
+    # 見出しより上にRMSの検索条件が入る。「コントロールカラム」が見出し行の目印
     hi = next(i for i, r in enumerate(rows) if r and r[0] == 'コントロールカラム')
+    header = rows[hi]
+    idx = C.resolve(header, ITEM_COLUMNS, source='楽天RPP 商品別レポート')
+    C.report(idx, header, '楽天RPP 商品別')
+
     data = []
     for r in rows[hi + 1:]:
-        if len(r) < 46 or not r[3].strip():
+        ctrl = str(C.get(r, idx, 'ctrl', '')).strip()
+        if not ctrl:
             continue
-        data.append({
-            'ctrl': r[3].strip(), 'bid': fnum(r[4]), 'ctr': fnum(r[5], False),
-            'clicks': fnum(r[7]), 'spend': fnum(r[8]), 'cpc': fnum(r[9]),
-            'sales720': fnum(r[21]), 'orders720': fnum(r[22]), 'cvr720': fnum(r[23], False),
-            'sales12': fnum(r[16]),
-        })
+        d = {'ctrl': ctrl}
+        for k in ITEM_COLUMNS:
+            if k == 'ctrl':
+                continue
+            d[k] = fnum(C.get(r, idx, k, ''), as_int=k not in ('ctr', 'cvr720'))
+        data.append(d)
     data.sort(key=lambda d: -(d['spend'] or 0))
     return data
+
+
+# サマリーレポートの必須列。1行しかないので dict にしてから名前で引く
+SUMMARY_COLUMNS = {
+    'budget':  ['有効予算'],
+    'rate':    ['消化率(%)'],
+    'net':     ['割引後実績額'],
+    'clicks':  ['クリック数(合計)'],
+    'spend':   ['実績額(合計)'],
+    'cpc':     ['CPC実績(合計)'],
+    'sales':   ['売上金額(合計720時間)'],
+    'roas':    ['ROAS(合計720時間)(%)'],
+    'cvr':     ['CVR(合計720時間)(%)'],
+    'date':    ['日付'],
+}
 
 
 def read_summary(path):
     with open(path, encoding='cp932') as f:
         rows = list(csv.reader(f))
     hi = next(i for i, r in enumerate(rows) if r and r[0] == '日付')
-    h, d = rows[hi], rows[hi + 1]
-    return dict(zip(h, d))
+    header = rows[hi]
+    idx = C.resolve(header, SUMMARY_COLUMNS, source='楽天RPP サマリーレポート')
+    C.report(idx, header, '楽天RPP サマリー')
+    row = rows[hi + 1]
+    return {k: C.get(row, idx, k, '') for k in SUMMARY_COLUMNS}
 
 
 def load_kpi_month(month_sheet):
@@ -119,15 +161,15 @@ def build_sheet(items, summary, month_sheet, kpi):
 
     put(1, 1, 'RPP広告分析', FONT_B)
     put(2, 1, '集計期間')
-    put(2, 2, summary.get('日付', month_sheet))
-    labels = [('有効予算', fnum(summary.get('有効予算'))),
-              ('消化率', fnum(summary.get('消化率(%)'), False) / 100),
-              ('広告費(割引後実績額)', fnum(summary.get('割引後実績額'))),
-              ('クリック数', fnum(summary.get('クリック数(合計)'))),
-              ('CPC実績', fnum(summary.get('CPC実績(合計)'))),
-              ('広告経由売上(720h)', fnum(summary.get('売上金額(合計720時間)'))),
-              ('ROAS(720h)', fnum(summary.get('ROAS(合計720時間)(%)'), False) / 100),
-              ('CVR(720h)', fnum(summary.get('CVR(合計720時間)(%)'), False) / 100)]
+    put(2, 2, summary.get('date') or month_sheet)
+    labels = [('有効予算', fnum(summary['budget'])),
+              ('消化率', fnum(summary['rate'], False) / 100),
+              ('広告費(割引後実績額)', fnum(summary['net'])),
+              ('クリック数', fnum(summary['clicks'])),
+              ('CPC実績', fnum(summary['cpc'])),
+              ('広告経由売上(720h)', fnum(summary['sales'])),
+              ('ROAS(720h)', fnum(summary['roas'], False) / 100),
+              ('CVR(720h)', fnum(summary['cvr'], False) / 100)]
     for j, (lab, v) in enumerate(labels):
         put(3 + j, 1, lab, FONT_B)
         fmt = '0.0%' if lab in ('消化率', 'ROAS(720h)', 'CVR(720h)') else '#,##0'
@@ -222,7 +264,7 @@ def main():
     errs = [c.coordinate for row in ws.iter_rows() for c in row
             if isinstance(c.value, str) and c.value.startswith('#')]
     spend_sum = ws.cell(t, 6).value
-    spend_rep = fnum(summary.get('実績額(合計)'))
+    spend_rep = fnum(summary['spend'])
     ok = spend_sum == spend_rep
     print(f'検証: 広告費合計 {"一致" if ok else "不一致!"} (商品別合計 {spend_sum:,} / サマリー {spend_rep:,})')
     print(f'数式エラー: {len(errs)}件')

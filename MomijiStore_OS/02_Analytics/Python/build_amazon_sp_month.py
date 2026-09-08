@@ -28,6 +28,8 @@ from datetime import date
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font
 
+import report_columns as C   # レポートは位置ではなく見出し名で読む
+
 warnings.filterwarnings('ignore')
 
 BASE = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS'
@@ -44,22 +46,47 @@ HEADERS = ['SKU', 'ASIN', '商品名', 'インプレッション', 'クリック
            '商品月間売上', '広告依存度', '商品月間粗利', '広告費/粗利']
 
 
-def read_item_report(path):
-    """広告対象商品レポートを (SKU, ASIN) で集約して返す"""
+# 2つのレポートは列の位置が1つずれる(検索用語側に ターゲティング/マッチタイプ が
+# 挟まるため「費用」が13列目 → 14列目になる)。位置で読むと片方の定義を
+# もう片方へ流用した瞬間に壊れる。**名前で読めばずれない。**
+_METRICS = {
+    'imp':    ['インプレッション'],
+    'clicks': ['クリック数'],
+    'spend':  ['費用'],
+    'sales':  ['広告がクリックされてから7日間の総売上高'],
+    'orders': ['広告がクリックされてから7日間の合計注文数'],
+}
+ITEM_COLUMNS = {'asin': ['宣伝 ASIN', '宣伝ASIN'], **_METRICS}
+ITEM_OPTIONAL = {'sku': ['宣伝SKU', '宣伝 SKU']}
+TERM_COLUMNS = {'kw': ['カスタマーの検索キーワード'], **_METRICS}
+
+
+def _read(path, required, optional=None, source=''):
+    """レポートの1枚目シートを見出し名で解決して行を返す"""
     wb = load_workbook(path, data_only=True)
     ws = wb[wb.sheetnames[0]]
+    header = list(next(ws.iter_rows(min_row=1, max_row=1, values_only=True)))
+    idx = C.resolve(header, required, optional, source=source)
+    C.report(idx, header, source)
+    return ws, idx
+
+
+def _sum_into(a, r, idx):
+    for k in _METRICS:
+        a[k] += C.get(r, idx, k, 0) or 0
+
+
+def read_item_report(path):
+    """広告対象商品レポートを (SKU, ASIN) で集約して返す"""
+    ws, idx = _read(path, ITEM_COLUMNS, ITEM_OPTIONAL, source='AmazonSP 広告対象商品')
     agg = {}
     for r in ws.iter_rows(min_row=2, values_only=True):
-        sku, asin = r[7], r[8]
+        asin = C.get(r, idx, 'asin')
         if not asin:
             continue
-        key = (str(sku or '').strip(), str(asin).strip())
+        key = (str(C.get(r, idx, 'sku', '') or '').strip(), str(asin).strip())
         a = agg.setdefault(key, {'imp': 0, 'clicks': 0, 'spend': 0.0, 'sales': 0.0, 'orders': 0})
-        a['imp'] += r[9] or 0
-        a['clicks'] += r[10] or 0
-        a['spend'] += r[13] or 0
-        a['sales'] += r[14] or 0
-        a['orders'] += r[17] or 0
+        _sum_into(a, r, idx)
     items = [{'sku': k[0], 'asin': k[1], **v} for k, v in agg.items()]
     items.sort(key=lambda d: -d['spend'])
     return items
@@ -67,19 +94,14 @@ def read_item_report(path):
 
 def read_search_terms(path):
     """検索用語レポートをキーワードで集約して返す"""
-    wb = load_workbook(path, data_only=True)
-    ws = wb[wb.sheetnames[0]]
+    ws, idx = _read(path, TERM_COLUMNS, source='AmazonSP 検索用語')
     agg = {}
     for r in ws.iter_rows(min_row=2, values_only=True):
-        kw = str(r[9] or '').strip()
+        kw = str(C.get(r, idx, 'kw', '') or '').strip()
         if not kw:
             continue
         a = agg.setdefault(kw, {'imp': 0, 'clicks': 0, 'spend': 0.0, 'sales': 0.0, 'orders': 0})
-        a['imp'] += r[10] or 0
-        a['clicks'] += r[11] or 0
-        a['spend'] += r[14] or 0
-        a['sales'] += r[15] or 0
-        a['orders'] += r[18] or 0
+        _sum_into(a, r, idx)
     terms = [{'kw': k, **v} for k, v in agg.items()]
     terms.sort(key=lambda d: -d['spend'])
     return terms
