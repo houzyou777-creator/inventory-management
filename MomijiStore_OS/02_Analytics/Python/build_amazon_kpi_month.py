@@ -248,10 +248,13 @@ def build_sheet(data, sheet_name, source_name, resolve):
     put(tot2, 15, f'=SUM(O{s0}:O{s0 + 1})', fmt='0.00%')
 
     g = tot2 + 2
+    # 必須の経費が1つでも空欄なら「未確定」と出す(2026-09-09 監査)。
+    # Excelは空セルを0として集計するので、ガードが無いと未入力に気づけない
+    guard = f'COUNTBLANK(N{e0}:N{tot1 - 1})+COUNTBLANK(N{s0}:N{s0 + 1})'
     put(g, 13, '限界利益', font=FONT_B)
-    put(g, 14, f'=SUM(N{t}-N{tot1}-N{tot2})')
+    put(g, 14, f'=IF({guard}>0,"未確定",N{t}-N{tot1}-N{tot2})')
     put(g + 1, 13, '限界利益率', font=FONT_B)
-    put(g + 1, 14, f'=IF(I{t}=0,"",N{g}/I{t})', fmt='0.0%')
+    put(g + 1, 14, f'=IF(ISTEXT(N{g}),"未確定",IF(I{t}=0,"",N{g}/I{t}))', fmt='0.0%')
 
     ws.column_dimensions['A'].width = 29
     ws.column_dimensions['B'].width = 20

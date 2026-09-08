@@ -267,7 +267,17 @@ def main():
     print('═══ 手数料突合の検証 ═══')
     print(f'  Transactionレポート総手数料 : ¥{-total_fee:,.0f} ({len(fee_by_sku)} SKU)')
     print(f'  実額反映できた金額          : ¥{matched_fee:,.0f}')
-    print(f'  反映率                      : {rate:.1f}%')
+    # 金額ベースと行ベースを**両方**出す。金額だけ見ると品質を高く錯覚する。
+    # 金額の大きい商品から実額化されるため、金額88%でも行では34%ということが起きる
+    # (2026-09-09 ChatGPT指摘H)
+    row_rate = matched / (matched + unmatched) * 100 if (matched + unmatched) else 0.0
+    print(f'  実額化率(金額ベース)        : {rate:.1f}%')
+    print(f'  実額化率(行ベース)          : {row_rate:.1f}%'
+          f'  ← {matched}行 / {matched + unmatched}行')
+    if rate - row_rate >= 10:
+        print(f'  ⚠️ 金額と行で {rate - row_rate:.0f}pt の差がある。'
+              '金額の大きい商品から実額化されているため、'
+              '**行数で見ると多くが暫定15%のまま**である')
     print(f'  未反映件数                  : {len(unresolved)} SKU')
     print(f'  未反映金額                  : ¥{-un_fee:,.0f}')
     print('  突合の内訳                  : ' +

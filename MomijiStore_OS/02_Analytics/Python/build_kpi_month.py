@@ -206,10 +206,15 @@ def build_sheet(kpi_file, sheet_name, head6, data, resolve):
     ws.cell(tot2, 15).value = f'=SUM(O{s0}:O{s0 + 1})'
 
     g = tot2 + 2
+    # 必須の経費が1つでも空欄なら「未確定」と出す。
+    # Excelは空セルを0として集計するため、ガードが無いと
+    # 「送料0円」のもっともらしい数字が限界利益として表示されてしまう
+    # (2026-09-09 監査。数式エラーも警告も出ないので人は気づけない)
+    guard = f'COUNTBLANK(N{e0}:N{e0 + 3})+COUNTBLANK(N{s0}:N{s0 + 1})'
     ws.cell(g, 13).value = '限界利益'
-    ws.cell(g, 14).value = f'=SUM(N{t}-N{tot1}-N{tot2})'
+    ws.cell(g, 14).value = f'=IF({guard}>0,"未確定",N{t}-N{tot1}-N{tot2})'
     ws.cell(g + 1, 13).value = '限界利益率'
-    ws.cell(g + 1, 14).value = f'=IF(I{t}=0,"",N{g}/I{t})'
+    ws.cell(g + 1, 14).value = f'=IF(ISTEXT(N{g}),"未確定",IF(I{t}=0,"",N{g}/I{t}))'
 
     for row in ws.iter_rows(min_row=g + 2, max_row=ws.max_row):
         for c in row:

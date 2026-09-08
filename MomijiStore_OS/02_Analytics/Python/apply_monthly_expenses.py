@@ -202,6 +202,11 @@ def show_margin(ch, month):
     mp = labels.get('限界利益')
     margin = ws.cell(mp, 14).value if mp else None
     rate = ws.cell(mp + 1, 14).value if mp else None
+    # 2026-09-09 以降、必須経費が未入力だと数式が「未確定」を返す(数値ではない)
+    if not isinstance(margin, (int, float)):
+        margin = None
+    if not isinstance(rate, (int, float)):
+        rate = None
     missing = [lab for lab, rr in labels.items()
                if lab not in ('限界利益', '限界利益率')
                and ws.cell(rr, 14).value is None]

@@ -490,6 +490,143 @@ MARGIN_LOW = 0.10       # これ未満は「仕入値が多すぎる/売価が�
 MARGIN_SHIFT = 0.15     # 前月からこれ以上動いたら仕入値が変わった疑い
 
 
+# 棚卸の滞留区分(2026-09-09 ChatGPT承認)。Ver.1の暫定値
+STALE_LOW = 3       # 3か月売上0 = 低回転候補
+STALE_LONG = 6      # 6か月売上0 = 長期滞留候補
+
+IM = BASE + '/01_InventoryManagement/SourceData'
+RAKUTEN_STOCK = IM + '/楽天在庫金額集計ツール_v1.0.xlsm'
+AMAZON_STOCK = IM + '/Amazon在庫リスト_import.xlsx'
+
+
+def load_real_stock():
+    """**実在庫**を既存の2ファイルから読む。新しい仕組みは作らない。
+
+    在庫管理テーブルは554行すべて0・「未棚卸」で実数が入っていない(2026-09-09 監査)。
+    実在庫はここにある:
+      楽天   … 楽天在庫金額集計ツール「楽天CSV取込」(RMS在庫CSVの取込結果)
+      Amazon … Amazon在庫リスト_import「在庫」(FBA/自己発送の区分あり)
+
+    ⚠️ 商品番号が「-a」で終わる行はAmazonとの共有在庫。
+       Amazon側を正式値とし、楽天側は二重計上を避けるため除外する
+       (全体在庫サマリーの運用ルール)。
+    """
+    out, asof = {}, []
+    if os.path.exists(RAKUTEN_STOCK):
+        wb = load_workbook(RAKUTEN_STOCK, read_only=True, data_only=True)
+        ws = wb['楽天CSV取込']
+        hi = None
+        for i, row in enumerate(ws.iter_rows(min_row=1, max_row=6, values_only=True), 1):
+            if row and row[0] == 'JAN':
+                hi = i
+                break
+        if hi:
+            for row in ws.iter_rows(min_row=hi + 1, values_only=True):
+                if not row or not row[3]:
+                    continue
+                sku = str(row[3]).strip()
+                if sku.endswith('-a'):        # Amazonとの共有在庫。Amazon側を正とする
+                    continue
+                q = row[7] if isinstance(row[7], (int, float)) else 0
+                if q > 0:
+                    out.setdefault(('楽天', S.norm(row[1])), {'sku': sku, 'qty': 0,
+                                                             'src': '楽天在庫CSV'})['qty'] += q
+        wb.close()
+        asof.append(('楽天', date.fromtimestamp(os.path.getmtime(RAKUTEN_STOCK))))
+    if os.path.exists(AMAZON_STOCK):
+        wb = load_workbook(AMAZON_STOCK, read_only=True, data_only=True)
+        ws = wb['在庫']
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not row or not row[1]:
+                continue
+            q = row[7] if isinstance(row[7], (int, float)) else 0
+            if q > 0:
+                out.setdefault(('Amazon', S.norm(row[1])), {'sku': str(row[3] or ''),
+                                                            'qty': 0,
+                                                            'src': 'Amazon在庫リスト'})['qty'] += q
+        wb.close()
+        asof.append(('Amazon', date.fromtimestamp(os.path.getmtime(AMAZON_STOCK))))
+    return out, asof
+
+
+def load_monthly_sales(pair2pid, ctrl2pid, asin2pid, asku2pid):
+    """月 → {内部管理ID: 個数}。**新しい月が先**の順で返す。
+
+    「何か月売れていないか」を数えるために使う。
+    KPIシートに存在する月だけが対象なので、"6か月売上0" は
+    正確には "OSが持っている範囲で6か月分の記録が無い" である。
+    """
+    out = {}
+    for path, is_amz in ((S.KPI_FILE, False), (S.AMZ_KPI_FILE, True)):
+        if not os.path.exists(path):
+            continue
+        wb = load_workbook(path, read_only=True, data_only=True)
+        for sheet in wb.sheetnames:
+            ws = wb[sheet]
+            d = out.setdefault(sheet, {})
+            for row in ws.iter_rows(min_row=8, values_only=True):
+                if not row or len(row) < 8 or row[2] is None:
+                    break
+                pid = (asin2pid.get(S.norm(row[2])) or asku2pid.get(S.norm(row[1]))) \
+                    if is_amz else (pair2pid.get((S.norm(row[2]), S.norm(row[4])))
+                                    or ctrl2pid.get(S.norm(row[2])))
+                if pid and isinstance(row[7], (int, float)) and row[7]:
+                    d[str(pid)] = d.get(str(pid), 0) + row[7]
+        wb.close()
+    return dict(sorted(out.items(), key=lambda kv: -_month_key(kv[0])))
+
+
+def build_stocktake(pm, lt, hist_months, month_sheet):
+    """⑨ 棚卸対象リスト — **在庫があるものは全部**が対象
+
+    売上上位だけでは足りない。動かない在庫こそ誰も見ないまま金額だけ残るため、
+    低回転・長期滞留を優先する。各区分の中は**在庫金額の大きい順**。
+
+    ⚠️ 季節商品があるため、この区分を**自動的な廃棄・処分判定に使わないこと**
+       (2026-09-09 ChatGPT承認条件)。あくまで「数えに行く順番」である。
+    """
+    stock, asof = load_real_stock()
+    if not stock:
+        return [], []
+    ctrl2pid, asin2pid = {}, {}
+    for x in lt:
+        if x['ch'] == '楽天' and x.get('rctrl'):
+            ctrl2pid.setdefault(S.norm(x['rctrl']), str(x['pid']))
+        if x['ch'] == 'Amazon' and x.get('asin'):
+            asin2pid.setdefault(S.norm(x['asin']), str(x['pid']))
+    rows = []
+    for (ch, key), d in stock.items():
+        pid = (ctrl2pid if ch == '楽天' else asin2pid).get(key)
+        p = pm.get(pid) if pid else None
+        cost = (p or {}).get('cost')
+        amount = (d['qty'] * cost) if isinstance(cost, (int, float)) else None
+        # 直近何か月売れていないか
+        gap = None
+        for i, m in enumerate(hist_months):
+            if pid and hist_months[m].get(pid):
+                gap = i
+                break
+        if gap is None:
+            gap = len(hist_months)
+        if cost is None:
+            grp, note = 'E 要調査', '標準原価が無く在庫金額を出せない'
+        elif gap >= STALE_LONG:
+            grp, note = 'D 長期滞留', f'{STALE_LONG}か月以上売上なし。処分の検討対象'
+        elif gap >= STALE_LOW:
+            grp, note = 'C 低回転', f'{STALE_LOW}か月以上売上なし。評価損の検討対象'
+        elif gap == 0:
+            grp, note = 'A 直近販売あり', '動きがあるぶん差異も出やすい'
+        else:
+            grp, note = 'B 通常', ''
+        rows.append([grp, ch, key, (p or {}).get('name', '(マスター未登録)')[:44],
+                     d['sku'], d['qty'], cost, amount,
+                     f'{gap}か月' if gap < len(hist_months) else f'{len(hist_months)}か月以上',
+                     note, d['src'], ''])
+    order = {'D 長期滞留': 0, 'C 低回転': 1, 'A 直近販売あり': 2, 'B 通常': 3, 'E 要調査': 4}
+    rows.sort(key=lambda x: (order.get(x[0], 9), -(x[7] or 0)))
+    return rows, asof
+
+
 def build_margin_outliers(month_sheet, prev_sheet):
     """⑨ 利益率の異常値 — 仕入値の入力ミスを見つける
 
@@ -729,6 +866,41 @@ def build_retire_candidates(pm, lt, stock, sold, sold_prev, hist,
 
 
 # --- ⑤ Amazon手数料未反映 -------------------------------------------------
+def fee_quality(month_sheet):
+    """K列(販売手数料)の実額化の品質を測る(ChatGPT指摘H)
+
+    同じ列に「実額」と「暫定15%の数式」が混在する。列を見ても区別できないので、
+    **金額ベースと行ベースの両方**を数えて品質差を可視化する。
+    金額の大きい商品から実額化されるため、金額88%でも行では34%ということが起きる。
+    """
+    wb = load_workbook(S.AMZ_KPI_FILE)          # 数式のまま読む
+    if month_sheet not in wb.sheetnames:
+        return None
+    ws = wb[month_sheet]
+    prov = act = 0
+    r = 8
+    while ws.cell(r, 3).value is not None:
+        v = ws.cell(r, 11).value                # K列
+        if isinstance(v, str) and v.startswith('='):
+            prov += 1
+        elif v is not None:
+            act += 1
+        r += 1
+    n = prov + act
+    wbv = load_workbook(S.AMZ_KPI_FILE, read_only=True, data_only=True)
+    wsv = wbv[month_sheet]
+    tot = 0.0
+    rr = 8
+    while wsv.cell(rr, 3).value is not None:
+        v = wsv.cell(rr, 11).value
+        if isinstance(v, (int, float)):
+            tot += v
+        rr += 1
+    wbv.close()
+    return {'act': act, 'prov': prov, 'n': n,
+            'row_rate': (act / n) if n else 0, 'total': tot}
+
+
 def build_fee_unresolved(month_sheet, tx_csv):
     if not tx_csv or not os.path.exists(tx_csv):
         return [], '(Transaction.csv 未指定のためスキップ)'
@@ -979,6 +1151,9 @@ def main():
     mall_idx = load_mall_inventory()
 
     fees, fee_note = build_fee_unresolved(month_sheet, tx_csv)
+    fq = fee_quality(month_sheet)
+    monthly = load_monthly_sales(pair2pid, ctrl2pid, asin2pid, asku2pid)
+    stocktake, stock_asof = build_stocktake(pm, lt, monthly, month_sheet)
     # ③ 広告改善一覧との重複を突き合わせるための対応表
     ad_spend = load_ad_spend(month_sheet, pair2pid, ctrl2pid, asin2pid, asku2pid)
 
@@ -1026,7 +1201,12 @@ def main():
          'widths': (42, 14, 30, 46),
          'key_cols': [0],
          'how': '出品テーブルへ AmazonSKU を登録',
-         'note': (fee_note + ' / 修正場所: 出品テーブル G列(AmazonSKU)')},
+         'note': (fee_note + ' / 修正場所: 出品テーブル G列(AmazonSKU)'
+                  + (f' ★K列(販売手数料)の実額化: 行ベース {fq["row_rate"]:.1%}'
+                     f'({fq["act"]}行が実額 / {fq["prov"]}行が暫定15%のまま)。'
+                     '同じ列に実額と暫定が混在するため、列を見ても区別できない。'
+                     '**金額ベースの反映率だけ見ると品質を高く錯覚する**'
+                     if fq else ''))},
         {'title': '06_廃番整理候補',
          'headers': ['内部管理ID', '商品名', '現在在庫数', '最後の販売月', '最後の仕入日',
                      '累計販売数', '累計利益', '楽天掲載', 'Amazon掲載',
@@ -1043,7 +1223,31 @@ def main():
                   '⚠️「最後の仕入日」は発注管理がOSの外にあるため取得できない。'
                   '⚠️ 再仕入予定も未確認のため誤検知がある。'
                   '★ 広告費の列に金額があれば、廃番候補に広告を出し続けている')},
-        {'title': '07_利益率の異常値',
+        {'title': '07_棚卸対象リスト',
+         'headers': ['滞留区分', 'チャネル', '識別子', '商品名', 'SKU', '在庫数',
+                     '標準原価', '在庫金額', '直近の販売', '所見', '在庫の出所',
+                     '実棚数(記入)'],
+         'rows': stocktake,
+         'widths': (14, 9, 20, 40, 24, 9, 10, 12, 12, 40, 16, 12),
+         'key_cols': [1, 2],
+         'how': '数えた結果は 在庫管理テーブル_v1.1.xlsm「棚卸入力シート」へ記録する',
+         'note': (f'**在庫があるものは全部が対象。** 売上上位だけでは足りない。'
+                  f'動かない在庫こそ誰も見ないまま金額だけ残るため、'
+                  f'D長期滞留({STALE_LONG}か月売上0) → C低回転({STALE_LOW}か月売上0) '
+                  f'→ A直近販売あり → B通常 の順に並べ、各区分の中は在庫金額の大きい順。'
+                  '⚠️ **季節商品があるため、この区分を自動的な廃棄・処分判定に使わないこと。**'
+                  'あくまで「数えに行く順番」である。'
+                  + (f' ★在庫データの基準日: '
+                     + ' / '.join(f'{c} {d:%Y-%m-%d}' for c, d in stock_asof)
+                     + '(現在在庫ではない。取得し直してから数えること)'
+                     if stock_asof else '')
+                  + f' ⚠️ OSが持っている月次記録は {len(monthly)}か月分'
+                  + f'({" / ".join(monthly)})のため、'
+                  + (f'D長期滞留({STALE_LONG}か月)の判定はまだ成立しない。'
+                     if len(monthly) < STALE_LONG else '')
+                  + ' ⚠️「E 要調査」は標準原価が無く在庫金額を計算できない行。'
+                  '合計金額はその分だけ過小である')},
+        {'title': '08_利益率の異常値',
          'headers': ['優先度', 'チャネル', '識別子', '商品名', f'{month_sheet}個数',
                      f'{month_sheet}売上', '平均単価', '仕入値', '粗利率',
                      f'{prev_sheet}の仕入値', '疑わしい理由', '対応方法', '確認済(記入)'],
@@ -1056,7 +1260,7 @@ def main():
                   f'閾値: {MARGIN_HIGH:.0%}以上=高すぎ / {MARGIN_LOW:.0%}未満=低すぎ / '
                   f'前月から±{MARGIN_SHIFT:.0%}以上の変動。'
                   '⚠️ 高粗利が実力の商品もあるので、機械的に直さず中身を見ること')},
-        {'title': '08_配送自動化カバー率',
+        {'title': '09_配送自動化カバー率',
          'headers': ['指標', '実数', '率', '定義', '注記'],
          'rows': build_coverage(pm, sold, month_sheet),
          'widths': (38, 20, 10, 46, 60),
@@ -1065,7 +1269,7 @@ def main():
          'note': ('★最優先目標「配送ラベル自動作成」の進み具合を測る唯一の指標。'
                   '入力率だけでは「効く整備をしているか」が分からないため、'
                   '出荷個数カバー率を主KPIとする(2026-09-09 ChatGPT承認)')},
-        {'title': '09_月次経費(黄色セル)',
+        {'title': '10_月次経費(黄色セル)',
          'headers': ['チャネル', '費目', 'セル', '取得元', '入力者', '埋めないとどうなるか',
                      '入力済(記入)'],
          'rows': build_expense_cells(month_sheet),
