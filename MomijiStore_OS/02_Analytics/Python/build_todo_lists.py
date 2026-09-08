@@ -237,17 +237,28 @@ def build_new_products(month_sheet):
 
 
 # --- ② 原価確認 -------------------------------------------------------------
+def _both_empty(r, mc):
+    """マスターもKPIも原価が空の行は「不一致」ではなく「未入力」。
+    adopt では解決できず、③商品情報不足(標準原価)が同じ商品を扱う。
+    ②へ残すと同じ商品が2枚の一覧に並び、どちらを見ればよいか分からなくなる。"""
+    return mc in (None, '', 0) and r['cost'] in (None, '', 0)
+
+
 def build_cost_conflicts(month_sheet, sold):
     rows = []
     cost_by_pid, pair2pid, ctrl2pid = S.load_master()
     _, conflict, _ = S.classify(S.load_kpi_month(month_sheet),
                                 cost_by_pid, pair2pid, ctrl2pid)
     for r, pid, mc in conflict:
+        if _both_empty(r, mc):
+            continue
         rows.append(_cost_row('楽天', pid, r, mc, sold, month_sheet, 'adopt'))
     cost_by_pid, asin2pid, asku2pid = S.load_master_amazon()
     _, conflict_a, _ = S.classify_amazon(S.load_amazon_kpi_month(month_sheet),
                                          cost_by_pid, asin2pid, asku2pid)
     for r, pid, mc in conflict_a:
+        if _both_empty(r, mc):
+            continue
         rows.append(_cost_row('Amazon', pid, r, mc, sold, month_sheet, 'adopt-amazon'))
     return rows
 
@@ -770,7 +781,9 @@ def main():
          'widths': (10, 13, 40, 12, 14, 10, 11, 11, 12, 12, 44),
          'key_cols': [1],
          'how': '承認欄へ記入 → adopt コマンドを実行',
-         'note': '修正場所: 商品マスター E列(標準原価)。⚠️ 両方が空の行は adopt では解決しない'},
+         'note': ('修正場所: 商品マスター E列(標準原価)。'
+                  'マスターとKPIの値が食い違う行だけを載せる。'
+                  '両方とも空の行は「未入力」なので ③商品情報不足 側で扱う')},
         {'title': '03_商品情報不足',
          'headers': ['★', '優先度', '内部管理ID', '商品名', '不足項目', '現在値',
                      '候補(AIの提示)', '根拠', '確信度', f'{month_sheet}出荷',
