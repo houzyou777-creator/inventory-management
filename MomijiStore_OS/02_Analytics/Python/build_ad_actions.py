@@ -64,6 +64,25 @@ KPI_RAKUTEN = SD + '/楽天運営 KPI管理シート.xlsx'
 KPI_AMAZON = SD + '/Amazon運営 KPI管理シート.xlsx'
 
 
+def load_margin_now(month):
+    """現在の限界利益(楽天+Amazon)。改善率の分母に使う。"""
+    total = 0.0
+    for f in (KPI_RAKUTEN, KPI_AMAZON):
+        if not os.path.exists(f):
+            continue
+        wb = load_workbook(f, data_only=True)
+        if month not in wb.sheetnames:
+            continue
+        ws = wb[month]
+        for r in range(8, ws.max_row + 1):
+            if ws.cell(r, 13).value == '限界利益':
+                v = ws.cell(r, 14).value
+                if isinstance(v, (int, float)):
+                    total += v
+                break
+    return total
+
+
 def load_no_cost(month):
     """仕入値(KPIシートL列)が未入力の商品キーを集める。
 
@@ -209,112 +228,150 @@ def sheet_roas_drop(cur, prev, month, prev_month):
     return [[i] + r for i, r in enumerate(rows, 1)]
 
 
-def sheet_stop(cur):
-    """⑤ 広告停止候補 — ②③をまとめ、止める理由と回収額を1行に"""
+MIN_SPEND, MIN_ORDERS = 300, 3      # これ未満は「効率が良い/悪い」と言い切れない
+
+
+def classify(d):
+    """1商品を **停止 / 維持 / テスト / 増額** のどれかに振り分け、理由を返す。
+
+    判断の軸は純利益貢献(= 広告経由粗利 − 広告費)。ROASではない。
+    ただし**根拠が薄いものを言い切らない**。実績が少ない商品、
+    粗利率が出せない商品、仕入値が未入力の商品は「テスト」へ回す。
+    分からないものは分からないと書く。
+    """
+    thin = d['spend'] < MIN_SPEND or d['ad_orders'] < MIN_ORDERS
+    eff = (d['net'] / d['spend']) if (d['net'] is not None and d['spend']) else None
+
+    # ① 売上ゼロ — 粗利率に関係なく判定できる。最も確実
+    if d['ad_sales'] == 0:
+        return ('停止', d['spend'], '高',
+                f'広告費 ¥{d["spend"]:,.0f} を使って広告経由の売上が1円も無い'
+                + (f'(クリック{d["clicks"]:.0f}回)' if d['clicks'] else '(クリックも無い)'))
+
+    # ② 粗利率が出せない — KPIシートに行が無い = その月に売れていない
+    if d['net'] is None:
+        return ('テスト', 0, '—',
+                '商品の粗利率が出せず損得を判定できない(KPIシートに行が無い)。'
+                '少額で様子を見るか、まず商品マスターを整える')
+
+    # ③ 仕入値未入力 — 粗利率が過大に出るので言い切れない
+    if d['no_cost']:
+        return ('テスト', 0, '低',
+                f'⚠️ 仕入値が未入力で粗利率 {d["rate"]:.0%} が過大に出ている。'
+                '先に原価を入れれば正しく判定できる')
+
+    # ④ 赤字 — 広告が生んだ粗利より広告費が大きい
+    #    ⚠️ ここで実績量(thin)を理由に確信度を下げてはいけない。
+    #    赤字は**今月すでに発生した実測値**であり、外挿ではない。
+    #    実績量の下限は「増額しても同じ効率が続くか」を推し量るときの話であって、
+    #    起きてしまった損失を疑う理由にはならない
+    if d['net'] < 0:
+        return ('停止', -d['net'], '中',
+                f'広告が生んだ粗利 ¥{d["ad_gp"]:,.0f} < 広告費 ¥{d["spend"]:,.0f}'
+                f'(粗利率 {d["rate"]:.1%} / ROAS {d["roas"]:.0%})。売るほど利益が減る'
+                + (f'。ただし{d["ad_orders"]:.0f}件のみの実績なので'
+                   '来月も同じとは限らない' if thin else ''))
+
+    # ⑤ 黒字だが実績が薄い — 増額の根拠にはならない
+    if thin:
+        return ('テスト', 0, '低',
+                f'黒字だが実績が少ない(広告費 ¥{d["spend"]:,.0f} / {d["ad_orders"]:.0f}件)。'
+                '効率の推定が不確かなので、小さく増やして確かめる')
+
+    dep = d['dep']
+    # ⑥ 黒字で実績も十分 — あとは伸びしろがあるか
+    if eff >= 0.5 and (dep is None or dep < 0.8):
+        return ('増額', d['spend'] * 0.5 * eff, '中',
+                f'広告費1円が純利益 {eff:.1f}円 を生む'
+                + (f'。広告依存度 {dep:.0%} でまだ伸びしろがある' if dep is not None
+                   and dep < 0.5 else
+                   f'。広告依存度 {dep:.0%} なので小さく増やして様子を見る'
+                   if dep is not None else ''))
+
+    return ('維持', 0, '中',
+            f'黒字(1円あたり純利益 {eff:.1f}円)だが'
+            + (f'広告依存度が {dep:.0%} と高く、増やしても伸びしろは小さい'
+               if dep is not None and dep >= 0.8 else '増額の妙味は小さい')
+            + '。今のまま続ける')
+
+
+def sheet_actions(cur):
+    """⑤ 広告アクション判定 — **出稿している全商品**を4分類する
+
+    旧「停止候補」「増額候補」を1枚にまとめたもの。
+    2枚に分けると同じ商品を2箇所で探すことになり、
+    どちらにも載らない商品(維持)が見えなくなる。
+    """
+    ORDER = {'停止': 0, '増額': 1, 'テスト': 2, '維持': 3}
     rows = []
     for d in cur:
-        g = gain(d)
-        if not g:
-            continue
-        if d['ad_sales'] == 0:
-            why, conf = ('広告経由の売上が1円も無い', '高')
-        else:
-            why = (f'広告が生んだ粗利 ¥{d["ad_gp"]:,.0f} < 広告費 ¥{d["spend"]:,.0f}'
-                   f'(粗利率 {d["rate"]:.1%})')
-            conf = '低' if d['no_cost'] else '中'
-            if d['no_cost']:
-                why += ' ⚠️ 仕入値未入力のため粗利率が過大。先に原価を入れる'
-        rows.append([d['ch'], d['key'], d['name'][:48], round(d['spend']),
-                     round(d['ad_sales']), round(g), why, conf,
+        act, gain_v, conf, why = classify(d)
+        eff = (d['net'] / d['spend']) if (d['net'] is not None and d['spend']) else None
+        rows.append([act, d['ch'], d['key'], d['name'][:46], round(d['spend']),
+                     round(d['ad_sales']),
+                     f'{d["roas"]:.0%}' if d['roas'] else '',
+                     f'{d["rate"]:.1%}' if d['rate'] is not None else '不明',
+                     round(d['net']) if d['net'] is not None else '',
+                     round(eff, 2) if eff is not None else '',
+                     f'{d["dep"]:.0%}' if d['dep'] is not None else '',
+                     round(gain_v), conf, why,
                      ('RMS広告センター' if d['ch'] == '楽天' else 'Amazon広告コンソール'),
                      ''])
-    rows.sort(key=lambda x: -x[5])
+    rows.sort(key=lambda x: (ORDER[x[0]], -x[11]))
     return [[i] + r for i, r in enumerate(rows, 1)]
 
 
-def sheet_boost(cur):
-    """⑥ 広告増額候補 — **次の1円が最も稼ぐ商品**から並べる
-
-    絶対額(純利益貢献)で並べると、既に大きく出稿していて広告依存度が
-    9割に達している商品が上位に来る。そこへ足しても伸びしろは小さい。
-    増額の判断に効くのは「広告費1円あたりいくら純利益が出るか」である。
-
-    ⚠️ 仕入値が未入力の商品は粗利率が過大に出るため、確信度を下げて末尾へ回す。
-    """
-    MIN_SPEND, MIN_ORDERS = 300, 3
-    rows = []
-    for d in cur:
-        if d['net'] is None or d['net'] <= 0 or d['spend'] <= 0:
-            continue
-        eff = d['net'] / d['spend']            # 広告費1円が生む純利益
-        if eff < 0.5:                          # 1円で0.5円未満なら増額の妙味は薄い
-            continue
-        dep = d['dep']
-        # 広告費¥12で1件売れただけの商品は「1円あたり175円」になるが、
-        # そこから「増額すれば儲かる」とは言えない。実績量の下限を設ける
-        thin = d['spend'] < MIN_SPEND or d['ad_orders'] < MIN_ORDERS
-        if d['no_cost']:
-            note, conf = '⚠️ 仕入値が未入力。粗利率が過大に出ている。先に原価を入れる', '低'
-        elif thin:
-            note = (f'⚠️ 実績が少ない(広告費¥{d["spend"]:,.0f} / {d["ad_orders"]:.0f}件)。'
-                    '効率の推定が不確か。まず小さく試す')
-            conf = '低'
-        elif dep is not None and dep < 0.5:
-            note, conf = '広告依存度が低く、伸びしろがある', '中'
-        elif dep is not None and dep < 0.8:
-            note, conf = 'そこそこ広告に頼っている。小さく増やして様子を見る', '中'
-        else:
-            note, conf = '既に広告依存が高い。増額しても伸びしろは小さい', '低'
-        rows.append([d['ch'], d['key'], d['name'][:46], round(d['spend']),
-                     round(d['ad_sales']), f'{d["roas"]:.0%}' if d['roas'] else '',
-                     f'{d["rate"]:.1%}' if d['rate'] else '', round(d['net']),
-                     round(eff, 2), f'{dep:.0%}' if dep is not None else '',
-                     conf, note, round(d['spend'] * 0.5 * eff)])
-    # 確信度の低いもの(仕入値未入力・実績が薄い)は後ろへ。その中では効率順
-    rows.sort(key=lambda x: (x[10] == '低', -x[8]))
-    return [[i] + r for i, r in enumerate(rows, 1)]
-
-
-def sheet_forecast(cur, stop_rows, boost_rows, budget):
-    """⑦ 改善した場合の利益増加予測(月間・年間)
+def sheet_forecast(cur, acts, budget, margin_now):
+    """⑦ 改善した場合の利益増加予測(月間・年間)+ 改善率
 
     確信度の高いものから積み上げる。**確信度の低いものを合計に混ぜない。**
     """
-    zero = [r for r in stop_rows if r[5] == 0]
-    over = [r for r in stop_rows if r[5] > 0]
-    zero_total = sum(r[6] for r in zero)
-    over_total = sum(r[6] for r in over)
-    # 仕入値未入力の商品は粗利率が過大なので、②の金額としては信用できない
-    over_nc = [r for r in over if r[8] == '低']
-    over_solid = over_total - sum(r[6] for r in over_nc)
+    stop = [r for r in acts if r[1] == '停止']
+    zero = [r for r in stop if r[6] == 0]                  # 広告経由売上 0
+    over = [r for r in stop if r[6] > 0]
+    over_solid = [r for r in over if r[13] != '低']
+    boost_rk = [r for r in acts if r[1] == '増額' and r[2] == '楽天']
+    boost_am = [r for r in acts if r[1] == '増額' and r[2] == 'Amazon']
+    test = [r for r in acts if r[1] == 'テスト']
 
+    z = sum(r[12] for r in zero)
+    o = sum(r[12] for r in over_solid)
+    o_thin = sum(r[12] for r in over) - o
     # 増額は楽天の予算余力の範囲でしか置けない。
     # Amazonはレポートに予算上限が無いため、金額を置かず候補提示にとどめる
-    rk = [r for r in boost_rows if r[1] == '楽天' and r[11] != '低']
-    eff_rk = (sum(r[8] for r in rk) / sum(r[4] for r in rk)) if rk else 0
-    boost_rk = budget * eff_rk
+    eff_rk = (sum(r[9] for r in boost_rk) / len(boost_rk)) if boost_rk else 0
+    b = min(budget * eff_rk, sum(r[12] for r in boost_rk))
 
-    unknown = [d for d in cur if d['ad_sales'] > 0 and d['net'] is None]
-    am = [r for r in boost_rows if r[1] == 'Amazon' and r[11] != '低']
+    ad_total = sum(d['spend'] for d in cur)
+
+    def row(name, amt, conf, note):
+        return [name, round(amt), round(amt * 12),
+                (amt / ad_total) if ad_total else '',
+                (amt / margin_now) if margin_now else '',
+                conf, note]
 
     rows = [
-        ['① 売上ゼロの広告を止める', round(zero_total), round(zero_total * 12), '高',
-         f'{len(zero)}商品。広告経由の売上が1円も無い。'
-         '止めれば広告費がそのまま利益になる。粗利率に依存しないので最も確実'],
-        ['② 粗利を超える広告を止める', round(over_solid), round(over_solid * 12), '中',
-         f'{len(over) - len(over_nc)}商品。広告が生む粗利より広告費が大きい。'
-         + (f'別に仕入値未入力が{len(over_nc)}商品(¥{sum(r[6] for r in over_nc):,.0f})'
-            'あるが、粗利率が過大なため金額には含めない' if over_nc else '')],
-        ['③ 楽天の予算余力を効率の良い広告へ回す', round(boost_rk), round(boost_rk * 12),
-         '低', f'余力 ¥{budget:,.0f} × 楽天の優良広告の平均効率 {eff_rk:.2f}円/円。'
-         '**今の効率が続くと仮定した参考値**。広告は増やすほど効率が落ちるため、実際はこれより小さい'],
-        ['合計(①+②) — 止めるだけ', round(zero_total + over_solid),
-         round((zero_total + over_solid) * 12), '高〜中',
-         '増額の不確実性を含まない。**まずここだけ実行するのが安全**'],
-        ['合計(①+②+③)', round(zero_total + over_solid + boost_rk),
-         round((zero_total + over_solid + boost_rk) * 12), '中', '③を含めた場合'],
+        row('① 売上ゼロの広告を止める', z, '高',
+            f'{len(zero)}商品。広告経由の売上が1円も無い。止めれば広告費がそのまま'
+            '利益になる。粗利率に依存しないので最も確実'),
+        row('② 粗利を超える広告を止める', o, '中',
+            f'{len(over_solid)}商品。広告が生む粗利より広告費が大きい。'
+            + (f'別に実績の薄いものが{len(over) - len(over_solid)}商品'
+               f'(¥{o_thin:,.0f})あるが、確度が低いので含めない' if o_thin else '')),
+        row('③ 楽天の予算余力を効率の良い広告へ回す', b, '低',
+            f'余力 ¥{budget:,.0f} × 楽天の増額候補{len(boost_rk)}商品の平均効率'
+            f' {eff_rk:.1f}円/円。**今の効率が続くと仮定した参考値**。'
+            '広告は増やすほど効率が落ちるため実際はこれより小さい'),
+        row('合計(①+②) — 止めるだけ', z + o, '高〜中',
+            '増額の不確実性を含まない。**まずここだけ実行するのが安全**'),
+        row('合計(①+②+③)', z + o + b, '中', '③を含めた場合'),
     ]
     notes = [
+        '',
+        '【改善率の分母】',
+        f'  ・広告費に対する改善率 … 8月の広告費 ¥{ad_total:,.0f} に対する割合',
+        f'  ・限界利益に対する改善率 … 現在の限界利益 ¥{margin_now:,.0f} に対する割合'
+        '(楽天+Amazon。経費が未入力のため暫定値)',
         '',
         '【この数字の読み方】',
         '  ・改善額は**上限値**。広告を止めても売上の一部は自然検索で拾える可能性がある',
@@ -325,57 +382,30 @@ def sheet_forecast(cur, stop_rows, boost_rows, budget):
         '  ・③は「増やせば同じ効率で returns が続く」という仮定。実際は逓減する',
         '',
         '【合計に含めていないもの】',
-        f'  ・粗利率が出せず判定できない商品 {len(unknown)}件'
-        f'(広告費 ¥{sum(d["spend"] for d in unknown):,.0f})。'
-        'KPIシートに行が無い = その月に売れていない商品',
-        f'  ・仕入値(黄色セル)未入力のため粗利率が過大な商品。'
-        f'②で{len(over_nc)}件を除外。**黄色セルを埋めれば精度が上がる**',
-        f'  ・Amazonの増額余地({len(am)}商品)。レポートに予算上限が無いため金額を置けない。'
-        '⑥の一覧で個別に判断する',
+        f'  ・「テスト」に分類した {len(test)}商品(広告費 ¥{sum(r[5] for r in test):,.0f})。'
+        '実績が薄い・粗利率が出せない・仕入値が未入力で、損得を言い切れない',
+        f'  ・Amazonの増額余地({len(boost_am)}商品)。レポートに予算上限が無いため'
+        '金額を置けない。⑤の一覧で個別に判断する',
         '',
         '  ・最終判断は人が行う。AIは候補を出すところまで(AI Constitution 第1条)',
     ]
     return rows, notes
 
 
-def sheet_top20(stop_rows, boost_rows, drop_rows, top_n=20):
+def sheet_top20(acts, drop_rows, top_n=20):
     """① 利益改善インパクトTOP20 — 商品単位で、改善額が大きい順に1行"""
-    acts = {}
-
-    def add(ch, key, name, act, gainv, why, where, conf):
-        k = (ch, key)
-        a = acts.setdefault(k, {'ch': ch, 'key': key, 'name': name, 'acts': [],
-                                'gain': 0.0, 'whys': [], 'where': set(), 'conf': []})
-        a['acts'].append(act)
-        a['gain'] += gainv
-        a['whys'].append(why)
-        a['where'].add(where)
-        a['conf'].append(conf)
-
-    for r in stop_rows:
-        add(r[1], r[2], r[3], '広告を止める', r[6], r[7], r[9], r[8])
-    for r in boost_rows:
-        if r[11] == '低':      # 粗利率が怪しい・実績が薄いものは載せない
-            continue
-        add(r[1], r[2], r[3], '広告を増やす', r[13],
-            f'広告費1円が純利益 {r[9]}円 を生む({r[12]})',
-            ('RMS広告センター' if r[1] == '楽天' else 'Amazon広告コンソール'), r[11])
-    for r in drop_rows:
-        k = (r[1], r[2])
-        if k in acts:                       # 既に止める/増やす対象なら理由だけ足す
-            acts[k]['whys'].append(f'ROASが前月 {r[6]} → {r[7]} へ悪化')
-        else:
-            add(r[1], r[2], r[3], '原因を調べる', 0,
-                f'ROASが前月 {r[6]} → {r[7]} へ悪化(粗利 ¥{r[10]:,} 減)',
-                '入札・キーワード・在庫・価格', '—')
-
-    rows = sorted(acts.values(), key=lambda a: -a['gain'])[:top_n]
-    return [[i, a['ch'], a['key'], a['name'],
-             '\n'.join('・' + x for x in dict.fromkeys(a['acts'])),
-             round(a['gain']), round(a['gain'] * 12),
-             '\n'.join(a['whys']), '/'.join(sorted(set(a['conf']) - {'—'})) or '—',
-             '\n'.join(sorted(a['where']))]
-            for i, a in enumerate(rows, 1)]
+    drop = {(r[1], r[2]): r for r in drop_rows}
+    rows = [r for r in acts if r[12] > 0]
+    rows.sort(key=lambda r: -r[12])
+    out = []
+    for i, r in enumerate(rows[:top_n], 1):
+        why = r[14]
+        d = drop.get((r[2], r[3]))
+        if d:
+            why += f'\n加えて ROASが前月 {d[6]} → {d[7]} へ悪化(粗利 ¥{d[10]:,} 減)'
+        out.append([i, r[1], r[2], r[3], r[4], r[5], r[12], round(r[12] * 12),
+                    r[13], why, r[15]])
+    return out
 
 
 # ═══ 出力 ═════════════════════════════════════════════════════════════════
@@ -397,8 +427,11 @@ def write(ws, title, subtitle, headers, rows, widths, fill_col=None, fill=None):
             c.alignment = TOP
             if isinstance(v, (int, float)) and headers[i - 1].endswith('額'):
                 c.number_format = '#,##0'
-        if fill_col and fill:
-            ws.cell(r, fill_col).fill = fill
+        if fill_col:
+            c = ws.cell(r, fill_col)
+            v = str(c.value)
+            c.fill = (fill or (S_FILL if v == '停止' else G_FILL if v == '増額'
+                               else PatternFill(fill_type=None)))
         n = max((str(v).count('\n') for v in row if isinstance(v, str)), default=0)
         if n:
             ws.row_dimensions[r].height = 14 * (n + 1)
@@ -442,27 +475,26 @@ def main():
                 spent = sum(d['spend'] for d in cur if d['ch'] == '楽天')
                 budget = max(0.0, b['有効予算'] - spent)
 
+    margin_now = load_margin_now(month)
     zero = sheet_zero_sales(cur)
     over = sheet_over_gp(cur)
     drop = sheet_roas_drop(cur, pre, month, prev)
-    stop = sheet_stop(cur)
-    boost = sheet_boost(cur)
-    fc, notes = sheet_forecast(cur, stop, boost, budget)
-    top = sheet_top20(stop, boost, drop)
+    acts = sheet_actions(cur)
+    fc, notes = sheet_forecast(cur, acts, budget, margin_now)
+    top = sheet_top20(acts, drop)
 
     wb = Workbook()
     wb.remove(wb.active)
 
     write(wb.create_sheet('01_利益改善TOP20'),
           f'利益改善インパクト TOP20 — {month}',
-          '★ 1商品=1行。ご指定どおり改善額が大きい順。'
+          '★ 1商品=1行。改善額が大きい順。'
           '改善額 = 広告経由粗利 − 広告費(ROASではなく利益で判断する)\n'
           '⚠️ 「止める」は確実に戻る額。「増やす」は今の効率が続くと仮定した外挿値で、'
-          '実際は逓減する。**確信度の列と合わせて読むこと。'
-          '確実に取りたいなら「止める」行から手を付ける**',
-          ['順', 'チャネル', '識別子', '商品名', 'すること', '月間改善額', '年間改善額',
-           '根拠', '確信度', '実行場所'],
-          top, (5, 9, 15, 34, 20, 12, 12, 46, 9, 22), 6, S_FILL)
+          '実際は逓減する。**確実に取りたいなら「停止」の行から手を付ける**',
+          ['順', 'する事', 'チャネル', '識別子', '商品名', '広告費', '広告経由売上',
+           '月間改善額', '年間改善額', '確信度', '理由', '実行場所'],
+          top, (5, 8, 9, 15, 32, 10, 12, 12, 12, 9, 52, 22), 8, S_FILL)
 
     write(wb.create_sheet('02_売上0円広告費'),
           f'売上0円 広告費ランキング — {month}',
@@ -490,46 +522,50 @@ def main():
            '減った粗利額', '主因', '注意', '確認すること'],
           drop, (5, 9, 15, 34, 11, 11, 10, 10, 13, 13, 12, 34, 12, 30))
 
-    write(wb.create_sheet('05_広告停止候補'),
-          f'広告停止候補 — {month}',
-          '②と③をまとめたもの。**AIは候補を出すところまで。止めるかどうかは人が決める**'
-          '(AI Constitution 第1条)。⚠️ 改善額は上限値 — 止めても一部は自然検索で拾える',
-          ['順', 'チャネル', '識別子', '商品名', '広告費', '広告経由売上',
-           '止めた場合の改善額', '止める理由', '確信度', '実行場所', '判断(記入)'],
-          stop, (5, 9, 15, 38, 10, 12, 15, 46, 8, 20, 12), 7, S_FILL)
+    write(wb.create_sheet('05_広告アクション判定'),
+          f'広告アクション判定 — {month}(出稿している全 {len(acts)} 商品)',
+          '**停止 / 増額 / テスト / 維持** の4分類。旧「停止候補」「増額候補」を1枚にした。'
+          '2枚に分けると同じ商品を2箇所で探すことになり、'
+          'どちらにも載らない「維持」の商品が見えなくなるため\n'
+          '⚠️ AIは候補を出すところまで。決めるのは人(AI Constitution 第1条)',
+          ['順', 'する事', 'チャネル', '識別子', '商品名', '広告費', '広告経由売上',
+           'ROAS', '粗利率', '純利益貢献', '1円あたり純利益', '広告依存度',
+           '月間改善額', '確信度', '理由', '実行場所', '判断(記入)'],
+          acts, (5, 8, 9, 15, 34, 10, 12, 8, 8, 11, 13, 10, 12, 8, 54, 20, 12),
+          2, None)
 
-    write(wb.create_sheet('06_広告増額候補'),
-          f'広告増額候補 — {month}',
-          '**次の1円が最も稼ぐ商品**から並べる(絶対額ではなく効率順)。'
-          f'⚠️ 楽天の予算余力は ¥{budget:,.0f}。'
-          '**広告は増やすほど効率が落ちる**ため、予測額は上限の参考値として見る',
-          ['順', 'チャネル', '識別子', '商品名', '広告費', '広告経由売上', 'ROAS',
-           '粗利率', '純利益貢献', '1円あたり純利益', '広告依存度', '確信度', '所見',
-           '50%増額時の追加利益額'],
-          boost, (5, 9, 15, 34, 10, 12, 8, 8, 11, 13, 10, 8, 40, 16), 10, G_FILL)
-
-    ws7 = wb.create_sheet('07_利益増加予測')
-    write(ws7, f'改善した場合の利益増加予測 — {month}',
+    ws6 = wb.create_sheet('06_利益増加予測')
+    write(ws6, f'改善した場合の利益増加予測 — {month}',
           '上の一覧をすべて実行した場合。**確信度の高いものから積み上げている**',
-          ['施策', '月間の利益増加額', '年間の利益増加額', '確信度', '内訳・前提'],
-          fc, (30, 16, 16, 10, 76))
+          ['施策', '月間の利益増加額', '年間の利益増加額', '広告費に対する改善率',
+           '限界利益に対する改善率', '確信度', '内訳・前提'],
+          fc, (32, 16, 16, 17, 19, 10, 74))
+    for r in range(6, 6 + len(fc)):
+        for c in (4, 5):
+            ws6.cell(r, c).number_format = '0.0%'
     r = 6 + len(fc) + 1
     for line in notes:
-        ws7.cell(r, 1).value = line
-        ws7.cell(r, 1).font = BOLD if line.startswith('【') else Font()
+        ws6.cell(r, 1).value = line
+        ws6.cell(r, 1).font = BOLD if line.startswith('【') else Font()
         r += 1
 
     os.makedirs(OUT_DIR, exist_ok=True)
     out = f'{OUT_DIR}/広告改善一覧_{month}_{date.today():%Y%m%d}.xlsx'
     wb.save(out)
 
+    from collections import Counter
+    cnt = Counter(r[1] for r in acts)
     print(f'\n═══ 広告改善一覧 ═══')
     for name, rows_ in [('01_利益改善TOP20', top), ('02_売上0円広告費', zero),
                         ('03_広告費が粗利超過', over), ('04_ROAS急落', drop),
-                        ('05_広告停止候補', stop), ('06_広告増額候補', boost)]:
+                        ('05_広告アクション判定', acts)]:
         print(f'  {name:22} {len(rows_):4}件')
-    print(f'\n  止めるだけの改善額  月間 ¥{fc[3][1]:,} / 年間 ¥{fc[3][2]:,}')
-    print(f'  増額を含めた場合    月間 ¥{fc[4][1]:,} / 年間 ¥{fc[4][2]:,}')
+    print('     └ 4分類: ' + ' / '.join(f'{k}{cnt[k]}'
+                                       for k in ('停止', '増額', 'テスト', '維持')))
+    print(f'\n  止めるだけの改善額  月間 ¥{fc[3][1]:,} / 年間 ¥{fc[3][2]:,}'
+          f' (広告費の{fc[3][3]:.1%} / 限界利益の{fc[3][4]:.1%})')
+    print(f'  増額を含めた場合    月間 ¥{fc[4][1]:,} / 年間 ¥{fc[4][2]:,}'
+          f' (広告費の{fc[4][3]:.1%} / 限界利益の{fc[4][4]:.1%})')
     print(f'\n  → {out}')
 
 

@@ -35,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sync_cost_master as S          # noqa: E402  突合ロジックを再利用する
 
 BASE = S.BASE
+SD = BASE + '/02_Analytics/SourceData'      # 広告分析シートの置き場
 INV_FILE = BASE + '/01_InventoryManagement/SourceData/在庫管理テーブル_v1.1.xlsm'
 OUTPUT_DIR = BASE + '/01_InventoryManagement/SourceData/Output'
 
@@ -472,8 +473,66 @@ def _month_key(m):
         return 0
 
 
+def build_expense_cells(month_sheet):
+    """⑦ 月次経費(黄色セル) — どの値が未入力か / どこから取るか / 誰が入れるか
+
+    **新しい一覧を作らない。** 取得元と入力者の定義は
+    apply_monthly_expenses.py が持っているので、それを読んで表にするだけ。
+    定義が2箇所にあると必ず片方が古くなる。
+    """
+    import apply_monthly_expenses as E
+    rows = []
+    for d in E.survey(month_sheet):
+        if d['filled']:
+            continue                       # 入力済みは出さない(修正が必要なものだけ)
+        rows.append([d['ch'], d['item'], d['cell'], d['src'], d['who'],
+                     ('限界利益が確定しない' if d['item'] != '仕入値(商品ごと)'
+                      else 'その商品の粗利が出ず、広告の損得も判定できない'), ''])
+    return rows
+
+
+def load_ad_spend(month_sheet, pair2pid, ctrl2pid, asin2pid, asku2pid):
+    """広告分析シートから 内部管理ID → (広告費, 広告経由売上) を作る。
+
+    ③重複の解消。廃番候補に挙がった商品へ広告費を払い続けているなら、
+    それは2つの別々の問題ではなく**ひとつの判断**である。
+    一覧を増やさず、廃番候補の行に広告費を並べて見せる。
+    """
+    out = {}
+    for f, ch, kcol in [(SD + '/楽天RPP広告分析.xlsx', '楽天', 1),
+                        (SD + '/AmazonSP広告分析.xlsx', 'Amazon', 2)]:
+        if not os.path.exists(f):
+            continue
+        wb = load_workbook(f, read_only=True, data_only=True)
+        if month_sheet not in wb.sheetnames:
+            wb.close()
+            continue
+        ws = wb[month_sheet]
+        rows = list(ws.iter_rows(values_only=True))
+        wb.close()
+        hdr = '商品管理番号' if ch == '楽天' else 'SKU'
+        hi = next((i for i, r in enumerate(rows) if r and r[0] == hdr), None)
+        if hi is None:
+            continue
+        sp, sa = (5, 7) if ch == '楽天' else (7, 8)
+        for r in rows[hi + 1:]:
+            if not r or r[0] in (None, '合計'):
+                break
+            k = S.norm(r[kcol - 1])
+            pid = (ctrl2pid.get(k) or pair2pid.get((k, ''))) if ch == '楽天' \
+                else (asin2pid.get(k) or asku2pid.get(k))
+            if not pid:
+                continue
+            spend = r[sp] if isinstance(r[sp], (int, float)) else 0
+            sales = r[sa] if isinstance(r[sa], (int, float)) else 0
+            cur = out.setdefault(str(pid), [0.0, 0.0])
+            cur[0] += spend
+            cur[1] += sales
+    return out
+
+
 def build_retire_candidates(pm, lt, stock, sold, sold_prev, hist,
-                            month_sheet, prev_sheet):
+                            month_sheet, prev_sheet, ad_spend=None):
     by_pid = defaultdict(list)
     for x in lt:
         by_pid[str(x['pid'])].append(x)
@@ -503,11 +562,21 @@ def build_retire_candidates(pm, lt, stock, sold, sold_prev, hist,
             keep = '実績なし — 整理しやすい'
         else:
             keep = '判断が要る'
+        # ③ 広告との重複解消。廃番候補へ広告費を払い続けているなら
+        #    「やめる」と「広告を止める」は同じ判断である
+        ad = (ad_spend or {}).get(pid)
+        ad_c, ad_note = ('', '')
+        if ad and ad[0]:
+            ad_c = round(ad[0])
+            ad_note = ('★ 売上0なのに広告費を払っている。まず広告を止める'
+                       if not ad[1] else '広告経由では売れている。廃番判断は慎重に')
+            conf = '中' if not ad[1] else conf
         rows.append([pid, p['name'][:52], st if st is not None else '(行なし)',
                      h['last'] or '(なし)', '(データなし)',
                      h['qty'], round(h['profit']), rak, amz,
-                     ' / '.join(reasons), conf, keep])
-    rows.sort(key=lambda x: (x[10] != '中', -x[5]))
+                     ' / '.join(reasons), conf, keep, ad_c, ad_note])
+    # 広告費を払っている廃番候補を先頭へ。放置すると毎月お金が出ていく
+    rows.sort(key=lambda x: (not x[12], x[10] != '中', -x[5]))
     return rows
 
 
@@ -762,6 +831,8 @@ def main():
     mall_idx = load_mall_inventory()
 
     fees, fee_note = build_fee_unresolved(month_sheet, tx_csv)
+    # ③ 広告改善一覧との重複を突き合わせるための対応表
+    ad_spend = load_ad_spend(month_sheet, pair2pid, ctrl2pid, asin2pid, asku2pid)
 
     # ★ シートは「修正する順番」で並べる
     specs = [
@@ -811,15 +882,28 @@ def main():
         {'title': '06_廃番整理候補',
          'headers': ['内部管理ID', '商品名', '現在在庫数', '最後の販売月', '最後の仕入日',
                      '累計販売数', '累計利益', '楽天掲載', 'Amazon掲載',
-                     '判定根拠', '確信度', '残す価値'],
+                     '判定根拠', '確信度', '残す価値', f'{month_sheet}広告費', '広告との関係'],
          'rows': build_retire_candidates(pm, lt, stock, sold, sold_prev, hist,
-                                         month_sheet, prev_sheet),
-         'widths': (13, 40, 11, 12, 12, 11, 11, 9, 11, 30, 9, 30),
+                                         month_sheet, prev_sheet, ad_spend),
+         'widths': (13, 40, 11, 12, 12, 11, 11, 9, 11, 30, 9, 30, 11, 13),
          'key_cols': [0],
          'how': '販売停止 / 取扱終了を人が判断',
          'note': ('⚠️「最後の仕入日」は発注管理がOSの外(スプレッドシート)にあるため取得できない。'
                   '⚠️ 再仕入予定も未確認のため誤検知がある。'
-                  '⏸ 販売ステータスの設計は保留中のため、当面は一覧の確認のみ')},
+                  '⏸ 販売ステータスの設計は保留中のため、当面は一覧の確認のみ。'
+                  '★ 広告費の列に金額があれば、廃番候補に広告を出し続けている。'
+                  '「やめる」と「広告を止める」は別々の問題ではなく**ひとつの判断**')},
+        {'title': '07_月次経費(黄色セル)',
+         'headers': ['チャネル', '費目', 'セル', '取得元', '入力者', '埋めないとどうなるか',
+                     '入力済(記入)'],
+         'rows': build_expense_cells(month_sheet),
+         'widths': (10, 20, 12, 44, 40, 40, 12),
+         'key_cols': [0, 1],
+         'how': 'python3 apply_monthly_expenses.py set <月> <チャネル> <費目> <金額>',
+         'note': ('KPIシートの黄色セル。**埋まるまで限界利益は確定しない。**'
+                  '広告費はAIが分析から算出できるが、それ以外は人が請求書・RMS・'
+                  'セラーセントラルから転記する。'
+                  '取得元と入力者の定義は apply_monthly_expenses.py が正本')},
     ]
 
     wb = Workbook()
