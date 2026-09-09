@@ -257,6 +257,13 @@ def _both_empty(r, mc):
 
 
 def build_cost_conflicts(month_sheet, sold):
+    """② 原価確認 — **単位が揃うと確認できた行だけ差額・影響額を出す**
+
+    (2026-09-10 承認Q-7)。マスターが単品原価でKPIがセット原価なら、
+    引き算した数字は差ではない。元のKPI値とマスター値は残すが、
+    差額・影響額・合計には出さない。
+    """
+    pack, _pos = S.load_pack_info()
     rows = []
     cost_by_pid, pair2pid, ctrl2pid = S.load_master()
     _, conflict, _ = S.classify(S.load_kpi_month(month_sheet),
@@ -264,18 +271,18 @@ def build_cost_conflicts(month_sheet, sold):
     for r, pid, mc in conflict:
         if _both_empty(r, mc):
             continue
-        rows.append(_cost_row('楽天', pid, r, mc, sold, month_sheet, 'adopt'))
+        rows.append(_cost_row('楽天', pid, r, mc, sold, month_sheet, 'adopt', pack))
     cost_by_pid, asin2pid, asku2pid = S.load_master_amazon()
     _, conflict_a, _ = S.classify_amazon(S.load_amazon_kpi_month(month_sheet),
                                          cost_by_pid, asin2pid, asku2pid)
     for r, pid, mc in conflict_a:
         if _both_empty(r, mc):
             continue
-        rows.append(_cost_row('Amazon', pid, r, mc, sold, month_sheet, 'adopt-amazon'))
+        rows.append(_cost_row('Amazon', pid, r, mc, sold, month_sheet, 'adopt-amazon', pack))
     return rows
 
 
-def _cost_row(ch, pid, r, mc, sold, month_sheet, mode):
+def _cost_row(ch, pid, r, mc, sold, month_sheet, mode, pack=None):
     """1行 = 1出品(楽天:管理番号×SKU / Amazon:ASIN×SKU)。
 
     ⚠️ 影響額の個数は **その出品が売れた数** を使う(2026-09-10 承認R)。
@@ -289,6 +296,18 @@ def _cost_row(ch, pid, r, mc, sold, month_sheet, mode):
     qty = r.get('units', 0)
     ambiguous = len({c for c in r.get('cost_variants', {new}) if c is not None}) > 1
     rows_note = ('/'.join(str(x) for x in r.get('sheet_rows', [])) or '')
+
+    # 単位が揃うと確認できなければ、差額も影響額も出さない(承認Q-7)
+    info, amb = S.lookup_pack(pack or {}, ch, S.norm(r['key']), S.norm(r['sku']))
+    info = info or {}
+    unit_ok = (info.get('unit') in (S.UNIT_SINGLE, S.UNIT_SET)
+               and (info.get('unit') == S.UNIT_SET
+                    or isinstance(info.get('pack'), (int, float))))
+    if not ambiguous and not unit_ok:
+        return [ch, pid, r['name'], mc if mc is not None else '',
+                new if new is not None else '', '単位未確認', '', qty, '', rows_note,
+                (amb or '販売入数・原価単位が未確認。'
+                 '出品テーブルへ根拠付きで記入すると差額を出せる'), '']
     if ambiguous:
         return [ch, pid, r['name'], mc if mc is not None else '',
                 new if new is not None else '', '要確認', '', qty, '', rows_note,

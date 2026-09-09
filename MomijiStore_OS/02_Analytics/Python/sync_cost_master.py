@@ -427,8 +427,8 @@ def load_pack_info():
         sku = norm(r[6]) if ch == 'Amazon' else norm(r[4])
         g = lambda k: (r[pos[k]] if pos[k] is not None and pos[k] < len(r) else None)
         out.setdefault((ch, key), []).append(
-            {'sku': sku, 'pack': g('販売入数'), 'unit': g('原価単位'),
-             'proof': g('確認根拠')})
+            {'sku': sku, 'pid': str(r[1]), 'pack': g('販売入数'),
+             'unit': g('原価単位'), 'proof': g('確認根拠')})
     wb.close()
     return out, pos
 
@@ -451,10 +451,17 @@ def lookup_pack(pack, ch, key, sku):
             return None, 'SKUで引いても複数該当する'
     if len(cands) == 1:
         return cands[0], ''
-    uniq = {(c['pack'], c['unit']) for c in cands}
-    if len(uniq) == 1:
-        return cands[0], ''
-    return None, f'同じ識別子に入数の違う出品が{len(cands)}件ある(SKUが無く特定できない)'
+    # SKUで絞れないときは、**入数だけでなく 内部管理ID・原価単位 の一致まで見る**
+    # (2026-09-10 承認Q-6)。どれか1つでも食い違えば、どの出品の話か決められない
+    for f, label in (('pid', '内部管理ID'), ('pack', '販売入数'), ('unit', '原価単位')):
+        vals = {c.get(f) for c in cands}
+        if len(vals) > 1:
+            return None, (f'同じ識別子に{len(cands)}件の出品があり{label}が一致しない'
+                          '(SKUが無く特定できない)')
+        if f in ('pack', 'unit') and None in vals:
+            return None, (f'同じ識別子に{len(cands)}件の出品があり、{label}が未確認'
+                          '(SKUが無く特定できない)')
+    return cands[0], ''
 
 
 def _ratio_note(cur, mc):
