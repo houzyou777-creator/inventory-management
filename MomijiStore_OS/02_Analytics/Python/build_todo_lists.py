@@ -678,7 +678,7 @@ def build_stocktake(pm, lt, hist_months, month_sheet):
         if gap is None:
             gap = len(hist_months)
         if cost is None:
-            grp, note = 'E 要調査', '標準原価が無く在庫金額を出せない'
+            grp, note = 'E 未評価(原価不明)', '標準原価が無いため**在庫金額を算出できない**。0円ではない'
         elif gap >= STALE_LONG:
             grp, note = 'D 長期滞留', f'{STALE_LONG}か月以上売上なし。処分の検討対象'
         elif gap >= STALE_LOW:
@@ -688,11 +688,14 @@ def build_stocktake(pm, lt, hist_months, month_sheet):
         else:
             grp, note = 'B 通常', ''
         rows.append([grp, ch, key, (p or {}).get('name', '(マスター未登録)')[:44],
-                     d['sku'], d['qty'], cost, amount,
+                     d['sku'], d['qty'], cost,
+                     amount if amount is not None else '未評価',
                      f'{gap}か月' if gap < len(hist_months) else f'{len(hist_months)}か月以上',
                      note, d['src'], ''])
-    order = {'D 長期滞留': 0, 'C 低回転': 1, 'A 直近販売あり': 2, 'B 通常': 3, 'E 要調査': 4}
-    rows.sort(key=lambda x: (order.get(x[0], 9), -(x[7] or 0)))
+    order = {'D 長期滞留': 0, 'C 低回転': 1, 'A 直近販売あり': 2, 'B 通常': 3,
+             'E 未評価(原価不明)': 4}
+    rows.sort(key=lambda x: (order.get(x[0], 9),
+                             -(x[7] if isinstance(x[7], (int, float)) else 0)))
     return rows, asof
 
 
@@ -1317,8 +1320,8 @@ def main():
                   + f'({" / ".join(monthly)})のため、'
                   + (f'D長期滞留({STALE_LONG}か月)の判定はまだ成立しない。'
                      if len(monthly) < STALE_LONG else '')
-                  + ' ⚠️「E 要調査」は標準原価が無く在庫金額を計算できない行。'
-                  '合計金額はその分だけ過小である')},
+                  + ' ⚠️「E 未評価(原価不明)」は標準原価が無く**在庫金額を算出できない**行。'
+                  '**0円ではない。** 合計は「原価判明分の評価額 + 未評価N件」として読むこと')},
         {'title': '08_利益率 要確認',
          'headers': ['優先度', 'チャネル', '識別子', '商品名', f'{month_sheet}個数',
                      f'{month_sheet}売上', '平均単価', '仕入値', '粗利率',

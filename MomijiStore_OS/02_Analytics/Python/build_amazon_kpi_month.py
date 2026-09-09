@@ -228,18 +228,33 @@ def build_sheet(data, sheet_name, source_name, resolve):
         put(row, 12, cost, fill=None if cost is not None else YELLOW)
         if cost is None:
             missing.append((row, d['asin'], d['sku'], d['sales']))
-        put(row, 13, f'=SUM(H{row}*L{row})')
-        put(row, 14, f'=SUM(I{row}-K{row}-M{row})')
-        put(row, 15, f'=IF(I{row}=0,"",N{row}/I{row})', fmt='0.0%')
+        # 原価未確定ガード(2026-09-10 承認X-2)。楽天側と同じ考え方。
+        # ISNUMBER は 空欄・文字列・エラーで FALSE、**0では TRUE** を返すため、
+        # 「確認済みの0円」と「未入力」を区別できる。
+        # 対象は販売や返品のある行だけ。売上も個数も0の行は月全体を止めない。
+        need = f'OR(H{row}<>0,I{row}<>0)'
+        put(row, 13, f'=IF(AND({need},NOT(ISNUMBER(L{row}))),"未確定",H{row}*L{row})')
+        put(row, 14, f'=IF(ISTEXT(M{row}),"未確定",I{row}-K{row}-M{row})')
+        put(row, 15, f'=IF(ISTEXT(N{row}),"未確定",IF(I{row}=0,"",N{row}/I{row}))',
+            fmt='0.0%')
 
     last = 7 + n
     t = last + 1
-    for col_l in 'EHIJKMN':
+    # セッション・売上・個数・手数料は原価と独立に確認できるので数値で出す
+    for col_l in 'EHIJK':
         col = 'ABCDEFGHIJKLMNO'.index(col_l) + 1
         put(t, col, f'=SUM({col_l}8:{col_l}{last})')
-    put(t, 15, f'=IF(I{t}=0,"",N{t}/I{t})', fmt='0.0%')
+    # 仕入計と粗利は、対象行に1つでも未確定があれば「未確定」
+    und = f'COUNTIF(M8:M{last},"未確定")'
+    put(t, 13, f'=IF({und}>0,"未確定",SUM(M8:M{last}))')
+    put(t, 14, f'=IF({und}>0,"未確定",SUM(N8:N{last}))')
+    put(t, 15, f'=IF(ISTEXT(N{t}),"未確定",IF(I{t}=0,"",N{t}/I{t}))', fmt='0.0%')
+    # 原価が判明している行だけの粗利。**月全体の利益ではない**
+    put(t + 1, 13, '(参考)原価判明分のみの粗利', font=FONT_B)
+    put(t + 1, 14, f'=SUMIF(N8:N{last},"<>未確定")')
+    put(t + 1, 15, f'=IF({und}=0,"全件確定",{und}&"行が未確定")')
 
-    e0 = t + 2
+    e0 = t + 3
     for j, lab in enumerate(['広告費', 'プロモーション費', 'その他手数料']):
         row = e0 + j
         put(row, 13, lab, font=FONT_B)
@@ -265,8 +280,9 @@ def build_sheet(data, sheet_name, source_name, resolve):
     # 必須の経費が1つでも空欄なら「未確定」と出す(2026-09-09 監査)。
     # Excelは空セルを0として集計するので、ガードが無いと未入力に気づけない
     guard = f'COUNTBLANK(N{e0}:N{tot1 - 1})+COUNTBLANK(N{s0}:N{s0 + 1})'
+    # 経費だけでなく**粗利が未確定なら限界利益も未確定**(承認X-2)
     put(g, 13, '限界利益', font=FONT_B)
-    put(g, 14, f'=IF({guard}>0,"未確定",N{t}-N{tot1}-N{tot2})')
+    put(g, 14, f'=IF(OR(ISTEXT(N{t}),{guard}>0),"未確定",N{t}-N{tot1}-N{tot2})')
     put(g + 1, 13, '限界利益率', font=FONT_B)
     put(g + 1, 14, f'=IF(ISTEXT(N{g}),"未確定",IF(I{t}=0,"",N{g}/I{t}))', fmt='0.0%')
 

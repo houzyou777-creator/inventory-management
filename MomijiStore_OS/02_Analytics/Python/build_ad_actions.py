@@ -151,9 +151,15 @@ def load_variable_rate(month, prev):
 
 
 def load_margin_now(month):
-    """現在の限界利益(楽天+Amazon)。改善率の分母に使う。"""
+    """現在の限界利益(楽天+Amazon)。改善率の分母に使う。
+
+    ⚠️ 「未確定」を0として足し込まない(2026-09-10 承認X-2)。
+       片方でも未確定なら分母が出せない。0で埋めると分母が過小になり、
+       改善率が過大に出る。**算出不能なら None を返す。**
+    """
     total = 0.0
-    for f in (KPI_RAKUTEN, KPI_AMAZON):
+    unknown = []
+    for f, ch in ((KPI_RAKUTEN, '楽天'), (KPI_AMAZON, 'Amazon')):
         if not os.path.exists(f):
             continue
         wb = load_workbook(f, data_only=True)
@@ -165,8 +171,10 @@ def load_margin_now(month):
                 v = ws.cell(r, 14).value
                 if isinstance(v, (int, float)):
                     total += v
+                else:
+                    unknown.append(f'{ch}({v})')
                 break
-    return total
+    return (None, unknown) if unknown else (total, [])
 
 
 def load_no_cost(month):
@@ -498,8 +506,10 @@ def sheet_forecast(cur, acts, budget, margin_now, vrate):
         '',
         '【改善率の分母】',
         f'  ・広告費に対する改善率 … {"" if not ad_total else f"広告費 ¥{ad_total:,.0f}"}',
-        f'  ・限界利益に対する改善率 … 現在の限界利益 ¥{margin_now:,.0f}'
-        '(楽天+Amazon。経費が未入力のため暫定値)',
+        (f'  ・限界利益に対する改善率 … 現在の限界利益 ¥{margin_now:,.0f}'
+         '(楽天+Amazon。経費が未入力のため暫定値)' if margin_now else
+         '  ・限界利益に対する改善率 … **算出不能**'
+         '(限界利益が未確定のチャネルがあるため。0では代用しない)'),
         '',
         '【この数字の読み方】',
         '  ・改善額は**上限値**。広告を止めても売上の一部は自然検索で拾える可能性があります',
@@ -606,7 +616,10 @@ def main():
                 spent = sum(d['spend'] for d in cur if d['ch'] == '楽天')
                 budget = max(0.0, b['有効予算'] - spent)
 
-    margin_now = load_margin_now(month)
+    margin_now, margin_unknown = load_margin_now(month)
+    if margin_unknown:
+        print(f'  ⚠️ 限界利益が未確定のチャネルがあります: {" / ".join(margin_unknown)}')
+        print('     → 限界利益に対する改善率は「算出不能」と表示します')
     zero = sheet_zero_sales(cur)
     over = sheet_over_gp(cur)
     drop = sheet_roas_drop(cur, pre, month, prev)
@@ -700,8 +713,9 @@ def main():
                                       ('即停止候補', '停止テスト', '増額', 'テスト', '継続')))
     conf = Counter(r[16] for r in acts if r[1] == '即停止候補')
     print(f'     └ 即停止候補の確信度: 高{conf["高"]} / 中{conf["中"]} / 低{conf["低"]}')
+    mr = (f'限界利益の{fc[3][4]:.1%}' if isinstance(fc[3][4], float) else '限界利益比は算出不能')
     print(f'\n  承認候補(確信度 高+中)  月間 ¥{fc[3][1]:,} / 参考年換算 ¥{fc[3][2]:,}'
-          f' (広告費の{fc[3][3]:.1%} / 限界利益の{fc[3][4]:.1%})')
+          f' (広告費の{fc[3][3]:.1%} / {mr})')
     print(f'  停止テスト(未成熟・保留) 月間 ¥{fc[4][1]:,}')
     for ch in ('楽天', 'Amazon'):
         ok, on, left = maturity(month, ch)

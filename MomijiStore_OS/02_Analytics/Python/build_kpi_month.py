@@ -114,6 +114,40 @@ def build_cost_resolver(wb_values):
     pack, pos = S.load_pack_info()
     has_pack_cols = any(v is not None for v in pos.values())
 
+    def rms_cost(ctrl, pn, sku, master_cost):
+        """RMS商品番号に埋め込まれた原価を、**条件を満たすときだけ**採用する。
+
+        商品番号は「8507/2283-a」のように 品番/原価 の形で原価を持つ。
+        出品ごとの値なので入数の問題は起きないが、
+        **数字が抽出できることは確認済みを意味しない**(承認X-1)。
+
+        採用の条件:
+          ① チャネル・商品管理番号・SKU の対応が付くこと(出品テーブルに在る)
+          ② 1販売あたりの原価であること(出品の販売入数が確認済み)
+          ③ 対象時点が分かること(当月のRMS CSVから取得している)
+          ④ 付属品等の含有範囲が分かること(原価単位が確認済み)
+        ②④は出品テーブルの L/M/N 列で確認する。**未記入なら採用しない。**
+        """
+        m = None
+        if '/' in pn:
+            mm = re.match(r'(\d+)', pn.rsplit('/', 1)[1].strip())
+            if mm:
+                m = int(mm.group(1))
+        if m is None:
+            q = pn.strip()
+            m = int(q) if q.isdigit() and len(q) <= 6 else None
+        if m is None:
+            return None, 'RMS商品番号に原価が埋め込まれていない'
+        info, amb = S.lookup_pack(pack, '楽天', norm(ctrl), norm(sku))
+        if amb or not info:
+            return None, f'出品の対応が付かない({amb or "出品テーブルに無い"})'
+        if not isinstance(info.get('pack'), (int, float)):
+            return None, 'RMS原価はあるが販売入数が未確認(1販売あたりか判定できない)'
+        if info.get('unit') not in (S.UNIT_SINGLE, S.UNIT_SET):
+            return None, 'RMS原価はあるが原価単位が未確認(付属品の含有範囲が不明)'
+        return m, ''
+
+
     hist_pair = {}
     for name in reversed(wb_values.sheetnames):        # 新しい月を優先
         ws = wb_values[name]
@@ -124,27 +158,31 @@ def build_cost_resolver(wb_values):
             hist_pair.setdefault((norm(c), norm(e)), l)
 
     def resolve(ctrl, pn, sku):
+        """(原価, 出所, 未確認理由) を返す。**採用できなければ原価は None。**"""
         key = (norm(ctrl), norm(sku))
         pid = pair2pid.get(key) or ctrl2pid.get(key[0])
-        if pid is not None and cost_by_pid.get(pid) is not None:
-            mc = cost_by_pid[pid]
+        mc = cost_by_pid.get(pid) if pid is not None else None
+        why = ''
+        if isinstance(mc, (int, float)):
             if not has_pack_cols:
-                return mc                      # 列がまだ無い環境では従来どおり
-            v, _why = S.resolve_unit_cost(pack, '楽天', norm(ctrl), norm(sku), mc)
-            return v                           # 未確認なら None → 黄色セル
-        if '/' in pn:
-            m = re.match(r'(\d+)', pn.rsplit('/', 1)[1].strip())
-            if m:
-                return int(m.group(1))
-        p = pn.strip()
-        if p.isdigit() and len(p) <= 6:
-            return int(p)
-        return hist_pair.get(key)
+                return mc, 'マスター(単位列なし)', ''
+            v, why = S.resolve_unit_cost(pack, '楽天', norm(ctrl), norm(sku), mc)
+            if v is not None:
+                return v, f'マスター×入数(単位確認済み)', ''
+        # マスターから解決できないとき、RMS商品番号の原価を**代替候補**として見る。
+        # ただし数字が取れるだけでは採用しない(2026-09-10 承認X-1)
+        cand, cwhy = rms_cost(ctrl, pn, sku, mc)
+        if cand is not None:
+            return cand, 'RMS商品番号(条件確認済み)', why
+        h = hist_pair.get(key)
+        if h is not None:
+            return h, '過去月シート', why
+        return None, '', (why or cwhy or '原価を確認できる資料が無い')
 
     return resolve
 
 
-def build_sheet(kpi_file, sheet_name, head6, data, resolve):
+def build_sheet(kpi_file, sheet_name, head6, data, resolve, master_cost_of=None):
     """テンプレート(直近月シート)をコピーして新しい月シートを構築する"""
     wb = load_workbook(kpi_file)
     if sheet_name in wb.sheetnames:
@@ -170,30 +208,59 @@ def build_sheet(kpi_file, sheet_name, head6, data, resolve):
     for i, r in enumerate(head6, start=1):
         ws.cell(i, 1).value = r[0] if r else None
         ws.cell(i, 2).value = r[1] if len(r) > 1 else None
+    ws.cell(7, 16).value = '原価の出所(自動記録)'
 
+    master_cost_of = master_cost_of or (lambda *a: None)
     last = 7 + n
     missing = []
     for i, r in enumerate(data):
         row = 8 + i
         for col in range(len(SHEET_COLUMNS)):          # A〜J列。順番はシート側が正
             ws.cell(row, col + 1).value = conv(r[col])
-        cost = resolve(r[COL['ctrl']], r[COL['pn']], r[COL['sku']])
+        cost, src, why = resolve(r[COL['ctrl']], r[COL['pn']], r[COL['sku']])
         lc = ws.cell(row, 12)
         lc.value = int(cost) if isinstance(cost, float) and cost == int(cost) else cost
         lc.fill = PatternFill(fill_type=None) if cost is not None else YELLOW
-        if cost is None:
-            missing.append((row, r[COL['ctrl']], r[COL['sku']]))
+        # 採用した原価の出所を残す。**どこから来た値か後から辿れるようにする**
+        # ⚠️ A〜O列はCSVデータと数式が使っているので触らない。**P列(16)へ書く**
+        note = ws.cell(row, 16)
+        if cost is not None:
+            mcv = master_cost_of(r[COL['ctrl']], r[COL['sku']])
+            gap = ('' if not isinstance(mcv, (int, float)) or mcv == cost
+                   else f' / マスター {mcv:,.0f} と不一致(理由: {why or "未確認"})')
+            note.value = f'原価出所: {src}{gap}'
+        else:
+            note.value = f'原価未確定: {why}'
+            missing.append((row, r[COL['ctrl']], r[COL['sku']], why))
         ws.cell(row, 11).value = f'=SUM(I{row}*0.15)'
-        ws.cell(row, 13).value = f'=SUM(H{row}*L{row})'
-        ws.cell(row, 14).value = f'=SUM(I{row}-K{row}-M{row})'
-        ws.cell(row, 15).value = f'=IF(I{row}=0,"",N{row}/I{row})'
+        # 原価未確定ガード(2026-09-10 承認X-2)
+        #   Excelは空セルを0として計算するため、仕入値が空欄だと
+        #   仕入0円として粗利が過大に出る。数式エラーも警告も出ない。
+        #   ISNUMBER は 空欄・文字列・エラーのいずれもFALSEを返し、**0はTRUE**を返す。
+        #   → 「確認済みの0円」と「未入力」を数式の上で区別できる。
+        #   対象は販売や返品のある行だけ。売上も個数も0の行は月全体を止めない。
+        need = f'OR(H{row}<>0,I{row}<>0)'
+        ws.cell(row, 13).value = (f'=IF(AND({need},NOT(ISNUMBER(L{row}))),'
+                                  f'"未確定",H{row}*L{row})')
+        ws.cell(row, 14).value = f'=IF(ISTEXT(M{row}),"未確定",I{row}-K{row}-M{row})'
+        ws.cell(row, 15).value = (f'=IF(ISTEXT(N{row}),"未確定",'
+                                  f'IF(I{row}=0,"",N{row}/I{row}))')
 
     t = last + 1
-    for col in 'HIJKMN':
+    # 売上・個数・手数料は原価と独立に確認できるので、そのまま数値で出す
+    for col in 'HIJK':
         ws[f'{col}{t}'] = f'=SUM({col}7:{col}{last})'
-    ws[f'O{t}'] = f'=IF(I{t}=0,"",N{t}/I{t})'
+    # 仕入計と粗利は、対象行に1つでも未確定があれば「未確定」
+    und = f'COUNTIF(M7:M{last},"未確定")'
+    ws[f'M{t}'] = f'=IF({und}>0,"未確定",SUM(M7:M{last}))'
+    ws[f'N{t}'] = f'=IF({und}>0,"未確定",SUM(N7:N{last}))'
+    ws[f'O{t}'] = f'=IF(ISTEXT(N{t}),"未確定",IF(I{t}=0,"",N{t}/I{t}))'
+    # 原価が判明している行だけの粗利。**月全体の利益ではない**ことを明示する
+    ws.cell(t + 1, 13).value = '(参考)原価判明分のみの粗利'
+    ws.cell(t + 1, 14).value = f'=SUMIF(N7:N{last},"<>未確定")'
+    ws.cell(t + 1, 15).value = f'=IF({und}=0,"全件確定",{und}&"行が未確定")'
 
-    e0 = t + 2
+    e0 = t + 3
     for j, lab in enumerate(['広告費', 'ポイント費用', 'クーポン利用額', 'クーポン利用手数料']):
         row = e0 + j
         ws.cell(row, 13).value = lab
@@ -225,8 +292,10 @@ def build_sheet(kpi_file, sheet_name, head6, data, resolve):
     # 「送料0円」のもっともらしい数字が限界利益として表示されてしまう
     # (2026-09-09 監査。数式エラーも警告も出ないので人は気づけない)
     guard = f'COUNTBLANK(N{e0}:N{e0 + 3})+COUNTBLANK(N{s0}:N{s0 + 1})'
+    # 経費だけでなく**粗利が未確定なら限界利益も未確定**(承認X-2)
     ws.cell(g, 13).value = '限界利益'
-    ws.cell(g, 14).value = f'=IF({guard}>0,"未確定",N{t}-N{tot1}-N{tot2})'
+    ws.cell(g, 14).value = (f'=IF(OR(ISTEXT(N{t}),{guard}>0),"未確定",'
+                            f'N{t}-N{tot1}-N{tot2})')
     ws.cell(g + 1, 13).value = '限界利益率'
     ws.cell(g + 1, 14).value = f'=IF(ISTEXT(N{g}),"未確定",IF(I{t}=0,"",N{g}/I{t}))'
 
@@ -302,10 +371,21 @@ def main():
 
     wb_values = load_workbook(kpi_file, data_only=True)
     resolve = build_cost_resolver(wb_values)
-    total_row, missing = build_sheet(kpi_file, sheet_name, head6, data, resolve)
-    print(f'シート生成完了(仕入値未解決 {len(missing)}行)')
+    cost_by_pid, pair2pid, ctrl2pid = load_master()
+
+    def master_cost_of(ctrl, sku):
+        pid = pair2pid.get((norm(ctrl), norm(sku))) or ctrl2pid.get(norm(ctrl))
+        return cost_by_pid.get(pid) if pid else None
+
+    total_row, missing = build_sheet(kpi_file, sheet_name, head6, data, resolve,
+                                     master_cost_of)
+    und_sales = 0
     for m_ in missing:
-        print('  黄色:', m_)
+        pass
+    print(f'シート生成完了(原価未確定 {len(missing)}行)')
+    from collections import Counter
+    for why, c in Counter(m_[3] for m_ in missing).most_common():
+        print(f'  {c:>4}行  {why}')
 
     print('Excelで再計算中...')
     recalc_via_excel(kpi_file)
