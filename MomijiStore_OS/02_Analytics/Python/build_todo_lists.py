@@ -276,13 +276,29 @@ def build_cost_conflicts(month_sheet, sold):
 
 
 def _cost_row(ch, pid, r, mc, sold, month_sheet, mode):
+    """1行 = 1出品(楽天:管理番号×SKU / Amazon:ASIN×SKU)。
+
+    ⚠️ 影響額の個数は **その出品が売れた数** を使う(2026-09-10 承認R)。
+       以前は内部管理ID全体の個数を使っており、同じIDに複数の出品がある商品で
+       金額が何倍にも膨らんでいた(納豆菌P000334は5出品あり、26個を3回掛けていた)。
+
+    同じ出品が複数行に分かれ、行ごとに仕入値が違う場合は**曖昧**とし、
+    差額・影響額を出さずに「要確認」とする。どの値を正とすべきか決められないため。
+    """
     new = r['cost']
+    qty = r.get('units', 0)
+    ambiguous = len({c for c in r.get('cost_variants', {new}) if c is not None}) > 1
+    rows_note = ('/'.join(str(x) for x in r.get('sheet_rows', [])) or '')
+    if ambiguous:
+        return [ch, pid, r['name'], mc if mc is not None else '',
+                new if new is not None else '', '要確認', '', qty, '', rows_note,
+                '同じ出品が複数行にあり仕入値が食い違う。どれを正とするか人が判断する',
+                '']
     diff = (float(new) - float(mc)) if (new is not None and mc is not None) else ''
-    qty = sold.get(pid, 0)
     return [ch, pid, r['name'], mc if mc is not None else '',
             new if new is not None else '', diff,
             (round(diff / float(mc) * 100, 1) if diff != '' and mc else ''),
-            qty, (round(diff * qty) if diff != '' else ''), '',
+            qty, (round(diff * qty) if diff != '' else ''), rows_note, '',
             f'python3 sync_cost_master.py {mode} {month_sheet}']
 
 
@@ -1086,12 +1102,15 @@ def build_top20(specs, top_n=20):
 
     # 02 原価確認 — 同じ商品なら同じ行へ合流させる(商品単位で1回で終わらせる)
     for r in by_title['02_原価確認']['rows']:
-        _ch, pid, name, cur, new, diff, _rate, qty, impact, _ap, _cmd = r
+        _ch, pid, name, cur, new, diff, _rate, qty, impact, _rows, _note, _cmd = r
         d = prod[pid]
         d.setdefault('name', str(name)[:52])
         d['qty'] = max(d.get('qty', 0), qty)
+        # 単位未補正の差は TOP20 の点数に使わない(セット原価と単品原価の差かもしれない)
+        if not isinstance(impact, (int, float)):
+            continue
         d['items'].append('標準原価(不一致)')
-        d['score'] += abs(impact) / 100 if isinstance(impact, (int, float)) else qty * 5
+        d['score'] += abs(impact) / 100
         d['minutes'] += MINUTES['標準原価(不一致)'][0]
         d['cands'].append(f'標準原価: {cur} → {new}')
         d['whys'].append(f'KPIシートの仕入値と不一致(差額{diff} / 影響額{impact})')
@@ -1173,15 +1192,20 @@ def main():
          'note': '修正場所: コマンド実行 → 商品マスター・出品テーブルへ自動追加'},
         {'title': '02_原価確認',
          'headers': ['チャネル', '内部管理ID', '商品名', '現在の原価', '新しい原価候補',
-                     '差額', '差額率(%)', f'{month_sheet}個数', '影響額', '承認(記入)',
-                     '適用コマンド'],
+                     '差額', '差額率(%)', f'{month_sheet}出品別個数', '影響額',
+                     'KPIシート行', '注意', '適用コマンド'],
          'rows': build_cost_conflicts(month_sheet, sold),
-         'widths': (10, 13, 40, 12, 14, 10, 11, 11, 12, 12, 44),
+         'widths': (10, 13, 38, 12, 14, 10, 11, 14, 12, 12, 46, 40),
          'key_cols': [1],
          'how': '承認欄へ記入 → adopt コマンドを実行',
          'note': ('修正場所: 商品マスター E列(標準原価)。'
                   'マスターとKPIの値が食い違う行だけを載せる。'
-                  '両方とも空の行は「未入力」なので ③商品情報不足 側で扱う')},
+                  '両方とも空の行は「未入力」なので ③商品情報不足 側で扱う。'
+                  '★ 個数は**その出品(ASIN/管理番号×SKU)が売れた数**を使う。'
+                  '内部管理ID全体の個数ではない(2026-09-10 修正)。'
+                  '⚠️ 差額は単位補正をしていない生の差である。'
+                  'マスターが単品原価でKPIがセット原価の場合、差ではない。'
+                  'push-kpi の単位判定を必ず併せて見ること')},
         {'title': '03_商品情報不足',
          'headers': ['★', '優先度', '内部管理ID', '商品名', '不足項目', '現在値',
                      '候補(AIの提示)', '根拠', '確信度', f'{month_sheet}出荷',

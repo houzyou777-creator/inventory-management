@@ -69,20 +69,42 @@ def load_master():
 
 
 def load_kpi_month(month_sheet):
-    """KPI月次シートから (管理番号, SKU, 商品名, 商品番号, 仕入値) を行順で返す"""
+    """KPI月次シートから 出品(管理番号×SKU)ごとに1件へまとめて返す。
+
+    **個数とシート行番号を持たせる**(2026-09-10 承認R)。
+    影響額は「その出品が何個売れたか」で計算しなければならない。
+    内部管理ID全体の個数を使うと、同じIDに複数の出品がある商品で
+    何倍にも膨らむ(実例: 納豆菌P000334は5出品あり、26個を3回掛けていた)。
+
+    同じ出品が複数行に分かれている場合は個数を合算する。
+    ただし仕入値が行によって違うときは**曖昧**として印を付け、金額を出さない。
+    """
     wb = load_workbook(KPI_FILE, data_only=True)
     ws = wb[month_sheet]
-    out = []
+    out, idx = [], {}
     for row in range(8, ws.max_row + 1):
         ctrl = ws.cell(row, 3).value
         if ctrl is None:          # データ末尾(合計行の手前)まで
             break
+        sku = str(ws.cell(row, 5).value).strip() if ws.cell(row, 5).value else ''
+        key = (norm(ctrl), norm(sku))
+        units = ws.cell(row, 8).value
+        units = units if isinstance(units, (int, float)) else 0
+        cost = ws.cell(row, 12).value
+        if key in idx:
+            d = out[idx[key]]
+            d['units'] += units
+            d['sheet_rows'].append(row)
+            d['cost_variants'].add(cost)
+            continue
+        idx[key] = len(out)
         out.append({
-            'ctrl': str(ctrl).strip(),
-            'sku': str(ws.cell(row, 5).value).strip() if ws.cell(row, 5).value else '',
+            'ch': '楽天', 'month': month_sheet, 'key': str(ctrl).strip(),
+            'ctrl': str(ctrl).strip(), 'sku': sku,
             'name': str(ws.cell(row, 1).value or '').strip(),
             'pn': str(ws.cell(row, 4).value or '').strip(),
-            'cost': ws.cell(row, 12).value,
+            'cost': cost, 'units': units,
+            'sheet_rows': [row], 'cost_variants': {cost},
         })
     return out
 
@@ -189,23 +211,35 @@ def load_master_amazon():
 
 
 def load_amazon_kpi_month(month_sheet):
-    """Amazon KPI月次シートから (ASIN, AmazonSKU, 商品名, 仕入値) をペア重複なしで返す"""
+    """Amazon KPI月次シートから 出品(ASIN×SKU)ごとに1件へまとめて返す。
+
+    load_kpi_month と同じ理由で個数とシート行番号を持たせる(承認R)。
+    """
     wb = load_workbook(AMZ_KPI_FILE, data_only=True)
     ws = wb[month_sheet]
-    out, seen = [], set()
+    out, idx = [], {}
     for row in range(8, ws.max_row + 1):
         asin = ws.cell(row, 3).value
         if asin is None:
             break
-        key = (norm(asin), norm(ws.cell(row, 2).value))
-        if key in seen:
+        sku = str(ws.cell(row, 2).value or '').strip()
+        key = (norm(asin), norm(sku))
+        units = ws.cell(row, 8).value
+        units = units if isinstance(units, (int, float)) else 0
+        cost = ws.cell(row, 12).value
+        if key in idx:
+            d = out[idx[key]]
+            d['units'] += units
+            d['sheet_rows'].append(row)
+            d['cost_variants'].add(cost)
             continue
-        seen.add(key)
+        idx[key] = len(out)
         out.append({
-            'asin': str(asin).strip(),
-            'sku': str(ws.cell(row, 2).value or '').strip(),
+            'ch': 'Amazon', 'month': month_sheet, 'key': str(asin).strip(),
+            'asin': str(asin).strip(), 'sku': sku,
             'name': str(ws.cell(row, 1).value or '').strip(),
-            'cost': ws.cell(row, 12).value,
+            'cost': cost, 'units': units,
+            'sheet_rows': [row], 'cost_variants': {cost},
         })
     return out
 
@@ -361,55 +395,170 @@ return "push done: {len(rows)} rows"
 PUSH_KPI_DIR = BASE + '/01_InventoryManagement/SourceData/Output'
 
 
-def _kpi_targets(month_sheet):
-    """(チャネル, ファイル, キー列, シート) の組。楽天とAmazonで突合キーが違う"""
-    return (('楽天', KPI_FILE, 3), ('Amazon', AMZ_KPI_FILE, 3))
+# 出品テーブルに「販売入数 / 原価単位 / 確認根拠」があればそこから読む。
+# **無ければ推測しない。**(2026-09-10 承認Q)
+#   原価の比率や行数から単位を推し量ってはならない。
+#   比率が整数に乗るのは単位一致の証拠ではなく、たまたまかもしれない。
+PACK_COLS = {'販売入数': None, '原価単位': None, '確認根拠': None}
+UNIT_SINGLE = '単品原価'      # マスターの標準原価が単品1個分を指す
+UNIT_SET = 'セット原価'       # マスターの標準原価がこの出品と同じ構成のセットを指す
+
+
+def load_pack_info():
+    """出品(ASIN/SKU)単位の 販売入数・原価単位・確認根拠 を読む。
+
+    列がまだ無ければ全件「未確認」を返す。**それが正しい状態である。**
+    確認していない入数を使って金額を出すより、出さない方がよい。
+    """
+    wb = load_workbook(MASTER_FILE, read_only=True, data_only=True)
+    ws = wb[SH_LISTING]
+    header = [str(c or '').strip() for c in
+              next(ws.iter_rows(min_row=1, max_row=1, values_only=True))]
+    pos = {k: (header.index(k) if k in header else None) for k in PACK_COLS}
+    out = {}
+    if all(v is None for v in pos.values()):
+        wb.close()
+        return out, pos            # 列そのものが無い
+    for r in ws.iter_rows(min_row=2, values_only=True):
+        if not r or not r[1]:
+            continue
+        ch = r[2]
+        key = norm(r[5]) if ch == 'Amazon' else norm(r[3])
+        sku = norm(r[6]) if ch == 'Amazon' else norm(r[4])
+        g = lambda k: (r[pos[k]] if pos[k] is not None and pos[k] < len(r) else None)
+        out.setdefault((ch, key), []).append(
+            {'sku': sku, 'pack': g('販売入数'), 'unit': g('原価単位'),
+             'proof': g('確認根拠')})
+    wb.close()
+    return out, pos
+
+
+def lookup_pack(pack, ch, key, sku):
+    """出品の入数情報を引く。**引けない/一意でないなら None を返す。**
+
+    ⚠️ Amazonは2026年8月のレポートからSKU列が消えたため、KPI側にSKUが無い。
+       ASIN単独で引くしかないが、同じASINに入数の違う出品が複数ぶら下がっていたら
+       どれか分からない。**そのときは推測せず「曖昧」として扱う。**
+    """
+    cands = pack.get((ch, key), [])
+    if not cands:
+        return None, '出品テーブルに該当の出品が無い'
+    if sku:
+        hit = [c for c in cands if c['sku'] == sku]
+        if len(hit) == 1:
+            return hit[0], ''
+        if len(hit) > 1:
+            return None, 'SKUで引いても複数該当する'
+    if len(cands) == 1:
+        return cands[0], ''
+    uniq = {(c['pack'], c['unit']) for c in cands}
+    if len(uniq) == 1:
+        return cands[0], ''
+    return None, f'同じ識別子に入数の違う出品が{len(cands)}件ある(SKUが無く特定できない)'
+
+
+def _ratio_note(cur, mc):
+    """整数倍かどうかは**参考情報**としてだけ出す。判定には使わない。"""
+    if not (isinstance(cur, (int, float)) and isinstance(mc, (int, float)) and mc):
+        return ''
+    r = cur / mc
+    n = round(r)
+    if n >= 1 and abs(r - n) <= 0.01:
+        return f'参考: KPI ÷ マスター = {r:.2f}(約{n}倍)'
+    return f'参考: KPI ÷ マスター = {r:.2f}'
 
 
 def collect_push_kpi(month_sheet):
-    """KPIシートのL列と商品マスターの標準原価を突き合わせ、差がある行を返す。
+    """KPIシートのL列と商品マスターの標準原価を、**単位を揃えてから**比べる。
 
-    利益への影響額 = −(マスター値 − 現在値) × 当月個数
-    仕入値が上がれば利益は下がるので符号を反転する。
+    単位を揃えられない行は金額を出さない(2026-09-10 承認Q)。
+      ・販売入数が未確認
+      ・原価単位(単品原価/セット原価)が未確認
+      ・商品対応(出品→内部管理ID)が付かない
+    いずれかに当てはまれば「単位未確認」とし、更新対象から外す。
+    元のKPI値とマスター値は表示するが、差額と利益影響額は空欄にする。
     """
     cost_by_pid, pair2pid, ctrl2pid = load_master()
     _, asin2pid, asku2pid = load_master_amazon()
+    pack, pos = load_pack_info()
     wbm = load_workbook(MASTER_FILE, read_only=True, data_only=True)
-    names = {str(r[0]): r[2] for r in wbm[SH_MASTER].iter_rows(min_row=2, values_only=True) if r[0]}
+    names, ptype = {}, {}
+    for r in wbm[SH_MASTER].iter_rows(min_row=2, values_only=True):
+        if r[0]:
+            names[str(r[0])] = r[2]
+            ptype[str(r[0])] = r[3]
     wbm.close()
 
     rows = []
-    for ch, path, kc in _kpi_targets(month_sheet):
-        if not os.path.exists(path):
+    for listing in load_kpi_month(month_sheet) + load_amazon_kpi_month(month_sheet):
+        ch = listing['ch']
+        cur = listing['cost']
+        if not isinstance(cur, (int, float)):
             continue
-        wb = load_workbook(path, read_only=True, data_only=True)
-        if month_sheet not in wb.sheetnames:
-            wb.close()
+        key = norm(listing['key'])
+        sku = norm(listing['sku'])
+        pid = (asin2pid.get(key) or asku2pid.get(sku)) if ch == 'Amazon' \
+            else (pair2pid.get((key, sku)) or ctrl2pid.get(key))
+        mc = cost_by_pid.get(pid) if pid else None
+
+        info, amb = lookup_pack(pack, ch, key, sku)
+        info = info or {}
+        p_units, p_unit = info.get('pack'), info.get('unit')
+        ratio = _ratio_note(cur, mc)
+
+        # ── 単位を揃えられるか ──────────────────────────────
+        if not pid:
+            status, why = '単位未確認', '出品→内部管理IDの対応が付かない'
+        elif not isinstance(mc, (int, float)):
+            status, why = '単位未確認', 'マスターの標準原価が無い'
+        elif amb:
+            status, why = '単位未確認', amb
+        elif p_unit not in (UNIT_SINGLE, UNIT_SET):
+            status, why = '単位未確認', ('原価単位が未確認'
+                                       + ('(出品テーブルに列が無い)' if pos['原価単位'] is None
+                                          else ''))
+        elif p_unit == UNIT_SINGLE and not isinstance(p_units, (int, float)):
+            status, why = '単位未確認', '単品原価だが販売入数が未確認'
+        else:
+            status, why = '確認済み', ''
+
+        if status == '単位未確認':
+            rows.append([ch, listing['month'], '/'.join(map(str, listing['sheet_rows'])),
+                         listing['key'], sku, pid or '', str(names.get(pid) or
+                         listing['name'])[:44], listing['units'], cur,
+                         mc if isinstance(mc, (int, float)) else '',
+                         p_units if p_units is not None else '',
+                         p_unit or '', str(ptype.get(pid) or ''),
+                         '', '', '',           # 期待値/差額/影響額は空欄
+                         status, why, ratio, info.get('proof') or '', '', ''])
             continue
-        ws = wb[month_sheet]
-        r = 8
-        for row in ws.iter_rows(min_row=8, values_only=True):
-            if not row or row[2] is None:
-                break
-            key = norm(row[2])
-            pid = (asin2pid.get(key) or asku2pid.get(norm(row[1]))) if ch == 'Amazon' \
-                else (pair2pid.get((key, norm(row[4]))) or ctrl2pid.get(key))
-            mc = cost_by_pid.get(pid) if pid else None
-            cur = row[11] if isinstance(row[11], (int, float)) else None
-            units = row[7] if isinstance(row[7], (int, float)) else 0
-            # マスターに値があり、KPIと食い違う行だけが対象
-            if pid and isinstance(mc, (int, float)) and cur is not None and mc != cur:
-                diff = mc - cur
-                rows.append([ch, r, str(row[2]), str(names.get(pid) or row[0] or '')[:44],
-                             pid, units, cur, mc, diff, round(-diff * units), ''])
-            r += 1
-        wb.close()
-    rows.sort(key=lambda x: -abs(x[9]))
-    return rows
+
+        expected = mc * p_units if p_unit == UNIT_SINGLE else mc
+        diff = cur - expected
+        impact = round(-diff * listing['units'])
+        rows.append([ch, listing['month'], '/'.join(map(str, listing['sheet_rows'])),
+                     listing['key'], sku, pid, str(names.get(pid) or '')[:44],
+                     listing['units'], cur, mc, p_units, p_unit,
+                     str(ptype.get(pid) or ''), expected, diff, impact,
+                     status, ('一致' if diff == 0 else
+                              '少額差(低優先)' if abs(diff) <= 10 else '差あり'),
+                     ratio, info.get('proof') or '', '', ''])
+    # 単位確認済みで差があるものを先頭へ。その中は影響額の大きい順
+    rows.sort(key=lambda x: (x[16] != '確認済み',
+                             0 if isinstance(x[14], (int, float)) and x[14] else 1,
+                             -abs(x[15]) if isinstance(x[15], (int, float)) else 0))
+    return rows, pos
 
 
-def write_push_kpi_list(month_sheet, rows):
-    """承認欄付きの候補一覧を出す。**承認された行だけを後で反映する。**"""
+PUSH_HEAD = ['チャネル', '対象月', 'KPIシート行', '識別子', 'SKU', '内部管理ID', '商品名',
+             '出品別個数', 'KPIの現在値', 'マスター標準原価', '販売入数', '原価単位',
+             'マスター商品種別', '単位を揃えた期待値', '差額', '利益への影響額',
+             '単位判定', '所見', '参考(倍率)', '確認根拠',
+             '更新理由(記入: 入力ミス / 価格変更)', '承認(1を記入)']
+
+
+def write_push_kpi_list(month_sheet, rows, pos):
+    """承認欄付きの候補一覧。**単位未確認の行は差額も影響額も空欄で出す。**"""
     from openpyxl.styles import Alignment, Font, PatternFill
     os.makedirs(PUSH_KPI_DIR, exist_ok=True)
     wb = Workbook()
@@ -417,23 +566,34 @@ def write_push_kpi_list(month_sheet, rows):
     ws.title = 'KPI仕入値更新候補'
     ws['A1'] = f'KPI仕入値 更新候補 — {month_sheet}'
     ws['A1'].font = Font(bold=True, size=13)
-    ws['A2'] = ('商品マスターの標準原価とKPIシートのL列(仕入値)が食い違う行。\n'
-                '⚠️ **無条件では反映しない。** 過去月はその月の実績記録である。\n'
-                '  ・仕入価格が変わっただけ → この月は直さない(承認欄を空のまま)\n'
-                '  ・元の入力が間違っていた → 承認欄へ「1」を記入する\n'
-                '記入後: python3 sync_cost_master.py push-kpi <月> --apply <このファイル>')
+    miss = [k for k, v in pos.items() if v is None]
+    ws['A2'] = (
+        '商品マスターの標準原価とKPIシートのL列(仕入値)を、**単位を揃えてから**比べた結果。\n'
+        '⚠️ 単位を揃えられない行は「単位未確認」とし、差額・利益への影響額を空欄にしている。\n'
+        '   比率が整数に乗ることは単位一致の証拠ではない。倍率は参考情報にすぎない。\n'
+        + (f'🔴 出品テーブルに {" / ".join(miss)} の列が無いため、全行が単位未確認になる。\n'
+           if miss else '')
+        + '【反映するには2つとも必要】\n'
+          '  ・単位判定が「確認済み」であること(単位未確認は反映側でも弾く)\n'
+          '  ・更新理由へ「入力ミス」と記入すること\n'
+          '⚠️ **現在の標準原価と違うというだけでは過去月を更新しない。**\n'
+          '   仕入価格が変わっただけなら、その月はその原価で売っている。過去月は触らない。\n'
+          '記入後: python3 sync_cost_master.py push-kpi <月> --apply <このファイル>')
     ws['A2'].alignment = Alignment(vertical='top', wrap_text=True)
-    ws.row_dimensions[2].height = 76
-    head = ['チャネル', '行', '識別子', '商品名', '内部管理ID', f'{month_sheet}個数',
-            'KPIの現在値', '商品マスター値', '差額', '利益への影響額', '承認(1を記入)']
+    ws.row_dimensions[2].height = 150
     fill = PatternFill('solid', fgColor='D9E1F2')
-    for i, h in enumerate(head, 1):
+    warn = PatternFill('solid', fgColor='FFF2CC')
+    for i, h in enumerate(PUSH_HEAD, 1):
         c = ws.cell(4, i)
         c.value, c.font, c.fill = h, Font(bold=True), fill
+        c.alignment = Alignment(vertical='top', wrap_text=True)
     for r, row in enumerate(rows, 5):
         for i, v in enumerate(row, 1):
             ws.cell(r, i).value = v
-    for i, w in enumerate((9, 7, 22, 40, 13, 10, 12, 14, 10, 14, 13), 1):
+        if row[16] != '確認済み':
+            ws.cell(r, 17).fill = warn
+    for i, w in enumerate((9, 8, 12, 20, 20, 12, 36, 11, 12, 15, 10, 12, 14,
+                           16, 10, 14, 12, 26, 24, 18, 26, 13), 1):
         ws.column_dimensions[ws.cell(4, i).column_letter].width = w
     ws.freeze_panes = 'A5'
     path = f'{PUSH_KPI_DIR}/KPI仕入値更新候補_{month_sheet}_{date.today():%Y%m%d}.xlsx'
@@ -442,37 +602,68 @@ def write_push_kpi_list(month_sheet, rows):
 
 
 def apply_push_kpi(month_sheet, list_path):
-    """承認欄に記入がある行だけをKPIシートへ反映する"""
+    """承認された行だけを反映する。**反映側でも単位未確認を弾く。**
+
+    候補作成側で除外していても、人が承認欄へ記入すれば通ってしまう。
+    正本を書き換える側で二重に止める(2026-09-10 承認Q)。
+    """
     wb = load_workbook(list_path, data_only=True)
     ws = wb.active
-    approved = []
+    head = [str(ws.cell(4, i).value or '') for i in range(1, len(PUSH_HEAD) + 2)]
+    col = {h: i + 1 for i, h in enumerate(head) if h}
+    need = ['チャネル', 'KPIシート行', 'KPIの現在値', '単位を揃えた期待値',
+            '単位判定', '更新理由(記入: 入力ミス / 価格変更)', '承認(1を記入)']
+    lack = [n for n in need if n not in col]
+    if lack:
+        sys.exit(f'❌ 一覧の見出しが想定と違います。足りない列: {lack}')
+
+    approved, rejected = [], []
     r = 5
-    while ws.cell(r, 1).value:
-        if ws.cell(r, 11).value not in (None, '', 0):
-            approved.append([ws.cell(r, c).value for c in range(1, 11)])
+    while ws.cell(r, col['チャネル']).value:
+        g = lambda n: ws.cell(r, col[n]).value
+        if g('承認(1を記入)') not in (None, '', 0):
+            reason = str(g('更新理由(記入: 入力ミス / 価格変更)') or '').strip()
+            if g('単位判定') != '確認済み':
+                rejected.append((r, '単位未確認のため反映できない'))
+            elif '入力ミス' not in reason:
+                rejected.append((r, f'更新理由が「入力ミス」ではない(記入: {reason or "空欄"})。'
+                                    '価格変更なら過去月は更新しない'))
+            else:
+                approved.append({'ch': g('チャネル'), 'rows': str(g('KPIシート行')),
+                                 'cur': g('KPIの現在値'), 'new': g('単位を揃えた期待値'),
+                                 'key': g('識別子')})
         r += 1
+
+    for rr, why in rejected:
+        print(f'  ⛔ 一覧{rr}行目: {why}')
     if not approved:
-        sys.exit('承認欄に記入がありません。反映する行がないため終了します。')
+        sys.exit('反映できる行がありません。'
+                 + ('(承認はあるが上記の理由で弾きました)' if rejected else
+                    '(承認欄に記入がありません)'))
 
     touched = {}
-    for ch, row, key, name, pid, units, cur, mc, diff, impact in approved:
-        path = KPI_FILE if ch == '楽天' else AMZ_KPI_FILE
+    done = 0
+    for a in approved:
+        path = KPI_FILE if a['ch'] == '楽天' else AMZ_KPI_FILE
         w = touched.get(path) or load_workbook(path)
         touched[path] = w
         sh = w[month_sheet]
-        cell = sh.cell(int(row), 12)          # L列
-        if cell.value != cur:
-            print(f'  ⚠️ {ch} 行{row}: 現在値が {cell.value} で候補作成時({cur})と違う — スキップ')
-            continue
-        cell.value = mc
-        print(f'  {ch} 行{row} {key}: {cur} → {mc}(利益影響 {impact:+,})')
+        for rn in str(a['rows']).split('/'):
+            cell = sh.cell(int(rn), 12)          # L列
+            if cell.value != a['cur']:
+                print(f'  ⚠️ {a["ch"]} 行{rn}: 現在値が {cell.value} で'
+                      f'候補作成時({a["cur"]})と違う — スキップ')
+                continue
+            cell.value = a['new']
+            done += 1
+            print(f'  {a["ch"]} 行{rn} {a["key"]}: {a["cur"]} → {a["new"]}')
     for path, w in touched.items():
         bdir = os.path.dirname(path) + '/Backup'
         os.makedirs(bdir, exist_ok=True)
         base = os.path.splitext(os.path.basename(path))[0]
         shutil.copy2(path, f'{bdir}/{base}_backup_{date.today():%Y%m%d}_{month_sheet}仕入値反映前.xlsx')
         w.save(path)
-    return len(approved), list(touched)
+    return done, list(touched)
 
 
 def main_amazon(mode, month_sheet):
@@ -519,25 +710,32 @@ def main():
             for f in files:
                 print(f'  {os.path.basename(f)}')
             return
-        rows = collect_push_kpi(month_sheet)
-        print(f'■ {month_sheet}: 商品マスターとKPIシートで仕入値が食い違う行 {len(rows)}件')
-        if not rows:
-            print('  差はありません。')
-            return
-        up = sum(r[9] for r in rows if r[9] > 0)
-        dn = sum(r[9] for r in rows if r[9] < 0)
-        print(f'  利益への影響: 増える方向 +¥{up:,.0f} / 減る方向 ¥{dn:,.0f} '
-              f'/ 差引 {up + dn:+,.0f}')
-        print(f'\n  {"ch":6} {"識別子":22} {"個数":>5} {"現在":>8} {"マスター":>9} '
-              f'{"差額":>8} {"利益影響":>10}  商品名')
-        for x in rows[:15]:
-            print(f'  {x[0]:6} {x[2][:22]:22} {x[5]:>5.0f} {x[6]:>8,.0f} {x[7]:>9,.0f} '
-                  f'{x[8]:>+8,.0f} {x[9]:>+10,.0f}  {x[3][:26]}')
-        if len(rows) > 15:
-            print(f'  … 他 {len(rows) - 15}件')
-        path = write_push_kpi_list(month_sheet, rows)
+        rows, pos = collect_push_kpi(month_sheet)
+        ok = [x for x in rows if x[16] == '確認済み']
+        ng = [x for x in rows if x[16] != '確認済み']
+        diff_rows = [x for x in ok if isinstance(x[14], (int, float)) and x[14]]
+        print(f'■ {month_sheet}: 出品 {len(rows)}件を単位を揃えて比較')
+        print(f'   単位確認済み {len(ok)}件(うち差あり {len(diff_rows)}件) / '
+              f'単位未確認 {len(ng)}件')
+        miss = [k for k, v in pos.items() if v is None]
+        if miss:
+            print(f'   🔴 出品テーブルに {" / ".join(miss)} の列が無いため、'
+                  '単位を揃えられません')
+            print('      → 承認Sの最小構成を入れるまで、更新できる行はありません')
+        if diff_rows:
+            imp = sum(x[15] for x in diff_rows if isinstance(x[15], (int, float)))
+            print(f'   単位補正後の利益影響額(参考): {imp:+,.0f}')
+            print(f'\n   {"ch":6} {"識別子":16} {"個数":>4} {"KPI":>8} {"期待値":>8} '
+                  f'{"差額":>8} {"影響額":>9}  所見')
+            for x in diff_rows[:15]:
+                print(f'   {x[0]:6} {str(x[3])[:16]:16} {x[7]:>4.0f} {x[8]:>8,.0f} '
+                      f'{x[13]:>8,.0f} {x[14]:>+8,.0f} {x[15]:>+9,.0f}  {x[17]}')
+        else:
+            print('   単位を揃えたうえで差がある行はありません')
+        path = write_push_kpi_list(month_sheet, rows, pos)
         print(f'\n  → {path}')
-        print('  ⚠️ 無条件では反映しません。承認欄へ記入してから --apply を付けて再実行してください')
+        print('  ⚠️ 単位未確認の行は反映側でも弾きます。'
+              '承認欄に加えて「更新理由=入力ミス」の記入が必要です')
         return
     if len(sys.argv) >= 3 and sys.argv[1] in ('check-amazon', 'register-amazon', 'adopt-amazon'):
         main_amazon(sys.argv[1], sys.argv[2])
