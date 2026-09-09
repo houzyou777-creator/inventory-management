@@ -125,9 +125,17 @@ def read_report(path, month=''):
 
 
 def build_cost_resolver():
-    """商品マスター → Amazon在庫リスト の順で原価を引く関数を返す"""
+    """商品マスター → Amazon在庫リスト の順で原価を引く関数を返す
+
+    ⚠️ 商品マスターの標準原価は「単品1個あたり」とは限らない。
+       出品テーブルの 販売入数・原価単位 が確認済みのときだけ計算し、
+       未確認なら None を返して黄色セルで人へ回す(承認W-4)。
+    """
     wbm = load_workbook(MASTER_FILE, read_only=True, data_only=True)
     cost_by_pid = {str(r[0]): r[4] for r in wbm['商品マスター'].iter_rows(min_row=2, values_only=True) if r[0]}
+    import sync_cost_master as S
+    pack, pos = S.load_pack_info()
+    has_pack_cols = any(v is not None for v in pos.values())
     asin2pid, asku2pid = {}, {}
     for r in wbm['出品テーブル'].iter_rows(min_row=2, values_only=True):
         pid, asin, asku = r[1], r[5], r[6]
@@ -156,7 +164,13 @@ def build_cost_resolver():
         a, s = asin.upper(), sku.upper()
         pid = asin2pid.get(a) or asku2pid.get(s)
         if pid is not None and cost_by_pid.get(pid) is not None:
-            return cost_by_pid[pid]
+            mc = cost_by_pid[pid]
+            if not has_pack_cols:
+                return mc                       # 列がまだ無い環境では従来どおり
+            # 出品がセット販売なら 単品原価 × 販売入数。セット原価なら掛けない。
+            # 未確認なら None を返して黄色セルで人へ回す(2026-09-10 承認W-4)
+            v, _why = S.resolve_unit_cost(pack, 'Amazon', S.norm(asin), S.norm(sku), mc)
+            return v
         return inv_asin.get(a) or inv_sku.get(s)
 
     return resolve

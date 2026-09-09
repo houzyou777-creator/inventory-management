@@ -433,6 +433,32 @@ def load_pack_info():
     return out, pos
 
 
+def resolve_unit_cost(pack, ch, key, sku, master_cost):
+    """出品1件あたりの原価を求める(2026-09-10 承認W-4)。
+
+    ・単品原価          → 販売入数を掛ける
+    ・同じ構成のセット原価 → **そのまま使う**(二重に掛けない)
+    ・単位/構成/商品対応が未確認 → **None**(呼び出し側は空欄にする)
+
+    ⚠️ 「確認済みなら一律に掛ける」ではない。セット原価に入数を掛けると
+       構成の数だけ二重に膨らむ。原価単位で分岐する。
+    """
+    if not isinstance(master_cost, (int, float)):
+        return None, 'マスターの標準原価が無い'
+    info, amb = lookup_pack(pack, ch, key, sku)
+    if amb:
+        return None, amb
+    info = info or {}
+    unit, n = info.get('unit'), info.get('pack')
+    if unit == UNIT_SET:
+        return master_cost, ''                    # 掛けない
+    if unit == UNIT_SINGLE:
+        if not isinstance(n, (int, float)) or n <= 0:
+            return None, '単品原価だが販売入数が未確認'
+        return master_cost * n, ''
+    return None, ('原価単位が未確認' if unit in (None, '') else f'原価単位が不正: {unit}')
+
+
 def lookup_pack(pack, ch, key, sku):
     """出品の入数情報を引く。**引けない/一意でないなら None を返す。**
 
@@ -540,7 +566,7 @@ def collect_push_kpi(month_sheet):
                          status, why, ratio, info.get('proof') or '', '', ''])
             continue
 
-        expected = mc * p_units if p_unit == UNIT_SINGLE else mc
+        expected, _why2 = resolve_unit_cost(pack, ch, key, sku, mc)
         diff = cur - expected
         impact = round(-diff * listing['units'])
         rows.append([ch, listing['month'], '/'.join(map(str, listing['sheet_rows'])),

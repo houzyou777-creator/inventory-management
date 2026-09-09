@@ -29,6 +29,7 @@ from openpyxl.styles import PatternFill
 
 import report_columns as C   # レポートは位置ではなく見出し名で読む
 
+import sync_cost_master as S
 from sync_cost_master import KPI_FILE, load_master, norm
 
 YELLOW = PatternFill('solid', fgColor='FFFF00')
@@ -101,8 +102,17 @@ def conv(s):
 
 
 def build_cost_resolver(wb_values):
-    """仕入値の解決関数を作る(商品マスター → RMS埋め込み → 過去月シート)"""
+    """仕入値の解決関数を作る(商品マスター → RMS埋め込み → 過去月シート)
+
+    ⚠️ 商品マスターの標準原価は「単品1個あたり」とは限らない。
+       出品がセット販売なら、その出品の原価は 単品原価 × 販売入数 である。
+       出品テーブルの 販売入数・原価単位 が**確認済みのときだけ**計算し、
+       未確認なら **None を返して黄色セルで人へ回す**(2026-09-10 承認W-4)。
+       推測値を入れない。既存の「仕入値未解決」と同じ経路に落とす。
+    """
     cost_by_pid, pair2pid, ctrl2pid = load_master()
+    pack, pos = S.load_pack_info()
+    has_pack_cols = any(v is not None for v in pos.values())
 
     hist_pair = {}
     for name in reversed(wb_values.sheetnames):        # 新しい月を優先
@@ -117,7 +127,11 @@ def build_cost_resolver(wb_values):
         key = (norm(ctrl), norm(sku))
         pid = pair2pid.get(key) or ctrl2pid.get(key[0])
         if pid is not None and cost_by_pid.get(pid) is not None:
-            return cost_by_pid[pid]
+            mc = cost_by_pid[pid]
+            if not has_pack_cols:
+                return mc                      # 列がまだ無い環境では従来どおり
+            v, _why = S.resolve_unit_cost(pack, '楽天', norm(ctrl), norm(sku), mc)
+            return v                           # 未確認なら None → 黄色セル
         if '/' in pn:
             m = re.match(r'(\d+)', pn.rsplit('/', 1)[1].strip())
             if m:
