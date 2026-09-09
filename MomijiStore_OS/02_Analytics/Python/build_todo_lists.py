@@ -586,7 +586,15 @@ def load_real_stock():
                 if not row or not row[3]:
                     continue
                 sku = str(row[3]).strip()
-                if sku.endswith('-a'):        # Amazonとの共有在庫。Amazon側を正とする
+                # 🔴 共有在庫の目印は **商品番号(row[2])** の末尾「-a」であって
+                #    SKU管理番号ではない(2026-09-10 修正)。
+                #    SKU側で見ていたため 390行・約¥6,711,520 を二重計上していた。
+                #    全体在庫サマリーの運用ルール:
+                #      「商品番号が -a で終わる商品はAmazonとの共有在庫。
+                #        正式な在庫数はAmazon側の数字を採用する。
+                #        楽天在庫リスト本体の-a行は在庫評価に含めない」
+                pn = str(row[2] or '').strip()
+                if pn.endswith('-a'):
                     continue
                 q = row[7] if isinstance(row[7], (int, float)) else 0
                 if q > 0:
