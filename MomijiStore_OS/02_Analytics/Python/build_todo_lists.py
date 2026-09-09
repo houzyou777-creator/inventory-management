@@ -256,6 +256,28 @@ def _both_empty(r, mc):
     return mc in (None, '', 0) and r['cost'] in (None, '', 0)
 
 
+def _cost_note(rows):
+    """②の注記。**影響額が1件も出せないときは「未算定」と書く。0円ではない。**"""
+    n = len(rows)
+    ok = [x for x in rows if isinstance(x[8], (int, float))]
+    unknown = n - len(ok)
+    if not ok:
+        total = '影響額 合計: **未算定**(単位を揃えられた行が1件も無いため。0円ではない)'
+    else:
+        total = (f'影響額 合計: ¥{sum(x[8] for x in ok):,.0f}'
+                 f'(単位確認済み {len(ok)}件ぶんのみ)'
+                 + (f' / 未算定 {unknown}件' if unknown else ''))
+    return ('修正場所: 商品マスター E列(標準原価)。'
+            'マスターとKPIの値が食い違う行だけを載せる。'
+            '両方とも空の行は「未入力」なので ③商品情報不足 側で扱う。'
+            f'★ {total}。'
+            '★ 個数は**その出品(ASIN/管理番号×SKU)が売れた数**を使う'
+            '(内部管理ID全体の個数ではない)。'
+            '⚠️ 「単位未確認」は、マスター原価とKPI仕入値が同じものを指しているか'
+            '確認できていない行。差額を引き算しても意味がないので出していない。'
+            '出品テーブルの L列(販売入数)・M列(原価単位)を根拠付きで埋めると判定できる')
+
+
 def build_cost_conflicts(month_sheet, sold):
     """② 原価確認 — **単位が揃うと確認できた行だけ差額・影響額を出す**
 
@@ -1194,6 +1216,7 @@ def main():
 
     fees, fee_note = build_fee_unresolved(month_sheet, tx_csv)
     fq = fee_quality(month_sheet)
+    cost_rows = build_cost_conflicts(month_sheet, sold)
     monthly = load_monthly_sales(pair2pid, ctrl2pid, asin2pid, asku2pid)
     stocktake, stock_asof = build_stocktake(pm, lt, monthly, month_sheet)
     # ③ 広告改善一覧との重複を突き合わせるための対応表
@@ -1213,18 +1236,12 @@ def main():
          'headers': ['チャネル', '内部管理ID', '商品名', '現在の原価', '新しい原価候補',
                      '差額', '差額率(%)', f'{month_sheet}出品別個数', '影響額',
                      'KPIシート行', '注意', '適用コマンド'],
-         'rows': build_cost_conflicts(month_sheet, sold),
+         'rows': cost_rows,
          'widths': (10, 13, 38, 12, 14, 10, 11, 14, 12, 12, 46, 40),
          'key_cols': [1],
-         'how': '承認欄へ記入 → adopt コマンドを実行',
-         'note': ('修正場所: 商品マスター E列(標準原価)。'
-                  'マスターとKPIの値が食い違う行だけを載せる。'
-                  '両方とも空の行は「未入力」なので ③商品情報不足 側で扱う。'
-                  '★ 個数は**その出品(ASIN/管理番号×SKU)が売れた数**を使う。'
-                  '内部管理ID全体の個数ではない(2026-09-10 修正)。'
-                  '⚠️ 差額は単位補正をしていない生の差である。'
-                  'マスターが単品原価でKPIがセット原価の場合、差ではない。'
-                  'push-kpi の単位判定を必ず併せて見ること')},
+         'how': ('単位未確認 → 出品テーブル L/M/N列へ根拠付きで記入する。'
+                 '単位確認済みで差がある → push-kpi の候補一覧で判断する'),
+         'note': _cost_note(cost_rows)},
         {'title': '03_商品情報不足',
          'headers': ['★', '優先度', '内部管理ID', '商品名', '不足項目', '現在値',
                      '候補(AIの提示)', '根拠', '確信度', f'{month_sheet}出荷',
@@ -1359,14 +1376,19 @@ def main():
         for i, v in enumerate(vals, 1):
             ws.cell(r, i).value = v
 
+    # 一覧の行数だけ下へ送る。**行番号を決め打ちしない**
+    # (シートが7枚から10枚に増えたとき、内訳ブロックが一覧に重なっていた)
+    base = 6 + len(specs) + 1
     sev = Counter(r[1] for r in specs[2]['rows'])
-    ws.cell(13, 1).value = '03_商品情報不足の内訳'
-    ws.cell(13, 1).font = BOLD
-    for i, k in enumerate(['最優先', '高', '中', '低'], 14):
+    ws.cell(base, 1).value = '03_商品情報不足の内訳'
+    ws.cell(base, 1).font = BOLD
+    for i, k in enumerate(['最優先', '高', '中', '低'], base + 1):
         ws.cell(i, 1).value = k
         ws.cell(i, 2).value = sev.get(k, 0)
-    ws.cell(19, 1).value = '月次標準フロー: ①分析 → ②要対応一覧 → ③商品マスター更新 → ④再分析(改善確認)'
-    ws.cell(19, 1).font = BOLD
+    fl = base + 6
+    ws.cell(fl, 1).value = ('月次標準フロー: ⓪列構成チェック → ①分析 → ②要対応一覧を確定 → '
+                            '③register → ④月次経費 → ⑤広告改善一覧 → ⑥一覧を再生成')
+    ws.cell(fl, 1).font = BOLD
     for col, w in zip('ABCDEFGH', (5, 26, 8, 8, 8, 8, 8, 44)):
         ws.column_dimensions[col].width = w
 
