@@ -10,6 +10,8 @@ KPI管理シートの月次シートと商品マスターを突き合わせる�
     python3 sync_cost_master.py adopt 7月            # 原価不一致をKPI側の値でマスター更新
                                                      # (ユーザーが明示承認した場合のみ実行すること)
     python3 sync_cost_master.py push                 # 商品マスター→在庫集計ツール原価マスターへ配信
+    python3 sync_cost_master.py push-kpi 8月         # 商品マスター→既存月のKPIシートL列(候補提示のみ)
+    python3 sync_cost_master.py push-kpi 8月 --apply <承認済み一覧.xlsx>   # 承認分だけ反映
 
     python3 sync_cost_master.py check-amazon 7月     # Amazon KPIシートとの突合レポート
     python3 sync_cost_master.py register-amazon 7月  # Amazon側の未登録商品をマスターへ追加登録
@@ -24,11 +26,13 @@ GS移行時はこの層を Apps Script の直接参照に置き換える。
 - マスターの既存原価は絶対に上書きしない。不一致は一覧表示してユーザー判断に委ねる
 - 追加登録行は備考に出所を残し、後から見分けられるようにする
 """
+import os
 import re
+import shutil
 import sys
 from datetime import date
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 BASE = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS'
 MASTER_FILE = BASE + '/01_InventoryManagement/SourceData/商品マスター_単品_v1.0.xlsx'
@@ -345,6 +349,132 @@ return "push done: {len(rows)} rows"
     return r.stdout.strip()
 
 
+# ═══ push-kpi ═════════════════════════════════════════════════════════════
+#  商品マスター → 既存月のKPIシート L列(仕入値)
+#
+#  ⚠️ **無条件の上書きは禁止**(2026-09-09 ChatGPT承認Kの条件)。
+#     過去月のKPIシートはその月の実績記録である。原価を直す理由は2つあり、
+#     扱いが正反対になる:
+#       ① 仕入価格が変わった   → 過去月は触らない(その月はその原価で売った)
+#       ② 元の入力が間違っていた → 過去月も直す(粗利が誤っているため)
+#     どちらかを機械が判定することはできない。**人が1件ずつ決める。**
+PUSH_KPI_DIR = BASE + '/01_InventoryManagement/SourceData/Output'
+
+
+def _kpi_targets(month_sheet):
+    """(チャネル, ファイル, キー列, シート) の組。楽天とAmazonで突合キーが違う"""
+    return (('楽天', KPI_FILE, 3), ('Amazon', AMZ_KPI_FILE, 3))
+
+
+def collect_push_kpi(month_sheet):
+    """KPIシートのL列と商品マスターの標準原価を突き合わせ、差がある行を返す。
+
+    利益への影響額 = −(マスター値 − 現在値) × 当月個数
+    仕入値が上がれば利益は下がるので符号を反転する。
+    """
+    cost_by_pid, pair2pid, ctrl2pid = load_master()
+    _, asin2pid, asku2pid = load_master_amazon()
+    wbm = load_workbook(MASTER_FILE, read_only=True, data_only=True)
+    names = {str(r[0]): r[2] for r in wbm[SH_MASTER].iter_rows(min_row=2, values_only=True) if r[0]}
+    wbm.close()
+
+    rows = []
+    for ch, path, kc in _kpi_targets(month_sheet):
+        if not os.path.exists(path):
+            continue
+        wb = load_workbook(path, read_only=True, data_only=True)
+        if month_sheet not in wb.sheetnames:
+            wb.close()
+            continue
+        ws = wb[month_sheet]
+        r = 8
+        for row in ws.iter_rows(min_row=8, values_only=True):
+            if not row or row[2] is None:
+                break
+            key = norm(row[2])
+            pid = (asin2pid.get(key) or asku2pid.get(norm(row[1]))) if ch == 'Amazon' \
+                else (pair2pid.get((key, norm(row[4]))) or ctrl2pid.get(key))
+            mc = cost_by_pid.get(pid) if pid else None
+            cur = row[11] if isinstance(row[11], (int, float)) else None
+            units = row[7] if isinstance(row[7], (int, float)) else 0
+            # マスターに値があり、KPIと食い違う行だけが対象
+            if pid and isinstance(mc, (int, float)) and cur is not None and mc != cur:
+                diff = mc - cur
+                rows.append([ch, r, str(row[2]), str(names.get(pid) or row[0] or '')[:44],
+                             pid, units, cur, mc, diff, round(-diff * units), ''])
+            r += 1
+        wb.close()
+    rows.sort(key=lambda x: -abs(x[9]))
+    return rows
+
+
+def write_push_kpi_list(month_sheet, rows):
+    """承認欄付きの候補一覧を出す。**承認された行だけを後で反映する。**"""
+    from openpyxl.styles import Alignment, Font, PatternFill
+    os.makedirs(PUSH_KPI_DIR, exist_ok=True)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'KPI仕入値更新候補'
+    ws['A1'] = f'KPI仕入値 更新候補 — {month_sheet}'
+    ws['A1'].font = Font(bold=True, size=13)
+    ws['A2'] = ('商品マスターの標準原価とKPIシートのL列(仕入値)が食い違う行。\n'
+                '⚠️ **無条件では反映しない。** 過去月はその月の実績記録である。\n'
+                '  ・仕入価格が変わっただけ → この月は直さない(承認欄を空のまま)\n'
+                '  ・元の入力が間違っていた → 承認欄へ「1」を記入する\n'
+                '記入後: python3 sync_cost_master.py push-kpi <月> --apply <このファイル>')
+    ws['A2'].alignment = Alignment(vertical='top', wrap_text=True)
+    ws.row_dimensions[2].height = 76
+    head = ['チャネル', '行', '識別子', '商品名', '内部管理ID', f'{month_sheet}個数',
+            'KPIの現在値', '商品マスター値', '差額', '利益への影響額', '承認(1を記入)']
+    fill = PatternFill('solid', fgColor='D9E1F2')
+    for i, h in enumerate(head, 1):
+        c = ws.cell(4, i)
+        c.value, c.font, c.fill = h, Font(bold=True), fill
+    for r, row in enumerate(rows, 5):
+        for i, v in enumerate(row, 1):
+            ws.cell(r, i).value = v
+    for i, w in enumerate((9, 7, 22, 40, 13, 10, 12, 14, 10, 14, 13), 1):
+        ws.column_dimensions[ws.cell(4, i).column_letter].width = w
+    ws.freeze_panes = 'A5'
+    path = f'{PUSH_KPI_DIR}/KPI仕入値更新候補_{month_sheet}_{date.today():%Y%m%d}.xlsx'
+    wb.save(path)
+    return path
+
+
+def apply_push_kpi(month_sheet, list_path):
+    """承認欄に記入がある行だけをKPIシートへ反映する"""
+    wb = load_workbook(list_path, data_only=True)
+    ws = wb.active
+    approved = []
+    r = 5
+    while ws.cell(r, 1).value:
+        if ws.cell(r, 11).value not in (None, '', 0):
+            approved.append([ws.cell(r, c).value for c in range(1, 11)])
+        r += 1
+    if not approved:
+        sys.exit('承認欄に記入がありません。反映する行がないため終了します。')
+
+    touched = {}
+    for ch, row, key, name, pid, units, cur, mc, diff, impact in approved:
+        path = KPI_FILE if ch == '楽天' else AMZ_KPI_FILE
+        w = touched.get(path) or load_workbook(path)
+        touched[path] = w
+        sh = w[month_sheet]
+        cell = sh.cell(int(row), 12)          # L列
+        if cell.value != cur:
+            print(f'  ⚠️ {ch} 行{row}: 現在値が {cell.value} で候補作成時({cur})と違う — スキップ')
+            continue
+        cell.value = mc
+        print(f'  {ch} 行{row} {key}: {cur} → {mc}(利益影響 {impact:+,})')
+    for path, w in touched.items():
+        bdir = os.path.dirname(path) + '/Backup'
+        os.makedirs(bdir, exist_ok=True)
+        base = os.path.splitext(os.path.basename(path))[0]
+        shutil.copy2(path, f'{bdir}/{base}_backup_{date.today():%Y%m%d}_{month_sheet}仕入値反映前.xlsx')
+        w.save(path)
+    return len(approved), list(touched)
+
+
 def main_amazon(mode, month_sheet):
     cost_by_pid, asin2pid, asku2pid = load_master_amazon()
     rows = load_amazon_kpi_month(month_sheet)
@@ -379,6 +509,35 @@ def main():
         rows = build_push_rows()
         print(f'配信対象: {len(rows)}行(商品マスター由来)')
         print(push_to_tool(rows))
+        return
+    if len(sys.argv) >= 3 and sys.argv[1] == 'push-kpi':
+        month_sheet = sys.argv[2]
+        if '--apply' in sys.argv:
+            lp = sys.argv[sys.argv.index('--apply') + 1]
+            n, files = apply_push_kpi(month_sheet, lp)
+            print(f'\n{n}行を反映しました。Excelで再計算してください:')
+            for f in files:
+                print(f'  {os.path.basename(f)}')
+            return
+        rows = collect_push_kpi(month_sheet)
+        print(f'■ {month_sheet}: 商品マスターとKPIシートで仕入値が食い違う行 {len(rows)}件')
+        if not rows:
+            print('  差はありません。')
+            return
+        up = sum(r[9] for r in rows if r[9] > 0)
+        dn = sum(r[9] for r in rows if r[9] < 0)
+        print(f'  利益への影響: 増える方向 +¥{up:,.0f} / 減る方向 ¥{dn:,.0f} '
+              f'/ 差引 {up + dn:+,.0f}')
+        print(f'\n  {"ch":6} {"識別子":22} {"個数":>5} {"現在":>8} {"マスター":>9} '
+              f'{"差額":>8} {"利益影響":>10}  商品名')
+        for x in rows[:15]:
+            print(f'  {x[0]:6} {x[2][:22]:22} {x[5]:>5.0f} {x[6]:>8,.0f} {x[7]:>9,.0f} '
+                  f'{x[8]:>+8,.0f} {x[9]:>+10,.0f}  {x[3][:26]}')
+        if len(rows) > 15:
+            print(f'  … 他 {len(rows) - 15}件')
+        path = write_push_kpi_list(month_sheet, rows)
+        print(f'\n  → {path}')
+        print('  ⚠️ 無条件では反映しません。承認欄へ記入してから --apply を付けて再実行してください')
         return
     if len(sys.argv) >= 3 and sys.argv[1] in ('check-amazon', 'register-amazon', 'adopt-amazon'):
         main_amazon(sys.argv[1], sys.argv[2])
