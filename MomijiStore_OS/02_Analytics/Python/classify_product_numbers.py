@@ -36,51 +36,99 @@ SET_KNOWN = {
     'SET-12-242':    ('入数-単価',    '販売入数12・各商品の単価242円 → 1販売あたり2,904円'),
 }
 
-def parse(pn):
-    """(区分, 原価, 原価の根拠, 入数, 入数の根拠, 廃盤, 共有在庫, 備考)"""
+# 2026-09-11 英樹回答(A-1〜A-9)を反映。**回答された形だけ**をルールにする
+#   A-1 N,N/N       カンマ区切り=構成JAN下4桁 / 「/」右=1販売分の原価
+#   A-2 N,N/N,N-a   「/」右もカンマ区切り=構成ごとの原価 → 合計が1販売分
+#   A-3 N,N,N,N-a   「/」無し=全部JAN下4桁。原価なし
+#   A-4 AST-N       アソート商品。原価・入数は番号から読めない
+#   A-5 BR-N-a      バリエーション商品。同上
+#   A-6 13桁JAN-a   入数1。原価なし
+#   A-7 N 単独      基本はJAN下4桁。**ただし原価のこともある** → 自動確定しない
+#   A-8 SET-0014/6668.6637  「/」以降が構成JAN下4桁(修正候補。変更はしない)
+#   A-9 SET-N-N     意味が未解決のまま
+
+def parse(pn, jan4=None):
+    """(区分, 原価, 原価の根拠, 入数, 入数の根拠, 廃盤, 共有在庫, 構成JAN下4桁, 備考)"""
+    jan4 = jan4 or {}
     raw = pn.strip()
     s = raw
     shared = s.endswith('-a')                     # 末尾a = Amazon共有在庫
     if shared: s = s[:-2]
-    disc = bool(re.search(r'h$', s))              # h = 廃盤
+    disc = bool(re.search(r'h$', s))              # h = 廃盤(在庫/原価の解釈はしない)
     if disc: s = re.sub(r'h$', '', s)
     s = s.strip('-')
 
-    # ① SET形式 — 確認済みの対応表にあるものだけ読む
+    def R(kind, cost, csrc, n, nsrc, comps, note):
+        return (kind, cost, csrc, n, nsrc, disc, shared, comps, note)
+
+    # A-4 / A-5: 接頭辞で意味は確定するが、原価も入数も番号からは読めない
+    if s.upper().startswith('AST-'):
+        return R('確認済み(原価なし)', None, '番号内に原価が無い', None, '', [],
+                 'アソート商品(AST)。原価・入数は別途確認')
+    if s.upper().startswith('BR-'):
+        return R('確認済み(原価なし)', None, '番号内に原価が無い', None, '', [],
+                 'バリエーション商品(BR)。原価・入数は別途確認')
+
+    # SET形式
     if s.upper().startswith('SET-'):
         k = s.upper()
         if k in SET_KNOWN:
             kind, note = SET_KNOWN[k]
             if kind == '入数-単価':
                 n = int(k.split('-')[1]); u = int(k.split('-')[2])
-                return ('確認済み', n*u, 'SET(入数×単価)', n, 'SET形式', disc, shared, note)
-            return ('確認済み', None, '数字は原価ではない', None, '', disc, shared, note)
-        return ('意味が複数ある', None, '', None, '',  disc, shared,
-                'SET形式は「構成JAN下4桁」と「入数-単価」の両方がありうる。対応表に無い')
+                return R('確認済み', n*u, 'SET(入数×単価)', n, 'SET形式', [], note)
+            return R('確認済み(原価なし)', None, '数字は原価ではない', None, '',
+                     k.split('-')[1:], note)
+        # A-8: SET-0014/6668.6637 は「/」以降が構成JAN下4桁
+        m = re.fullmatch(r'SET-(\d+)/([\d.]+)', k)
+        if m:
+            return R('確認済み(原価なし)', None, '番号内に原価が無い', None, '',
+                     m.group(2).split('.'), 'A-8形式。「/」以降が構成JAN下4桁(表記の修正候補)')
+        return R('意味が複数ある', None, '', None, '', [],
+                 'SET形式(A-9)は意味が未解決。対応表に無い')
 
-    # ② 13桁JAN-入数-原価  (4987176309099-4-3516)
+    # 13桁JAN-入数-原価
     m = re.fullmatch(r'(\d{13})-(\d+)-(\d+)', s)
     if m:
-        return ('確認済み', int(m.group(3)), 'セット全体原価(掛けない)',
-                int(m.group(2)), '商品番号', disc, shared, '')
-
-    # ③ 13桁JAN-入数  (4901301451217-6)
+        return R('確認済み', int(m.group(3)), 'セット全体原価(掛けない)',
+                 int(m.group(2)), '商品番号', [m.group(1)], '')
+    # 13桁JAN-入数
     m = re.fullmatch(r'(\d{13})-(\d+)', s)
     if m:
-        return ('確認済み', None, '番号内に原価が無い', int(m.group(2)), '商品番号',
-                disc, shared, '単品原価が別途確認できれば入数分を計算できる')
-
-    # ④ JAN下4桁/原価  (7378/1642 ・ 8507/2283)
-    m = re.fullmatch(r'(\d{4})/(\d+)', s)
-    if m:
-        return ('確認済み', int(m.group(2)), '1販売分の原価(掛けない)',
-                None, '', disc, shared, 'JAN下4桁で商品照合が要る。入数はこの番号から確定できない')
-
-    # ⑤ 13桁JANのみ
+        return R('確認済み(原価なし)', None, '番号内に原価が無い', int(m.group(2)),
+                 '商品番号', [m.group(1)], '単品原価が別途確認できれば入数分を計算できる')
+    # A-6: 13桁JANのみ → 入数1(英樹確認)
     if re.fullmatch(r'\d{13}', s):
-        return ('未登録形式', None, '', None, '', disc, shared, '13桁JANのみ。原価も入数も無い')
+        return R('確認済み(原価なし)', None, '番号内に原価が無い', 1, '商品番号(A-6)',
+                 [s], '13桁JAN単独=入数1(2026-09-11 確認)')
 
-    return ('未登録形式', None, '', None, '', disc, shared, f'確認済みルールに無い形: {s}')
+    # A-1 / A-2: 構成JAN下4桁(カンマ区切り) / 原価(カンマ区切りなら合計)
+    m = re.fullmatch(r'([\d,]+)/([\d,]+)', s)
+    if m:
+        comps = [x for x in m.group(1).split(',') if x]
+        costs = [int(x) for x in m.group(2).split(',') if x]
+        cost = sum(costs)
+        why = ('構成ごとの原価を合計(A-2)' if len(costs) > 1 else '1販売分の原価(掛けない)')
+        return R('確認済み', cost, why, None, '', comps,
+                 f'構成{len(comps)}品。入数はこの番号から確定できない')
+
+    # A-3: カンマ区切りのみ = 全部JAN下4桁。原価なし
+    m = re.fullmatch(r'\d+(,\d+)+', s)
+    if m:
+        return R('確認済み(原価なし)', None, '番号内に原価が無い', None, '',
+                 s.split(','), 'A-3形式。全部JAN下4桁。入数は構成数と推定しない')
+
+    # A-7: 数字単独 — 基本はJAN下4桁だが原価のこともある → **自動確定しない**
+    if re.fullmatch(r'\d{1,6}', s):
+        c = jan4.get(s.zfill(4), []) if len(s) <= 4 else []
+        if len(c) == 1:
+            return R('要確認(A-7)', None, '', None, '', [s],
+                     f'JAN下4桁として商品マスターに一意に該当({c[0]})。ただし原価の可能性も残る')
+        return R('要確認(A-7)', None, '', None, '', [],
+                 f'JAN下4桁の候補{len(c)}件。原価の可能性もあり自動確定しない')
+
+    return R('未登録形式', None, '', None, '', [], f'確認済みルールに無い形: {s}')
+
 
 # --- データ読み込み ---
 wb = load_workbook(T.RAKUTEN_STOCK, read_only=True, data_only=True)
@@ -101,23 +149,28 @@ wbm.close()
 
 out = []
 for pn, jan, name in rows:
-    kind, cost, csrc, n, nsrc, disc, shared, note = parse(pn)
-    # JAN下4桁の照合(承認 判定方法3)
-    m = re.fullmatch(r'(\d{4})/(\d+)', pn.replace('-a','').rstrip('h'))
-    if m:
-        c = jan4.get(m.group(1), [])
-        if len(c) != 1:
-            kind = '保留(JAN照合)'
-            note += f' / JAN下4桁 {m.group(1)} の候補が {len(c)}件'
+    kind, cost, csrc, n, nsrc, disc, shared, comps, note = parse(pn, jan4)
+    # 構成JAN下4桁を商品マスターのフルJANへ照合(承認 判定方法3)。
+    # 4桁のものだけ照合し、候補が0件または複数なら保留にする
+    unresolved = []
+    for c4 in comps:
+        if len(c4) == 4:
+            cands = jan4.get(c4, [])
+            if len(cands) != 1:
+                unresolved.append(f'{c4}({len(cands)}件)')
+    if unresolved and kind.startswith('確認済み'):
+        kind = '保留(JAN照合)'
+        note += ' / 照合できない構成JAN下4桁: ' + ' '.join(unresolved)
     out.append([pn, jan, kind, cost if cost is not None else '',
                 csrc, n if n is not None else '', nsrc,
-                '廃盤' if disc else '', 'Amazon共有' if shared else '楽天のみ', note, name])
+                '廃盤' if disc else '', 'Amazon共有' if shared else '楽天のみ',
+                ','.join(comps), note, name])
 
 from collections import Counter
 c = Counter(x[2] for x in out)
 print("■ RMS商品番号の分類(楽天在庫CSV 858件)\n")
-for k in ['確認済み','保留(JAN照合)','意味が複数ある','未登録形式']:
-    print(f"   {k:16} {c.get(k,0):>4}件")
+for k in ['確認済み','確認済み(原価なし)','保留(JAN照合)','要確認(A-7)','意味が複数ある','未登録形式']:
+    print(f"   {k:20} {c.get(k,0):>4}件")
 print(f"\n   原価が読める      : {sum(1 for x in out if x[3] != ''):>4}件")
 print(f"   販売入数が読める  : {sum(1 for x in out if x[5] != ''):>4}件")
 print(f"   両方読める        : {sum(1 for x in out if x[3] != '' and x[5] != ''):>4}件")
@@ -125,9 +178,9 @@ print(f"   廃盤(h)           : {sum(1 for x in out if x[7]):>4}件")
 print(f"   Amazon共有(-a)    : {sum(1 for x in out if x[8]=='Amazon共有'):>4}件")
 
 OUT='/Users/hide0726/Desktop/Claude Code/MomijiStore_OS/01_InventoryManagement/SourceData/Output'
-with open(f'{OUT}/RMS商品番号_分類_20260910.csv','w',encoding='utf-8-sig',newline='') as f:
+with open(f'{OUT}/RMS商品番号_分類_20260911.csv','w',encoding='utf-8-sig',newline='') as f:
     w = csv.writer(f)
     w.writerow(['商品番号','JAN','分類','原価','原価の根拠','販売入数','入数の根拠',
-                '廃盤','在庫区分','備考','商品名'])
+                '廃盤','在庫区分','構成JAN下4桁','備考','商品名'])
     w.writerows(out)
-print(f"\n   → {OUT}/RMS商品番号_分類_20260910.csv")
+print(f"\n   → {OUT}/RMS商品番号_分類_20260911.csv")
