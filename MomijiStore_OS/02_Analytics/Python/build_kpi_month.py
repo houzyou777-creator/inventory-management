@@ -114,39 +114,41 @@ def build_cost_resolver(wb_values):
     pack, pos = S.load_pack_info()
     has_pack_cols = any(v is not None for v in pos.values())
 
+    # RMS商品番号の原価を使うか。**既定はOFF**(2026-09-11 Z-4 検証中)。
+    #   RMS_COST=1 を付けたときだけ有効。本番生成でこの経路を通す前に承認を得る
+    use_rms = os.environ.get('RMS_COST', '') not in ('', '0')
+    import classify_product_numbers as CP
+
     def rms_cost(ctrl, pn, sku, master_cost):
         """RMS商品番号に埋め込まれた原価を、**条件を満たすときだけ**採用する。
 
-        商品番号は「8507/2283-a」のように 品番/原価 の形で原価を持つ。
-        出品ごとの値なので入数の問題は起きないが、
-        **数字が抽出できることは確認済みを意味しない**(承認X-1)。
-
-        採用の条件:
-          ① チャネル・商品管理番号・SKU の対応が付くこと(出品テーブルに在る)
-          ② 1販売あたりの原価であること(出品の販売入数が確認済み)
-          ③ 対象時点が分かること(当月のRMS CSVから取得している)
-          ④ 付属品等の含有範囲が分かること(原価単位が確認済み)
-        ②④は出品テーブルの L/M/N 列で確認する。**未記入なら採用しない。**
+        2026-09-11 Z-5 の条件:
+          ① 出品を一意に特定できる(管理番号→出品テーブル→内部管理ID)
+          ② 原価の意味が確認済みの形式である(明記型 = 1販売分の原価が直接書いてある)
+             積み上げ型(構成ごとの原価)は 数量が未確認なら算定しない
+          ③ 対象時点 … 当月の売上CSVから取った番号なので当月に適用できる
+          ④ 含有範囲 … 出品テーブルの確認根拠(N列)に「含有範囲」の記載があること
+        **構成単品が商品マスターに無いことだけでは除外しない。**
+        **数字が抽出できることは確認済みを意味しない。**
         """
-        m = None
-        if '/' in pn:
-            mm = re.match(r'(\d+)', pn.rsplit('/', 1)[1].strip())
-            if mm:
-                m = int(mm.group(1))
-        if m is None:
-            q = pn.strip()
-            m = int(q) if q.isdigit() and len(q) <= 6 else None
-        if m is None:
-            return None, 'RMS商品番号に原価が埋め込まれていない'
+        if not use_rms:
+            return None, 'RMS原価は未承認(RMS_COST=1 で検証時のみ有効)'
+        kind, cost, csrc, n, nsrc, disc, shared, comps, note = CP.parse(pn, {})
+        if cost is None:
+            if kind.startswith('確認済み(積み上げ型'):
+                return None, '積み上げ型。構成の数量が未確認のため算定しない'
+            return None, f'番号に1販売分の原価が無い({kind})'
+        # ① 出品特定
+        key = (norm(ctrl), norm(sku))
+        pid = pair2pid.get(key) or ctrl2pid.get(key[0])
+        if not pid:
+            return None, 'RMS原価はあるが出品→内部管理IDの対応が付かない'
+        # ④ 含有範囲(付属品等)の確認 — 出品テーブルの確認根拠に記載があるか
         info, amb = S.lookup_pack(pack, '楽天', norm(ctrl), norm(sku))
-        if amb or not info:
-            return None, f'出品の対応が付かない({amb or "出品テーブルに無い"})'
-        if not isinstance(info.get('pack'), (int, float)):
-            return None, 'RMS原価はあるが販売入数が未確認(1販売あたりか判定できない)'
-        if info.get('unit') not in (S.UNIT_SINGLE, S.UNIT_SET):
-            return None, 'RMS原価はあるが原価単位が未確認(付属品の含有範囲が不明)'
-        return m, ''
-
+        proof = str((info or {}).get('proof') or '')
+        if '含有範囲' not in proof:
+            return None, 'RMS原価はあるが含有範囲(付属品等)が未確認(出品テーブルN列に記載なし)'
+        return cost, ''
 
     hist_pair = {}
     for name in reversed(wb_values.sheetnames):        # 新しい月を優先
@@ -173,7 +175,7 @@ def build_cost_resolver(wb_values):
         # ただし数字が取れるだけでは採用しない(2026-09-10 承認X-1)
         cand, cwhy = rms_cost(ctrl, pn, sku, mc)
         if cand is not None:
-            return cand, 'RMS商品番号(条件確認済み)', why
+            return cand, 'RMS商品番号(明記型・出品特定・含有範囲確認済み)', why
         h = hist_pair.get(key)
         if h is not None:
             return h, '過去月シート', why

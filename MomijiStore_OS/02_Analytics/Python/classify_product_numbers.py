@@ -102,15 +102,21 @@ def parse(pn, jan4=None):
         return R('確認済み(原価なし)', None, '番号内に原価が無い', 1, '商品番号(A-6)',
                  [s], '13桁JAN単独=入数1(2026-09-11 確認)')
 
-    # A-1 / A-2: 構成JAN下4桁(カンマ区切り) / 原価(カンマ区切りなら合計)
+    # A-1: 構成JAN下4桁 / **1販売分の原価が明記**(明記型)
+    # A-2: 構成JAN下4桁 / 構成ごとの原価(**積み上げ型**)
+    #      積み上げ型は 構成商品・数量・各原価 が未確認なら算定しない(2026-09-11 Z-5)。
+    #      番号には数量が無いため、現時点では**算定保留**
     m = re.fullmatch(r'([\d,]+)/([\d,]+)', s)
     if m:
         comps = [x for x in m.group(1).split(',') if x]
         costs = [int(x) for x in m.group(2).split(',') if x]
-        cost = sum(costs)
-        why = ('構成ごとの原価を合計(A-2)' if len(costs) > 1 else '1販売分の原価(掛けない)')
-        return R('確認済み', cost, why, None, '', comps,
-                 f'構成{len(comps)}品。入数はこの番号から確定できない')
+        if len(costs) == 1:
+            return R('確認済み', costs[0], '1販売分の原価(明記型・掛けない)', None, '', comps,
+                     f'構成{len(comps)}品。入数はこの番号から確定できない')
+        return R('確認済み(積み上げ型・算定保留)', None,
+                 f'構成ごとの原価{costs}(積み上げ型)。数量が未確認のため算定しない',
+                 None, '', comps,
+                 f'構成{len(comps)}品×原価{len(costs)}件。各構成の数量を確認してから合計する')
 
     # A-3: カンマ区切りのみ = 全部JAN下4桁。原価なし
     m = re.fullmatch(r'\d+(,\d+)+', s)
@@ -130,57 +136,104 @@ def parse(pn, jan4=None):
     return R('未登録形式', None, '', None, '', [], f'確認済みルールに無い形: {s}')
 
 
-# --- データ読み込み ---
-wb = load_workbook(T.RAKUTEN_STOCK, read_only=True, data_only=True)
-ws = wb['楽天CSV取込']
-hi = next(i for i,r in enumerate(ws.iter_rows(min_row=1,max_row=6,values_only=True),1) if r and r[0]=='JAN')
-rows = [(str(r[2]).strip(), r[0], str(r[4] or '')[:44])
-        for r in ws.iter_rows(min_row=hi+1, values_only=True) if r and r[2]]
-wb.close()
+def main():
+    # --- データ読み込み ---
+    wb = load_workbook(T.RAKUTEN_STOCK, read_only=True, data_only=True)
+    ws = wb['楽天CSV取込']
+    hi = next(i for i,r in enumerate(ws.iter_rows(min_row=1,max_row=6,values_only=True),1) if r and r[0]=='JAN')
+    rows = [(str(r[2]).strip(), r[0], str(r[4] or '')[:44])
+            for r in ws.iter_rows(min_row=hi+1, values_only=True) if r and r[2]]
+    wb.close()
 
-# JAN下4桁 → フルJAN の照合表(商品マスター)
-wbm = load_workbook(S.MASTER_FILE, read_only=True, data_only=True)
-jan4 = {}
-for r in wbm[S.SH_MASTER].iter_rows(min_row=2, values_only=True):
-    if r[1]:
-        j = str(r[1]).strip()
-        jan4.setdefault(j[-4:], []).append(j)
-wbm.close()
+    # JAN下4桁 → フルJAN の照合表(商品マスター)
+    wbm = load_workbook(S.MASTER_FILE, read_only=True, data_only=True)
+    jan4 = {}
+    for r in wbm[S.SH_MASTER].iter_rows(min_row=2, values_only=True):
+        if r[1]:
+            j = str(r[1]).strip()
+            jan4.setdefault(j[-4:], []).append(j)
+    wbm.close()
 
-out = []
-for pn, jan, name in rows:
-    kind, cost, csrc, n, nsrc, disc, shared, comps, note = parse(pn, jan4)
-    # 構成JAN下4桁を商品マスターのフルJANへ照合(承認 判定方法3)。
-    # 4桁のものだけ照合し、候補が0件または複数なら保留にする
-    unresolved = []
-    for c4 in comps:
-        if len(c4) == 4:
-            cands = jan4.get(c4, [])
-            if len(cands) != 1:
-                unresolved.append(f'{c4}({len(cands)}件)')
-    if unresolved and kind.startswith('確認済み'):
-        kind = '保留(JAN照合)'
-        note += ' / 照合できない構成JAN下4桁: ' + ' '.join(unresolved)
-    out.append([pn, jan, kind, cost if cost is not None else '',
-                csrc, n if n is not None else '', nsrc,
-                '廃盤' if disc else '', 'Amazon共有' if shared else '楽天のみ',
-                ','.join(comps), note, name])
+    # 出品特定: 楽天商品管理番号 → 出品テーブル → 内部管理ID(既存の仕組み)
+    _, pair2pid, ctrl2pid = S.load_master()
+    wb_i = load_workbook(T.RAKUTEN_STOCK, read_only=True, data_only=True)
+    ws_i = wb_i['楽天CSV取込']
+    hi_i = next(i for i,r in enumerate(ws_i.iter_rows(min_row=1,max_row=6,values_only=True),1) if r and r[0]=='JAN')
+    pn2ctrl = {}
+    for r in ws_i.iter_rows(min_row=hi_i+1, values_only=True):
+        if r and r[2] is not None: pn2ctrl.setdefault(str(r[2]).strip(), S.norm(r[1]))
+    wb_i.close()
 
-from collections import Counter
-c = Counter(x[2] for x in out)
-print("■ RMS商品番号の分類(楽天在庫CSV 858件)\n")
-for k in ['確認済み','確認済み(原価なし)','保留(JAN照合)','要確認(A-7)','意味が複数ある','未登録形式']:
-    print(f"   {k:20} {c.get(k,0):>4}件")
-print(f"\n   原価が読める      : {sum(1 for x in out if x[3] != ''):>4}件")
-print(f"   販売入数が読める  : {sum(1 for x in out if x[5] != ''):>4}件")
-print(f"   両方読める        : {sum(1 for x in out if x[3] != '' and x[5] != ''):>4}件")
-print(f"   廃盤(h)           : {sum(1 for x in out if x[7]):>4}件")
-print(f"   Amazon共有(-a)    : {sum(1 for x in out if x[8]=='Amazon共有'):>4}件")
+    out = []
+    for pn, jan, name in rows:
+        kind, cost, csrc, n, nsrc, disc, shared, comps, note = parse(pn, jan4)
 
-OUT='/Users/hide0726/Desktop/Claude Code/MomijiStore_OS/01_InventoryManagement/SourceData/Output'
-with open(f'{OUT}/RMS商品番号_分類_20260911.csv','w',encoding='utf-8-sig',newline='') as f:
-    w = csv.writer(f)
-    w.writerow(['商品番号','JAN','分類','原価','原価の根拠','販売入数','入数の根拠',
-                '廃盤','在庫区分','構成JAN下4桁','備考','商品名'])
-    w.writerows(out)
-print(f"\n   → {OUT}/RMS商品番号_分類_20260911.csv")
+        # ── 判定①: 出品を一意に特定できるか(管理番号→出品テーブル) ──
+        ctrl = pn2ctrl.get(pn)
+        pid = ctrl2pid.get(ctrl) if ctrl else None
+        listing_ok = '可' if pid else '不可'
+
+        # ── 判定②: 構成商品を特定できるか(構成JAN下4桁→商品マスター) ──
+        unresolved = []
+        for c4 in comps:
+            if len(c4) == 4:
+                cands = jan4.get(c4, [])
+                if len(cands) != 1:
+                    unresolved.append(f'{c4}({len(cands)}件)')
+        if not comps:
+            comp_ok = '—'
+        elif not unresolved:
+            comp_ok = '可'
+        elif len(unresolved) < len([c for c in comps if len(c) == 4]):
+            comp_ok = '一部'
+        else:
+            comp_ok = '不可'
+
+        # ── 判定③: 原価として採用できるか ──
+        #   明記型で出品が特定できれば、構成単品がマスターに無いだけでは除外しない(Z-5)。
+        #   ただし 対象時点・含有範囲 は別途確認が要る(採用「候補」であって確定ではない)
+        if cost is not None and listing_ok == '可':
+            cost_use = '候補(対象時点・含有範囲は要確認)'
+        elif cost is not None:
+            cost_use = '不可(出品を特定できない)'
+        elif kind.startswith('確認済み(積み上げ型'):
+            cost_use = '算定保留(数量未確認)'
+        else:
+            cost_use = '—(番号に原価が無い)'
+
+        # ── 判定④: 在庫換算に使えるか(構成と入数が確認できて初めて) ──
+        stock_use = ('可' if (comp_ok in ('可', '—') and n is not None) else
+                     '不可(構成または入数が未確認)')
+
+        out.append([pn, jan, kind, listing_ok, pid or '', comp_ok,
+                    cost if cost is not None else '', csrc, cost_use,
+                    n if n is not None else '', nsrc, stock_use,
+                    '廃盤' if disc else '', 'Amazon共有' if shared else '楽天のみ',
+                    ','.join(comps), (' / '.join(unresolved) if unresolved else ''), note, name])
+
+    from collections import Counter
+    c = Counter(x[2] for x in out)
+    print("■ RMS商品番号の分類(楽天在庫CSV 858件)\n")
+    for k in ['確認済み','確認済み(積み上げ型・算定保留)','確認済み(原価なし)','要確認(A-7)','意味が複数ある','未登録形式']:
+        print(f"   {k:28} {c.get(k,0):>4}件")
+    print(f"\n■ 判定を分けた集計")
+    for label, idx in (('出品特定', 3), ('構成特定', 5), ('原価採用', 8), ('在庫換算', 11)):
+        cc = Counter(x[idx] for x in out)
+        print(f"   {label}: " + " / ".join(f"{k}={v}" for k, v in cc.most_common()))
+    print(f"\n   原価が番号から読める: {sum(1 for x in out if x[6] != ''):>4}件")
+    print(f"   販売入数が読める    : {sum(1 for x in out if x[9] != ''):>4}件")
+    print(f"   廃盤(h)             : {sum(1 for x in out if x[12]):>4}件")
+    print(f"   Amazon共有(-a)      : {sum(1 for x in out if x[13]=='Amazon共有'):>4}件")
+
+    OUT='/Users/hide0726/Desktop/Claude Code/MomijiStore_OS/01_InventoryManagement/SourceData/Output'
+    with open(f'{OUT}/RMS商品番号_分類_20260911.csv','w',encoding='utf-8-sig',newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['商品番号','JAN','分類','①出品特定','内部管理ID','②構成特定',
+                    '原価(番号から)','原価の根拠','③原価採用','販売入数','入数の根拠','④在庫換算',
+                    '廃盤','在庫区分','構成JAN下4桁','照合できない構成','備考','商品名'])
+        w.writerows(out)
+    print(f"\n   → {OUT}/RMS商品番号_分類_20260911.csv")
+
+
+if __name__ == '__main__':
+    main()
