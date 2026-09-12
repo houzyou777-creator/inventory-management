@@ -97,30 +97,39 @@ def main():
     tgt = [r[:11] for r in rows_of(TEST, '楽天CSV取込', 3)
            if r and (r[3] not in (None, '') or r[1] not in (None, ''))]
     check(len(src) == len(tgt), f'行数 Import {len(src)} / 取込先 {len(tgt)}')
+    # 判定の対象は「元xlsxで文字列だったセル」。元xlsxの時点で数値だったセルは、この修正では復元できない
+    # (ChatGPT 2026-09-12: 元データで既に失われた文字は戻らない)。数値のまま入るのは想定内として件数だけ出す
     for ci, name in ID_COLS.items():
-        exact = same_digits = mism = 0
+        exact = num_kept = num_text = mism = 0
         bad = []
-        types = Counter()
+        types_from_str = Counter()
         for s, t in zip(src, tgt):
             sv, tv = s[ci], t[ci]
-            types[type(tv).__name__] += 1
             if sv is None and tv is None:
                 exact += 1
                 continue
-            exp = expected_text(sv)
-            if isinstance(sv, str) and tv == sv:
-                exact += 1
-            elif not isinstance(sv, str) and tv == exp:
-                same_digits += 1
+            if isinstance(sv, str):
+                types_from_str[type(tv).__name__] += 1
+                if tv == sv:
+                    exact += 1
+                else:
+                    mism += 1
+                    if len(bad) < 5:
+                        bad.append((sv, tv))
             else:
-                mism += 1
-                if len(bad) < 5:
-                    bad.append((sv, tv))
-        check(mism == 0, f'{name}: 文字列そのまま {exact} / 数値→桁の文字列 {same_digits} / 不一致 {mism}  型={dict(types)}')
+                if tv == expected_text(sv):
+                    num_text += 1                       # 数値→桁の文字列(もし文字列化されていれば)
+                elif isinstance(tv, (int, float)) and expected_text(tv) == expected_text(sv):
+                    num_kept += 1                       # 数値のまま(桁は同じ)
+                else:
+                    mism += 1
+                    if len(bad) < 5:
+                        bad.append((sv, tv))
+        check(mism == 0, f'{name}: 元が文字列→完全一致 {exact} / 元が数値→数値のまま {num_kept}・文字列化 {num_text} / 不一致 {mism}')
         for b in bad:
             print(f'       不一致例 {b[0]!r} → {b[1]!r}')
-        non_str = sum(v for k, v in types.items() if k not in ('str', 'NoneType'))
-        check(non_str == 0, f'{name}: 文字列以外の型 {non_str}件(保存・再読込後)')
+        non_str = sum(v for k, v in types_from_str.items() if k != 'str')
+        check(non_str == 0, f'{name}: 元が文字列だったセルのうち保存・再読込後に文字列でないもの {non_str}件')
 
     # ── 2. ファイルの健全性(VBA・図形が残っているか) ─────
     print('■ 2. 保存後のファイル(VBA・図形)')
@@ -187,7 +196,11 @@ def main():
         print('       ', d)
     print(f'     要確認一覧: baseline {len(cb)} 行 / test {len(ct)} 行')
     # 差は「説明できるもの」だけか … ここでは列挙に留め、判断は人が行う
-    check(len(diffs) <= 1, '明細の差が1件以下(想定: 管理番号 0192333006122 の先頭0が保たれ原価マスターと一致しなくなる1件)')
+    diff_keys = {d[0] for d in diffs}
+    expected_key = {k for k in diff_keys if k[0].lstrip('0') == '192333006122'}
+    check(diff_keys <= expected_key,
+          f'明細の差がある出品 {len(diff_keys)}件 — 想定は 管理番号 0192333006122(クリニーク)だけ'
+          '(先頭0が保たれ、0の落ちた原価マスターと一致しなくなる。原価マスター側の修正で解消)')
 
     print('\n' + ('🟢 PASS' if not fails else f'🔴 FAIL {len(fails)}件'))
     for f in fails:
