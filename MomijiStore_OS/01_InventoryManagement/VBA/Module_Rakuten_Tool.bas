@@ -46,6 +46,10 @@ Const CK_STOCK As Long = 6
 Const CK_COST As Long = 7
 Const CK_NOTE As Long = 8
 
+' 識別子の型変換の件数(取込ごとにリセット)。「復元」ではなく「型の統一」であることを完了メッセージで示す
+Private g_idNumToText As Long      ' 元データで既に数値だった識別子を桁の文字列にした件数
+Private g_idNeedCheck As Long      ' 小数・エラー・日付など、そのまま識別子として扱えないもの(要確認)
+
 ' 列マッピング用（CSV読込時に設定）
 Private colJAN As Long
 Private colManageNo As Long
@@ -81,9 +85,19 @@ Sub CsvImport()
 
     wsTake.Range("A3:K100000").ClearContents
 
+    g_idNumToText = 0: g_idNeedCheck = 0
     Call ImportFromExcel(filePath, wsTake)
 
-    MsgBox "読込が完了しました。" & Chr(10) & "続けて「集計実行」ボタンを押してください。", vbInformation, "読込完了"
+    Dim msg As String
+    msg = "読込が完了しました。" & Chr(10)
+    If g_idNumToText > 0 Then
+        msg = msg & "・識別子(JAN/管理番号/商品番号/SKU)の型変換: " & g_idNumToText & " 件" & Chr(10) & _
+              "  (元データで既に数値だったものを桁の文字列にしました。失われた先頭0などは戻りません)" & Chr(10)
+    End If
+    If g_idNeedCheck > 0 Then
+        msg = msg & "・要確認: 小数・エラー等の識別子 " & g_idNeedCheck & " 件(そのまま文字列にしています。元データを確認してください)" & Chr(10)
+    End If
+    MsgBox msg & "続けて「集計実行」ボタンを押してください。", vbInformation, "読込完了"
 End Sub
 
 ' ---- CSV形式から読込（Mac対応: Open For Input 使用）----
@@ -153,10 +167,10 @@ Private Sub ImportFromCSV(filePath As String, wsTake As Worksheet)
         If skuVal = "" And colManageNo > 0 Then skuVal = Trim(SafeGetArr(cols, colManageNo))
         If skuVal = "" Then GoTo NextLine
 
-        wsTake.Cells(dataRow, TC_JAN).Value = SafeGetArr(cols, colJAN)
-        wsTake.Cells(dataRow, TC_MANAGE_NO).Value = SafeGetArr(cols, colManageNo)
-        wsTake.Cells(dataRow, TC_ITEM_NO).Value = SafeGetArr(cols, colItemNo)
-        wsTake.Cells(dataRow, TC_SKU_NO).Value = SafeGetArr(cols, colSkuNo)
+        wsTake.Cells(dataRow, TC_JAN).Value = IdText(SafeGetArr(cols, colJAN))
+        wsTake.Cells(dataRow, TC_MANAGE_NO).Value = IdText(SafeGetArr(cols, colManageNo))
+        wsTake.Cells(dataRow, TC_ITEM_NO).Value = IdText(SafeGetArr(cols, colItemNo))
+        wsTake.Cells(dataRow, TC_SKU_NO).Value = IdText(SafeGetArr(cols, colSkuNo))
         wsTake.Cells(dataRow, TC_NAME).Value = SafeGetArr(cols, colName)
 
         pStr = CleanNum(SafeGetArr(cols, colPrice))
@@ -238,10 +252,10 @@ Private Sub ImportFromExcel(filePath As String, wsTake As Worksheet)
         If skuVal = "" And colManageNo > 0 Then skuVal = Trim(CStr(wsSrc.Cells(i, colManageNo).Value))
         If skuVal = "" Then GoTo NextExcelLine
 
-        wsTake.Cells(dataRow, TC_JAN).Value = SafeGetCell(wsSrc, i, colJAN)
-        wsTake.Cells(dataRow, TC_MANAGE_NO).Value = SafeGetCell(wsSrc, i, colManageNo)
-        wsTake.Cells(dataRow, TC_ITEM_NO).Value = SafeGetCell(wsSrc, i, colItemNo)
-        wsTake.Cells(dataRow, TC_SKU_NO).Value = SafeGetCell(wsSrc, i, colSkuNo)
+        wsTake.Cells(dataRow, TC_JAN).Value = IdText(SafeGetCell(wsSrc, i, colJAN))
+        wsTake.Cells(dataRow, TC_MANAGE_NO).Value = IdText(SafeGetCell(wsSrc, i, colManageNo))
+        wsTake.Cells(dataRow, TC_ITEM_NO).Value = IdText(SafeGetCell(wsSrc, i, colItemNo))
+        wsTake.Cells(dataRow, TC_SKU_NO).Value = IdText(SafeGetCell(wsSrc, i, colSkuNo))
         wsTake.Cells(dataRow, TC_NAME).Value = SafeGetCell(wsSrc, i, colName)
 
         pVal = SafeGetCell(wsSrc, i, colPrice)
@@ -360,6 +374,19 @@ Sub RunAggregation()
     wsAgg.Range("A10:L100000").Interior.ColorIndex = xlNone
     wsCheck.Range("A3:H100000").ClearContents
     wsCheck.Range("A3:H100000").Interior.ColorIndex = xlNone
+    ' 転記先の識別子列も代入の前に文字列書式にする(2026-09-12 ②)。
+    ' 取込シートで文字列を保っても、.Value で書き写す先が標準書式だと再び数値になり先頭0が落ちる
+    With wsAgg
+        .Range(.Cells(10, AG_JAN), .Cells(100000, AG_JAN)).NumberFormat = "@"
+        .Range(.Cells(10, AG_MANAGE_NO), .Cells(100000, AG_MANAGE_NO)).NumberFormat = "@"
+        .Range(.Cells(10, AG_SKU_NO), .Cells(100000, AG_SKU_NO)).NumberFormat = "@"
+        .Range(.Cells(10, AG_ITEM_NO), .Cells(100000, AG_ITEM_NO)).NumberFormat = "@"
+    End With
+    With wsCheck
+        .Range(.Cells(3, CK_SKU), .Cells(100000, CK_SKU)).NumberFormat = "@"
+        .Range(.Cells(3, CK_JAN), .Cells(100000, CK_JAN)).NumberFormat = "@"
+        .Range(.Cells(3, CK_MANAGE_NO), .Cells(100000, CK_MANAGE_NO)).NumberFormat = "@"
+    End With
 
     lastRow = wsTake.Cells(wsTake.Rows.Count, TC_SKU_NO).End(xlUp).Row
     If lastRow < 3 Then lastRow = wsTake.Cells(wsTake.Rows.Count, TC_MANAGE_NO).End(xlUp).Row
@@ -722,6 +749,36 @@ Private Sub SetIdColumnsAsText(wsTake As Worksheet, firstRow As Long, rowCount A
         .Range(.Cells(firstRow, TC_SKU_NO), .Cells(lastRow, TC_SKU_NO)).NumberFormat = "@"
     End With
 End Sub
+
+' ---- 識別子を文字列にそろえる(型の統一。元文字列の「復元」ではない・2026-09-12 ③) ----
+'   文字列  → Trim してそのまま(先頭0・カンマ・スラッシュは保持)
+'   整数    → 桁の文字列(848061036985 → "848061036985")。指数表記にしない。**先頭0は付けない**(元資料の根拠が無いため)
+'   小数・エラー・日付・論理値 → そのまま CStr し、要確認として数える(正常扱いしない)
+'   空欄・Null → ""(空のまま)
+Private Function IdText(v As Variant) As String
+    If IsEmpty(v) Or IsNull(v) Then
+        IdText = ""
+    ElseIf IsError(v) Then
+        IdText = CStr(v)
+        g_idNeedCheck = g_idNeedCheck + 1
+    ElseIf VarType(v) = vbString Then
+        IdText = Trim(v)
+    ElseIf VarType(v) = vbBoolean Or VarType(v) = vbDate Then
+        IdText = CStr(v)
+        g_idNeedCheck = g_idNeedCheck + 1
+    ElseIf IsNumeric(v) Then
+        If v = Fix(v) And Abs(v) < 1E+15 Then
+            IdText = Format(v, "0")
+            g_idNumToText = g_idNumToText + 1
+        Else
+            IdText = CStr(v)
+            g_idNeedCheck = g_idNeedCheck + 1
+        End If
+    Else
+        IdText = CStr(v)
+        g_idNeedCheck = g_idNeedCheck + 1
+    End If
+End Function
 
 
 ' ============================================================

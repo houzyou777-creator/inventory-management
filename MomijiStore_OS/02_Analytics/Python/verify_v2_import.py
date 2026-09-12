@@ -90,6 +90,9 @@ def main():
         print('⛔ 「楽天CSV読込」がまだ実行されていません(手順③ V2-7 未実施)。')
         sys.exit(2)
 
+    v3 = 'IdText' in pre.get('Module_Rakuten_Tool.bas', '')
+    print(f'   修正版の世代: {"V3(識別子の型統一＋集計先の文字列書式)" if v3 else "V2(取込4列の文字列書式)"}')
+
     # ── 1. 文字列の完全一致 ─────────────────────────────
     print('■ 1. 取込先 vs Import xlsx(同じ順序で並べて比較)')
     src = [r[:11] for r in rows_of(IMPORT, '在庫', 2)
@@ -126,6 +129,8 @@ def main():
                     if len(bad) < 5:
                         bad.append((sv, tv))
         check(mism == 0, f'{name}: 元が文字列→完全一致 {exact} / 元が数値→数値のまま {num_kept}・文字列化 {num_text} / 不一致 {mism}')
+        if v3:   # ③ 識別子の型統一(IdText)が入っていれば、元が数値のセルも桁の文字列になっているはず
+            check(num_kept == 0, f'{name}: (V3) 元が数値だったセルの文字列化 {num_text} / 数値のまま {num_kept}(0であること)')
         for b in bad:
             print(f'       不一致例 {b[0]!r} → {b[1]!r}')
         non_str = sum(v for k, v in types_from_str.items() if k != 'str')
@@ -195,6 +200,18 @@ def main():
     for d in diffs[:20]:
         print('       ', d)
     print(f'     要確認一覧: baseline {len(cb)} 行 / test {len(ct)} 行')
+    if v3:
+        # ② 転記先の識別子が文字列で保たれているか(先頭0のJANが在庫金額集計に残るか)
+        wb = load_workbook(TEST, read_only=True, data_only=True)
+        ag = [r for r in wb['在庫金額集計'].iter_rows(min_row=10, values_only=True) if r and r[2] not in (None, '')]
+        ck = [r for r in wb['要確認一覧'].iter_rows(min_row=3, values_only=True) if r and r[0] not in (None, '')]
+        wb.close()
+        for label, rows, cols in (('在庫金額集計', ag, (0, 1, 2, 11)), ('要確認一覧', ck, (0, 1, 2))):
+            nonstr = sum(1 for r in rows for c in cols if r[c] not in (None, '') and not isinstance(r[c], str))
+            lead0 = sum(1 for r in rows for c in cols if isinstance(r[c], str) and r[c].startswith('0'))
+            check(nonstr == 0, f'(V3) {label}: 識別子列の文字列以外 {nonstr}件 / 先頭0を保った値 {lead0}件')
+        # 金額・数量が変わっていないこと(クリニーク以外)
+        print('     (V3) 金額・数量・集計値は上の baseline 比較のとおり')
     # 差は「説明できるもの」だけか … ここでは列挙に留め、判断は人が行う
     diff_keys = {d[0] for d in diffs}
     expected_key = {k for k in diff_keys if k[0].lstrip('0') == '192333006122'}

@@ -541,7 +541,8 @@ return res as string
             r['更新結果'] = f'スキップ(書込直前の照合で不一致: {st})'
     print(f'✅ 更新 {n_ok}/{len(ok)}セル')
     out_dir = os.path.dirname(TOOL_FILE) + '/Output'
-    log = f'{out_dir}/原価マスター_識別子復元ログ_{date.today():%Y%m%d}.csv'
+    from datetime import datetime
+    log = f'{out_dir}/原価マスター_識別子復元ログ_{datetime.now():%Y%m%d_%H%M%S}.csv'   # 同名で上書きしない
     import csv as _csv
     with open(log, 'w', encoding='utf-8-sig', newline='') as f:
         w = _csv.writer(f)
