@@ -21,6 +21,7 @@ import os
 import sys
 import warnings
 from collections import Counter
+from datetime import date
 
 warnings.filterwarnings('ignore')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -65,6 +66,29 @@ def main():
     for p in (TEST, BASE, IMPORT):
         if not os.path.exists(p):
             sys.exit(f'❌ 無い: {p}')
+
+    # ── 0. そもそもテストが行われたか(手順②③が未実施なら、細かい判定を並べても意味がない) ──
+    try:
+        from oletools.olevba import VBA_Parser
+        vp = VBA_Parser(TEST)
+        pre = {n: c for (_, _, n, c) in vp.extract_macros()}
+        vp.close()
+        if 'SetIdColumnsAsText' not in pre.get('Module_Rakuten_Tool.bas', ''):
+            print('⛔ テスト用ファイルに修正版VBAが入っていません(手順② V2-2〜V2-6 が未実施)。')
+            print(f'   対象: {TEST}')
+            print('   baseline の方ではなく、V2_test 直下のファイルへ Module_Rakuten_Tool_V2.bas を取り込んでください。')
+            sys.exit(2)
+    except ImportError:
+        pass
+    import datetime
+    wb0 = load_workbook(TEST, read_only=True, data_only=True)
+    imp_dt = wb0['楽天CSV取込'].cell(3, 11).value
+    agg_dt = wb0['在庫金額集計'].cell(6, 2).value
+    wb0.close()
+    print(f'■ 0. 取込日時={imp_dt} / 集計日時={agg_dt}')
+    if isinstance(imp_dt, datetime.datetime) and imp_dt.date() < date.today():
+        print('⛔ 「楽天CSV読込」がまだ実行されていません(手順③ V2-7 未実施)。')
+        sys.exit(2)
 
     # ── 1. 文字列の完全一致 ─────────────────────────────
     print('■ 1. 取込先 vs Import xlsx(同じ順序で並べて比較)')
