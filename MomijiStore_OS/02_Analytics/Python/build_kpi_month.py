@@ -198,18 +198,9 @@ def build_cost_resolver(wb_values, ym=''):
                 {'month': name, 'cost': l, 'pn': str(ws.cell(r, 4).value or '').strip(),
                  'note': str(ws.cell(r, 16).value or '')})
 
-    # 過去月の出所メモのうち「確認済み」と扱えるもの(2026-09-12 Y-1)。
-    #   出所メモが無い(P列が無かった頃のシート)値は、人が入れたのか自動で引き継いだのか
-    #   区別できないため**確認済みとは扱わない**(参考候補に留める)
-    CONFIRMED_ROOTS = ('マスター×入数(単位確認済み)', 'RMS商品番号(', '人が確認')
-
-    def root_source(note):
-        """P列「原価出所: 過去月シート 7月 ← マスター×入数(…)」の**根元**の出所を返す。"""
-        m = re.search(r'原価出所:\s*(.+)', note)
-        if not m:
-            return ''
-        src = m.group(1).split(' / ')[0]
-        return src.split('←')[-1].strip()
+    # 「人が確認した1販売分の原価」の記録(§7-6)。KPIの数値があるだけでは確認済みにしない。
+    import cost_confirmations as K
+    records = K.load('楽天')
 
     def same_composition(pn_now, pn_past):
         """販売構成が同じと言えるか。商品番号が同一か、番号から読める構成(JAN/構成JAN下4桁・入数)が一致する。"""
@@ -221,39 +212,57 @@ def build_cost_resolver(wb_values, ym=''):
             return True, '番号から読める構成・入数が一致'
         return False, f'販売構成が同じと確認できない(商品番号 {pn_past!r} → {pn_now!r})'
 
-    def hist_cost(ctrl, pn, sku):
-        """過去月シートの原価を、**条件を満たすときだけ**採用する(2026-09-12 Y-1)。
+    def confirmed_cost(ctrl, pn, sku):
+        """人が確認した原価を、**記録の条件を満たすときだけ**採用する(2026-09-12 §7-5/§7-6)。
 
-          a. 同じチャネル(このブックは楽天のみ)・同じ出品(管理番号×SKU)で、出品テーブルで一意に特定できる
-          b. 同じ販売構成・原価単位 … 商品番号が同一か、番号から読める構成・入数が一致する。
-             KPIのL列は常に「1販売分」なので、出品と構成が同じなら単位も同じ
-          c. 参照元の原価が確認済み … 過去行のP列の根元の出所が 確認済みの種類であること
-          d. 当月へ適用できる根拠 … 出品テーブルの確認根拠に `原価継続=可(…)` が明示されていること
-        満たさなければ (None, 理由, 参考候補) を返す。参考候補はP列に残すだけで、L列は埋めない。
+          a. 同じ出品(管理番号×SKU)で、出品テーブルで一意に特定できる
+          b. 記録の適用期間(開始月〜終了月)が生成月を含む。確認日だけで無期限に引き継がない
+          c. 記録の販売構成(確認時の商品番号)が現在の商品番号と同じ。違えば無効
+          d. 記録に参照月があれば、その月のシートのL列が記録の原価と一致する。違えば無効(原価値が変わった)
+          e. 出品テーブルに販売入数があれば記録の入数と一致する。違えば無効
+        「L列は1販売分だから単位同一」という解釈は採らない。記録が構成・入数・含有範囲を明示する。
+        満たさなければ (None, 理由, 参考候補, 出所) を返す。参考候補はP列に残すだけで、L列は埋めない。
         """
         key = (norm(ctrl), norm(sku))
         cands = hist.get(key) or []
-        if not cands:
-            return None, '', '', ''
-        h = cands[0]
-        ref = f'{h["month"]} L={h["cost"]:,.0f}'
+        ref = f'{cands[0]["month"]} L={cands[0]["cost"]:,.0f}' if cands else ''
         pid = pair2pid.get(key) or ctrl2pid.get(key[0])
         if not pid:
-            return None, '過去月に値はあるが出品→内部管理IDの対応が付かない', ref, ''
+            return None, ('過去月に値はあるが出品→内部管理IDの対応が付かない' if cands else ''), ref, ''
         info, amb = listing_of(ctrl, sku)
         if amb:
-            return None, f'過去月に値はあるが出品を一意に特定できない({amb})', ref, ''
-        ok, why_c = same_composition(pn, h['pn'])
-        if not ok:
-            return None, f'過去月に値はあるが{why_c}', ref, ''
-        root = root_source(h['note'])
-        if not any(root.startswith(x) for x in CONFIRMED_ROOTS):
-            return None, ('過去月に値はあるが参照元の原価が確認済みでない'
-                          + (f'(出所: {root})' if root else '(出所メモなし)')), ref, ''
-        st, v = S.proof_status((info or {}).get('proof') or '', '原価継続')
-        if st != 'confirmed':
-            return None, '過去月に確認済みの値はあるが当月へ適用できる根拠がない(確認根拠に 原価継続=可 の記載なし)', ref, ''
-        return h['cost'], '', ref, f'過去月シート {h["month"]} ← {root}'
+            return None, f'出品を一意に特定できない({amb})', ref, ''
+        recs = K.find(records, '楽天', ctrl, sku, ym) if ym else []
+        if not recs:
+            return None, ('過去月に値はあるが人が確認した記録が無い(原価確認記録に該当なし)' if cands
+                          else '人が確認した記録が無い'), ref, ''
+        why_all = []
+        for rec in recs:
+            rid = rec.get('記録ID')
+            ok, why_c = same_composition(pn, str(rec.get('販売構成(確認時の商品番号)') or '').strip())
+            if not ok:
+                why_all.append(f'記録{rid}: {why_c}'); continue
+            rcost = rec.get('1販売分の原価')
+            if not isinstance(rcost, (int, float)):
+                why_all.append(f'記録{rid}: 原価が数値でない'); continue
+            refm = str(rec.get('参照月') or '').strip()
+            if refm:
+                past = next((h for h in cands if h['month'] == refm), None)
+                if past is None:
+                    why_all.append(f'記録{rid}: 参照月 {refm} のシートに同じ出品の値が無い'); continue
+                if float(past['cost']) != float(rcost):
+                    why_all.append(f'記録{rid}: 参照月 {refm} のL列 {past["cost"]:,.0f} と記録の原価 {rcost:,.0f} が違う(原価値が変わった→無効)'); continue
+            rec_n = rec.get('販売入数')
+            tab_n = (info or {}).get('pack')
+            if isinstance(rec_n, (int, float)) and isinstance(tab_n, (int, float)) and int(rec_n) != int(tab_n):
+                why_all.append(f'記録{rid}: 入数 {int(rec_n)} が出品テーブルの販売入数 {int(tab_n)} と違う(→無効)'); continue
+            scope = str(rec.get('含有範囲') or '')
+            if not scope or any(w in scope for w in S.UNCONFIRMED_WORDS):
+                why_all.append(f'記録{rid}: 含有範囲が未確認({scope or "空"})'); continue
+            src = (f'人が確認({rid} {rec.get("確認者")} {str(rec.get("確認日"))[:10]}'
+                   f' 適用{K._ym(rec.get("適用開始月"))}〜{K._ym(rec.get("適用終了月")) or K._ym(rec.get("適用開始月"))})')
+            return float(rcost), '', ref, src
+        return None, ' / '.join(why_all), ref, ''
 
     def resolve(ctrl, pn, sku):
         """(原価, 出所, 未確認理由, 参考候補) を返す。**採用できなければ原価は None。**"""
@@ -272,7 +281,7 @@ def build_cost_resolver(wb_values, ym=''):
         cand, cwhy = rms_cost(ctrl, pn, sku, mc)
         if cand is not None:
             return cand, 'RMS商品番号(明記型・出品特定・含有範囲/対象月 確認済み)', why, ''
-        h, hwhy, ref, hsrc = hist_cost(ctrl, pn, sku)
+        h, hwhy, ref, hsrc = confirmed_cost(ctrl, pn, sku)
         if h is not None:
             return h, hsrc, why, ''
         reasons = [x for x in (why, cwhy, hwhy) if x]
