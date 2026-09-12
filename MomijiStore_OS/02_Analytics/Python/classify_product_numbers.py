@@ -19,9 +19,18 @@
   4901301451217-6-a       6=販売入数。**番号内に原価は無い**
   h = 廃盤 / 末尾a = Amazon共有在庫(無ければ楽天のみ)
 
+確認済みの意味(2026-09-12 英樹確認):
+  SET-4916-5050-a         SET=セット品 / 4916・5050=構成JAN下4桁 / a=Amazon共有。
+                          A-9 の7件はすべてこの形(各区切りが4桁)。
+                          `SET-12-242`(入数-単価)は区切りが4桁ではないので対応表で読む
+  4901133863318-2-w       末尾 -w = **訳あり品**。原価・価格の扱いは別途確認
+  14993499s1-3            14993499s1 = この商品の**型番** / -3 = 数量(販売入数3)
+  M-8991/730              カタログが既に無く**意味不明**(再確認しない)
+
 ⚠️ SET形式は「構成JAN下4桁」と「入数-単価」が同じ形になりうる。
-   **桁数や大小で自動確定しない。** 確認済みの対応表にあるものだけ読む。
+   各区切りが4桁のものは構成JAN下4桁(A-9 確認済み)。それ以外は対応表にあるものだけ読む。
 ⚠️ 廃盤(h)があっても 在庫ゼロ・原価ゼロ・即販売停止とは解釈しない。
+⚠️ 訳あり品(w)があっても 原価が違う・同じ とは解釈しない。区別して持つだけ。
 ⚠️ 末尾aが無いことは「楽天のみ販売」の意味であり、入数1や在庫単位までは推定しない。
 """
 import re, sys, csv, warnings
@@ -36,6 +45,16 @@ SET_KNOWN = {
     'SET-12-242':    ('入数-単価',    '販売入数12・各商品の単価242円 → 1販売あたり2,904円'),
 }
 
+# 型番を含む商品番号。**型番は英樹が確認したものだけ**(2026-09-12)。英数字混在を型番と一般化しない
+MODEL_KNOWN = {
+    '14993499s1': 'スクイーズ もっちりバター の型番',
+}
+
+# 英樹に確認したが意味が確定できなかった番号。**再確認しない**ために記録する(2026-09-12)
+UNRESOLVED_KNOWN = {
+    'M-8991/730': 'カタログが既に無く意味不明(2026-09-12 英樹確認)。M接頭辞の意味は未確定',
+}
+
 # 2026-09-11 英樹回答(A-1〜A-9)を反映。**回答された形だけ**をルールにする
 #   A-1 N,N/N       カンマ区切り=構成JAN下4桁 / 「/」右=1販売分の原価
 #   A-2 N,N/N,N-a   「/」右もカンマ区切り=構成ごとの原価 → 合計が1販売分
@@ -45,21 +64,37 @@ SET_KNOWN = {
 #   A-6 13桁JAN-a   入数1。原価なし
 #   A-7 N 単独      基本はJAN下4桁。**ただし原価のこともある** → 自動確定しない
 #   A-8 SET-0014/6668.6637  「/」以降が構成JAN下4桁(修正候補。変更はしない)
-#   A-9 SET-N-N     意味が未解決のまま
+#   A-9 SET-N-N     各区切りが4桁 = 構成JAN下4桁(2026-09-12 英樹確認)
+# 2026-09-12 追加回答:
+#   -w              訳あり品(接尾辞)
+#   14993499s1-3    型番-数量
+#   M-8991/730      カタログ無し・意味不明(再確認しない)
 
 def parse(pn, jan4=None):
-    """(区分, 原価, 原価の根拠, 入数, 入数の根拠, 廃盤, 共有在庫, 構成JAN下4桁, 備考)"""
+    """(区分, 原価, 原価の根拠, 入数, 入数の根拠, 廃盤, 共有在庫, 構成JAN下4桁, 備考)
+
+    訳あり品(-w)は 備考 の先頭に「訳あり品(w)。」を付けて返す。
+    呼び出し側(build_kpi_month.rms_cost)が9要素で受けているため、戻り値の形は変えない。
+    """
     jan4 = jan4 or {}
     raw = pn.strip()
     s = raw
     shared = s.endswith('-a')                     # 末尾a = Amazon共有在庫
     if shared: s = s[:-2]
+    wake = bool(re.search(r'-w$', s, re.I))       # -w = 訳あり品(原価の解釈はしない)
+    if wake: s = re.sub(r'-w$', '', s, flags=re.I)
     disc = bool(re.search(r'h$', s))              # h = 廃盤(在庫/原価の解釈はしない)
     if disc: s = re.sub(r'h$', '', s)
     s = s.strip('-')
 
     def R(kind, cost, csrc, n, nsrc, comps, note):
+        if wake:
+            note = '訳あり品(w)。' + note
         return (kind, cost, csrc, n, nsrc, disc, shared, comps, note)
+
+    # 英樹に確認したが意味が確定できなかった番号 → 再確認の対象から外す
+    if raw in UNRESOLVED_KNOWN:
+        return R('不明(確認済み)', None, '', None, '', [], UNRESOLVED_KNOWN[raw])
 
     # A-4 / A-5: 接頭辞で意味は確定するが、原価も入数も番号からは読めない
     if s.upper().startswith('AST-'):
@@ -84,8 +119,21 @@ def parse(pn, jan4=None):
         if m:
             return R('確認済み(原価なし)', None, '番号内に原価が無い', None, '',
                      m.group(2).split('.'), 'A-8形式。「/」以降が構成JAN下4桁(表記の修正候補)')
+        # A-9: SET-4916-5050 のように**各区切りが4桁**なら構成JAN下4桁(2026-09-12 英樹確認)。
+        #      `SET-12-242`(入数-単価)は区切りが4桁でないのでここには来ない。
+        #      4桁でない区切りを含むSET形式は対応表(SET_KNOWN)にあるものだけ読む
+        if re.fullmatch(r'SET(-\d{4})+', k):
+            comps = k.split('-')[1:]
+            return R('確認済み(原価なし)', None, '番号内に原価が無い', None, '', comps,
+                     f'A-9形式。構成JAN下4桁{len(comps)}品(2026-09-12 確認)。入数は構成数と推定しない')
         return R('意味が複数ある', None, '', None, '', [],
-                 'SET形式(A-9)は意味が未解決。対応表に無い')
+                 'SET形式だが区切りが4桁でなく、対応表にも無い')
+
+    # 型番-数量(英樹確認の型番だけ。英数字混在を型番と一般化しない)
+    m = re.fullmatch(r'(.+)-(\d+)', s)
+    if m and m.group(1) in MODEL_KNOWN:
+        return R('確認済み(原価なし)', None, '番号内に原価が無い', int(m.group(2)),
+                 '商品番号(型番-数量)', [], f'{MODEL_KNOWN[m.group(1)]}(2026-09-12 確認)')
 
     # 13桁JAN-入数-原価
     m = re.fullmatch(r'(\d{13})-(\d+)-(\d+)', s)
@@ -208,14 +256,20 @@ def main():
         out.append([pn, jan, kind, listing_ok, pid or '', comp_ok,
                     cost if cost is not None else '', csrc, cost_use,
                     n if n is not None else '', nsrc, stock_use,
-                    '廃盤' if disc else '', 'Amazon共有' if shared else '楽天のみ',
+                    '廃盤' if disc else '', '訳あり' if note.startswith('訳あり品(w)') else '',
+                    'Amazon共有' if shared else '楽天のみ',
                     ','.join(comps), (' / '.join(unresolved) if unresolved else ''), note, name])
 
     from collections import Counter
     c = Counter(x[2] for x in out)
-    print("■ RMS商品番号の分類(楽天在庫CSV 858件)\n")
-    for k in ['確認済み','確認済み(積み上げ型・算定保留)','確認済み(原価なし)','要確認(A-7)','意味が複数ある','未登録形式']:
+    print(f"■ RMS商品番号の分類(楽天在庫CSV {len(out)}件)\n")
+    kinds = ['確認済み','確認済み(積み上げ型・算定保留)','確認済み(原価なし)','要確認(A-7)',
+             '意味が複数ある','不明(確認済み)','未登録形式']
+    for k in kinds:
         print(f"   {k:28} {c.get(k,0):>4}件")
+    other = {k: v for k, v in c.items() if k not in kinds}
+    if other:
+        print(f"   ⚠️ 集計表に無い分類: {other}")
     print(f"\n■ 判定を分けた集計")
     for label, idx in (('出品特定', 3), ('構成特定', 5), ('原価採用', 8), ('在庫換算', 11)):
         cc = Counter(x[idx] for x in out)
@@ -223,16 +277,19 @@ def main():
     print(f"\n   原価が番号から読める: {sum(1 for x in out if x[6] != ''):>4}件")
     print(f"   販売入数が読める    : {sum(1 for x in out if x[9] != ''):>4}件")
     print(f"   廃盤(h)             : {sum(1 for x in out if x[12]):>4}件")
-    print(f"   Amazon共有(-a)      : {sum(1 for x in out if x[13]=='Amazon共有'):>4}件")
+    print(f"   訳あり(w)           : {sum(1 for x in out if x[13]):>4}件")
+    print(f"   Amazon共有(-a)      : {sum(1 for x in out if x[14]=='Amazon共有'):>4}件")
 
+    from datetime import date
     OUT='/Users/hide0726/Desktop/Claude Code/MomijiStore_OS/01_InventoryManagement/SourceData/Output'
-    with open(f'{OUT}/RMS商品番号_分類_20260911.csv','w',encoding='utf-8-sig',newline='') as f:
+    path = f'{OUT}/RMS商品番号_分類_{date.today():%Y%m%d}.csv'
+    with open(path,'w',encoding='utf-8-sig',newline='') as f:
         w = csv.writer(f)
         w.writerow(['商品番号','JAN','分類','①出品特定','内部管理ID','②構成特定',
                     '原価(番号から)','原価の根拠','③原価採用','販売入数','入数の根拠','④在庫換算',
-                    '廃盤','在庫区分','構成JAN下4桁','照合できない構成','備考','商品名'])
+                    '廃盤','訳あり','在庫区分','構成JAN下4桁','照合できない構成','備考','商品名'])
         w.writerows(out)
-    print(f"\n   → {OUT}/RMS商品番号_分類_20260911.csv")
+    print(f"\n   → {path}")
 
 
 if __name__ == '__main__':
