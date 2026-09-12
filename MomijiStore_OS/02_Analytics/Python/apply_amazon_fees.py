@@ -228,8 +228,10 @@ tell application "Microsoft Excel"
     open p
     delay 2
     calculate
-    save active workbook
-    close active workbook saving no
+    -- 「active workbook」は使わない。人が別のブックを開いていると、そちらを保存・閉じてしまう(2026-09-12 発生)
+    set wb to workbook (name of (info for p))
+    save wb
+    close wb saving no
     if not wasRunning then quit
 end tell
 end timeout

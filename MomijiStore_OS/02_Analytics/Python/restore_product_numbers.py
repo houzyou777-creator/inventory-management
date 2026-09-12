@@ -224,7 +224,8 @@ with timeout of 600 seconds
 tell application "Microsoft Excel"
     open p
     delay 1
-    set wb to active workbook
+    -- 「active workbook」は使わない(2026-09-12: 人が開いていた別ブックを閉じてしまった)
+    set wb to workbook (name of (info for p))
     set ws to worksheet "{SHEET}" of wb
     {''.join(lines)}
     save wb

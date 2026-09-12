@@ -59,6 +59,11 @@ SHEET_COLUMNS = [
 
 COL = {k: i for i, (k, _) in enumerate(SHEET_COLUMNS)}   # 'ctrl' → 2 など
 
+# 数値に変換してよい列。**識別子(管理番号・商品番号・SKU・SKU番号)と文字列列は変換しない**(2026-09-12)。
+#   conv() を全列にかけていたため、'0840414684973' が 840414684973 に、'4901301441720' が数値になっていた
+#   (在庫ツールの取込VBAと同じ型変換をPython側でも起こしていた)。既存月のシートは変更しない
+NUMERIC_COLS = {'price', 'units', 'sales', 'orders'}
+
 
 def read_rms_csv(path, month=''):
     """RMSのSKU別売上CSVを (ヘッダー6行, データ行list) で返す。
@@ -323,8 +328,14 @@ def build_sheet(kpi_file, sheet_name, head6, data, resolve, master_cost_of=None)
     missing = []
     for i, r in enumerate(data):
         row = 8 + i
-        for col in range(len(SHEET_COLUMNS)):          # A〜J列。順番はシート側が正
-            ws.cell(row, col + 1).value = conv(r[col])
+        for col, (key, _) in enumerate(SHEET_COLUMNS):  # A〜J列。順番はシート側が正
+            c = ws.cell(row, col + 1)
+            if key in NUMERIC_COLS:
+                c.value = conv(r[col])
+            else:                                       # 識別子・文字列は入力どおりの文字列で保持する
+                v = (r[col] or '').strip()
+                c.value = v if v else None
+                c.number_format = '@'
         cost, src, why, ref = resolve(r[COL['ctrl']], r[COL['pn']], r[COL['sku']])
         lc = ws.cell(row, 12)
         lc.value = int(cost) if isinstance(cost, float) and cost == int(cost) else cost
@@ -435,8 +446,10 @@ tell application "Microsoft Excel"
     open p
     delay 2
     calculate
-    save active workbook
-    close active workbook saving no
+    -- 「active workbook」は使わない。人が別のブックを開いていると、そちらを保存・閉じてしまう(2026-09-12 発生)
+    set wb to workbook (name of (info for p))
+    save wb
+    close wb saving no
     if not wasRunning then quit
 end tell
 end timeout
