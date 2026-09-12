@@ -266,9 +266,14 @@ def main():
     bdir = os.path.dirname(STOCK) + '/Backup'
     os.makedirs(bdir, exist_ok=True)
     base = os.path.splitext(os.path.basename(STOCK))[0]
+    # 同日に2回目以降の適用があっても**毎回**直前の状態を残す(既存名なら連番を付ける)
+    stem = os.path.splitext(os.path.basename(cand_path))[0]
     bpath = f'{bdir}/{base}_backup_{date.today():%Y%m%d}_V3商品番号復元前.xlsm'
-    if not os.path.exists(bpath):
-        shutil.copy2(STOCK, bpath)
+    seq = 2
+    while os.path.exists(bpath):
+        bpath = f'{bdir}/{base}_backup_{date.today():%Y%m%d}_V3商品番号復元前_{seq}.xlsm'
+        seq += 1
+    shutil.copy2(STOCK, bpath)
     print(f'\n✅ バックアップ: {bpath}')
 
     res = apply_excel([(r['_row'], r['_cur'], r['新値']) for r in ok])
@@ -292,7 +297,8 @@ def main():
             r['更新結果'] = f'スキップ(書込直前の照合で不一致: {st})'
     print(f'✅ 更新 {n_ok}/{len(ok)}行')
 
-    log = f'{OUT}/商品番号_復元ログ_{date.today():%Y%m%d}.csv'
+    # ログは候補ファイルごとに分ける(同名で上書きすると前回のログが消える。2026-09-12 に一度消した)
+    log = f'{OUT}/商品番号_復元ログ_{date.today():%Y%m%d}_{stem}.csv'
     head = ['取込先行', '楽天商品管理番号', 'SKU管理番号', '区分', '元値', '新値', '差の理由',
             '根拠', '更新結果', '商品名']
     with open(log, 'w', encoding='utf-8-sig', newline='') as f:
