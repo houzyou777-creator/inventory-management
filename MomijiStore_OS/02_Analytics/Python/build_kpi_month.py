@@ -101,33 +101,59 @@ def conv(s):
         return s
 
 
-def build_cost_resolver(wb_values):
-    """仕入値の解決関数を作る(商品マスター → RMS埋め込み → 過去月シート)
+def build_cost_resolver(wb_values, ym=''):
+    """仕入値の解決関数を作る(商品マスター → RMS商品番号 → 過去月シート)
 
     ⚠️ 商品マスターの標準原価は「単品1個あたり」とは限らない。
        出品がセット販売なら、その出品の原価は 単品原価 × 販売入数 である。
        出品テーブルの 販売入数・原価単位 が**確認済みのときだけ**計算し、
        未確認なら **None を返して黄色セルで人へ回す**(2026-09-10 承認W-4)。
        推測値を入れない。既存の「仕入値未解決」と同じ経路に落とす。
+
+    ym: 生成する月 '2026-08'。RMS原価の対象月判定に使う(2026-09-12 Z-4)
     """
     cost_by_pid, pair2pid, ctrl2pid = load_master()
     pack, pos = S.load_pack_info()
     has_pack_cols = any(v is not None for v in pos.values())
+    jan_by_pid = S.load_jan_by_pid() if hasattr(S, 'load_jan_by_pid') else {}
 
-    # RMS商品番号の原価を使うか。**既定はOFF**(2026-09-11 Z-4 検証中)。
+    # RMS商品番号の原価を使うか。**既定はOFF**(2026-09-12 時点で既定ONは保留)。
     #   RMS_COST=1 を付けたときだけ有効。本番生成でこの経路を通す前に承認を得る
     use_rms = os.environ.get('RMS_COST', '') not in ('', '0')
     import classify_product_numbers as CP
 
+    def listing_of(ctrl, sku):
+        """出品テーブルの1行を引く。重複・該当なしなら (None, 理由)。"""
+        info, amb = S.lookup_pack(pack, '楽天', norm(ctrl), norm(sku))
+        if amb:
+            return None, amb
+        return info, ''
+
+    def composition_conflict(pn, info):
+        """商品番号から読める構成と、出品テーブルの記録が食い違っていないか。食い違えば理由を返す。"""
+        kind, cost, csrc, n, nsrc, disc, shared, comps, note = CP.parse(pn, {})
+        rec_n = (info or {}).get('pack')
+        if n is not None and isinstance(rec_n, (int, float)) and int(rec_n) != int(n):
+            return f'構成違い: 商品番号の入数{n} ≠ 出品テーブルの販売入数{int(rec_n)}'
+        pid = (info or {}).get('pid')
+        full = [c for c in comps if len(c) == 13]
+        mj = jan_by_pid.get(pid)
+        if full and mj and mj not in full:
+            return f'構成違い: 商品番号のJAN{full} ≠ マスターのJAN{mj}'
+        return ''
+
     def rms_cost(ctrl, pn, sku, master_cost):
         """RMS商品番号に埋め込まれた原価を、**条件を満たすときだけ**採用する。
 
-        2026-09-11 Z-5 の条件:
-          ① 出品を一意に特定できる(管理番号→出品テーブル→内部管理ID)
-          ② 原価の意味が確認済みの形式である(明記型 = 1販売分の原価が直接書いてある)
+        2026-09-12 の条件(Z-4 修正版):
+          ① 出品を一意に特定できる(管理番号×SKU→出品テーブル→内部管理ID)。重複なら不可
+          ② 原価の意味が形式確認済み(明記型 = 1販売分の原価が直接書いてある)
              積み上げ型(構成ごとの原価)は 数量が未確認なら算定しない
-          ③ 対象時点 … 当月の売上CSVから取った番号なので当月に適用できる
-          ④ 含有範囲 … 出品テーブルの確認根拠(N列)に「含有範囲」の記載があること
+          ③ 対象時点 … 確認根拠に `RMS原価対象月=…` が**明示**され、生成月を含むこと
+             (「当月CSVにある＝当月原価として正しい」とはしない)
+          ④ 含有範囲 … 確認根拠に `含有範囲=確認済み…` が**明示**されていること。
+             「含有範囲」の文字があるだけでは不可。未確認・資料待ちは必ず除外
+          ⑤ 商品番号から読める構成と出品テーブルの記録が食い違わないこと
         **構成単品が商品マスターに無いことだけでは除外しない。**
         **数字が抽出できることは確認済みを意味しない。**
         """
@@ -135,51 +161,122 @@ def build_cost_resolver(wb_values):
             return None, 'RMS原価は未承認(RMS_COST=1 で検証時のみ有効)'
         kind, cost, csrc, n, nsrc, disc, shared, comps, note = CP.parse(pn, {})
         if cost is None:
-            if kind.startswith('確認済み(積み上げ型'):
+            if kind.startswith('形式確認済み(積み上げ型'):
                 return None, '積み上げ型。構成の数量が未確認のため算定しない'
             return None, f'番号に1販売分の原価が無い({kind})'
-        # ① 出品特定
         key = (norm(ctrl), norm(sku))
         pid = pair2pid.get(key) or ctrl2pid.get(key[0])
         if not pid:
             return None, 'RMS原価はあるが出品→内部管理IDの対応が付かない'
-        # ④ 含有範囲(付属品等)の確認 — 出品テーブルの確認根拠に記載があるか
-        info, amb = S.lookup_pack(pack, '楽天', norm(ctrl), norm(sku))
-        proof = str((info or {}).get('proof') or '')
-        if '含有範囲' not in proof:
-            return None, 'RMS原価はあるが含有範囲(付属品等)が未確認(出品テーブルN列に記載なし)'
+        info, amb = listing_of(ctrl, sku)
+        if amb:
+            return None, f'RMS原価はあるが出品を一意に特定できない({amb})'
+        proof = (info or {}).get('proof') or ''
+        st, v = S.proof_status(proof, '含有範囲')
+        if st != 'confirmed':
+            return None, ('RMS原価はあるが含有範囲が未確認' +
+                          (f'(記載: {v})' if v else '(確認根拠に 含有範囲=確認済み… の記載なし)'))
+        if not ym or not S.month_covered(proof, ym):
+            rec = S.parse_proof(proof).get('RMS原価対象月')
+            return None, (f'RMS原価はあるが対象月 {ym or "?"} への適用が未確認'
+                          + (f'(記載: RMS原価対象月={rec} は {ym} を含まない)' if rec
+                             else '(確認根拠に RMS原価対象月=… の記載なし)'))
+        conflict = composition_conflict(pn, info)
+        if conflict:
+            return None, f'RMS原価はあるが{conflict}'
         return cost, ''
 
-    hist_pair = {}
-    for name in reversed(wb_values.sheetnames):        # 新しい月を優先
+    # 過去月シート: 新しい月から順に、同じ出品(管理番号×SKU)の L列・商品番号・P列(出所メモ)を持つ
+    hist = {}
+    for name in reversed(wb_values.sheetnames):
         ws = wb_values[name]
         for r in range(8, ws.max_row + 1):
             c, e, l = ws.cell(r, 3).value, ws.cell(r, 5).value, ws.cell(r, 12).value
             if c is None or not isinstance(l, (int, float)):
                 continue
-            hist_pair.setdefault((norm(c), norm(e)), l)
+            hist.setdefault((norm(c), norm(e)), []).append(
+                {'month': name, 'cost': l, 'pn': str(ws.cell(r, 4).value or '').strip(),
+                 'note': str(ws.cell(r, 16).value or '')})
+
+    # 過去月の出所メモのうち「確認済み」と扱えるもの(2026-09-12 Y-1)。
+    #   出所メモが無い(P列が無かった頃のシート)値は、人が入れたのか自動で引き継いだのか
+    #   区別できないため**確認済みとは扱わない**(参考候補に留める)
+    CONFIRMED_ROOTS = ('マスター×入数(単位確認済み)', 'RMS商品番号(', '人が確認')
+
+    def root_source(note):
+        """P列「原価出所: 過去月シート 7月 ← マスター×入数(…)」の**根元**の出所を返す。"""
+        m = re.search(r'原価出所:\s*(.+)', note)
+        if not m:
+            return ''
+        src = m.group(1).split(' / ')[0]
+        return src.split('←')[-1].strip()
+
+    def same_composition(pn_now, pn_past):
+        """販売構成が同じと言えるか。商品番号が同一か、番号から読める構成(JAN/構成JAN下4桁・入数)が一致する。"""
+        if pn_now and pn_now == pn_past:
+            return True, '商品番号同一'
+        a = CP.parse(pn_now, {}) if pn_now else None
+        b = CP.parse(pn_past, {}) if pn_past else None
+        if a and b and a[7] and a[7] == b[7] and a[3] == b[3]:
+            return True, '番号から読める構成・入数が一致'
+        return False, f'販売構成が同じと確認できない(商品番号 {pn_past!r} → {pn_now!r})'
+
+    def hist_cost(ctrl, pn, sku):
+        """過去月シートの原価を、**条件を満たすときだけ**採用する(2026-09-12 Y-1)。
+
+          a. 同じチャネル(このブックは楽天のみ)・同じ出品(管理番号×SKU)で、出品テーブルで一意に特定できる
+          b. 同じ販売構成・原価単位 … 商品番号が同一か、番号から読める構成・入数が一致する。
+             KPIのL列は常に「1販売分」なので、出品と構成が同じなら単位も同じ
+          c. 参照元の原価が確認済み … 過去行のP列の根元の出所が 確認済みの種類であること
+          d. 当月へ適用できる根拠 … 出品テーブルの確認根拠に `原価継続=可(…)` が明示されていること
+        満たさなければ (None, 理由, 参考候補) を返す。参考候補はP列に残すだけで、L列は埋めない。
+        """
+        key = (norm(ctrl), norm(sku))
+        cands = hist.get(key) or []
+        if not cands:
+            return None, '', '', ''
+        h = cands[0]
+        ref = f'{h["month"]} L={h["cost"]:,.0f}'
+        pid = pair2pid.get(key) or ctrl2pid.get(key[0])
+        if not pid:
+            return None, '過去月に値はあるが出品→内部管理IDの対応が付かない', ref, ''
+        info, amb = listing_of(ctrl, sku)
+        if amb:
+            return None, f'過去月に値はあるが出品を一意に特定できない({amb})', ref, ''
+        ok, why_c = same_composition(pn, h['pn'])
+        if not ok:
+            return None, f'過去月に値はあるが{why_c}', ref, ''
+        root = root_source(h['note'])
+        if not any(root.startswith(x) for x in CONFIRMED_ROOTS):
+            return None, ('過去月に値はあるが参照元の原価が確認済みでない'
+                          + (f'(出所: {root})' if root else '(出所メモなし)')), ref, ''
+        st, v = S.proof_status((info or {}).get('proof') or '', '原価継続')
+        if st != 'confirmed':
+            return None, '過去月に確認済みの値はあるが当月へ適用できる根拠がない(確認根拠に 原価継続=可 の記載なし)', ref, ''
+        return h['cost'], '', ref, f'過去月シート {h["month"]} ← {root}'
 
     def resolve(ctrl, pn, sku):
-        """(原価, 出所, 未確認理由) を返す。**採用できなければ原価は None。**"""
+        """(原価, 出所, 未確認理由, 参考候補) を返す。**採用できなければ原価は None。**"""
         key = (norm(ctrl), norm(sku))
         pid = pair2pid.get(key) or ctrl2pid.get(key[0])
         mc = cost_by_pid.get(pid) if pid is not None else None
         why = ''
         if isinstance(mc, (int, float)):
             if not has_pack_cols:
-                return mc, 'マスター(単位列なし)', ''
+                return mc, 'マスター(単位列なし)', '', ''
             v, why = S.resolve_unit_cost(pack, '楽天', norm(ctrl), norm(sku), mc)
             if v is not None:
-                return v, f'マスター×入数(単位確認済み)', ''
+                return v, 'マスター×入数(単位確認済み)', '', ''
         # マスターから解決できないとき、RMS商品番号の原価を**代替候補**として見る。
-        # ただし数字が取れるだけでは採用しない(2026-09-10 承認X-1)
+        # ただし数字が取れるだけでは採用しない(2026-09-10 承認X-1 / 2026-09-12 Z-4)
         cand, cwhy = rms_cost(ctrl, pn, sku, mc)
         if cand is not None:
-            return cand, 'RMS商品番号(明記型・出品特定・含有範囲確認済み)', why
-        h = hist_pair.get(key)
+            return cand, 'RMS商品番号(明記型・出品特定・含有範囲/対象月 確認済み)', why, ''
+        h, hwhy, ref, hsrc = hist_cost(ctrl, pn, sku)
         if h is not None:
-            return h, '過去月シート', why
-        return None, '', (why or cwhy or '原価を確認できる資料が無い')
+            return h, hsrc, why, ''
+        reasons = [x for x in (why, cwhy, hwhy) if x]
+        return None, '', (' / '.join(reasons) or '原価を確認できる資料が無い'), ref
 
     return resolve
 
@@ -219,7 +316,7 @@ def build_sheet(kpi_file, sheet_name, head6, data, resolve, master_cost_of=None)
         row = 8 + i
         for col in range(len(SHEET_COLUMNS)):          # A〜J列。順番はシート側が正
             ws.cell(row, col + 1).value = conv(r[col])
-        cost, src, why = resolve(r[COL['ctrl']], r[COL['pn']], r[COL['sku']])
+        cost, src, why, ref = resolve(r[COL['ctrl']], r[COL['pn']], r[COL['sku']])
         lc = ws.cell(row, 12)
         lc.value = int(cost) if isinstance(cost, float) and cost == int(cost) else cost
         lc.fill = PatternFill(fill_type=None) if cost is not None else YELLOW
@@ -228,12 +325,15 @@ def build_sheet(kpi_file, sheet_name, head6, data, resolve, master_cost_of=None)
         note = ws.cell(row, 16)
         if cost is not None:
             mcv = master_cost_of(r[COL['ctrl']], r[COL['sku']])
-            gap = ('' if not isinstance(mcv, (int, float)) or mcv == cost
-                   else f' / マスター {mcv:,.0f} と不一致(理由: {why or "未確認"})')
+            # マスター×入数 で解決した値は「単品原価×入数」なので単品の標準原価とは一致しなくて当然。
+            # 不一致メモを付けるのは マスター以外の出所 のときだけ
+            gap = ('' if src.startswith('マスター') or not isinstance(mcv, (int, float)) or mcv == cost
+                   else f' / マスター(単品) {mcv:,.0f} と不一致(理由: {why or "単位未確認"})')
             note.value = f'原価出所: {src}{gap}'
         else:
-            note.value = f'原価未確定: {why}'
-            missing.append((row, r[COL['ctrl']], r[COL['sku']], why))
+            # 参考候補(条件不足の過去月値)は**P列に残すだけ**。L列は埋めない(2026-09-12 Y-1)
+            note.value = f'原価未確定: {why}' + (f' / 参考候補: {ref}' if ref else '')
+            missing.append((row, r[COL['ctrl']], r[COL['sku']], why, r[COL['sales']]))
         ws.cell(row, 11).value = f'=SUM(I{row}*0.15)'
         # 原価未確定ガード(2026-09-10 承認X-2)
         #   Excelは空セルを0として計算するため、仕入値が空欄だと
@@ -257,12 +357,24 @@ def build_sheet(kpi_file, sheet_name, head6, data, resolve, master_cost_of=None)
     ws[f'M{t}'] = f'=IF({und}>0,"未確定",SUM(M7:M{last}))'
     ws[f'N{t}'] = f'=IF({und}>0,"未確定",SUM(N7:N{last}))'
     ws[f'O{t}'] = f'=IF(ISTEXT(N{t}),"未確定",IF(I{t}=0,"",N{t}/I{t}))'
+    # 経費ブロックの位置を先に決め、**テンプレートの残骸を消してから**書く。
+    #   (参考)行を1行挟んだことで新旧の行がずれ、区切り行に前月の「広告費 76,791」
+    #   「送料 248,314」が残っていた(2026-09-12 コピー検証で発見)。
+    e0 = t + 3                       # 広告費〜クーポン利用手数料
+    tot1 = e0 + 4                    # 合計
+    s0 = tot1 + 2                    # 送料・梱包資材
+    tot2 = s0 + 2                    # 合計
+    g = tot2 + 2                     # 限界利益・限界利益率
+    for row in range(t + 1, g + 2):
+        for col in (13, 14, 15):
+            ws.cell(row, col).value = None
+            ws.cell(row, col).fill = PatternFill(fill_type=None)
+
     # 原価が判明している行だけの粗利。**月全体の利益ではない**ことを明示する
     ws.cell(t + 1, 13).value = '(参考)原価判明分のみの粗利'
     ws.cell(t + 1, 14).value = f'=SUMIF(N7:N{last},"<>未確定")'
     ws.cell(t + 1, 15).value = f'=IF({und}=0,"全件確定",{und}&"行が未確定")'
 
-    e0 = t + 3
     for j, lab in enumerate(['広告費', 'ポイント費用', 'クーポン利用額', 'クーポン利用手数料']):
         row = e0 + j
         ws.cell(row, 13).value = lab
@@ -270,12 +382,10 @@ def build_sheet(kpi_file, sheet_name, head6, data, resolve, master_cost_of=None)
         nc.value = None
         nc.fill = YELLOW
         ws.cell(row, 15).value = f'=SUM(N{row}/I{t})' if j < 3 else None
-    tot1 = e0 + 4
     ws.cell(tot1, 13).value = '合計'
     ws.cell(tot1, 14).value = f'=SUM(N{e0}:N{e0 + 3})'
     ws.cell(tot1, 15).value = f'=SUM(N{tot1}/I{t})'
 
-    s0 = tot1 + 2
     for j, lab in enumerate(['送料', '梱包資材']):
         row = s0 + j
         ws.cell(row, 13).value = lab
@@ -283,12 +393,10 @@ def build_sheet(kpi_file, sheet_name, head6, data, resolve, master_cost_of=None)
         nc.value = None
         nc.fill = YELLOW
         ws.cell(row, 15).value = f'=SUM(N{row}/I{t})'
-    tot2 = s0 + 2
     ws.cell(tot2, 13).value = '合計'
     ws.cell(tot2, 14).value = f'=SUM(N{s0}:N{s0 + 1})'
     ws.cell(tot2, 15).value = f'=SUM(O{s0}:O{s0 + 1})'
 
-    g = tot2 + 2
     # 必須の経費が1つでも空欄なら「未確定」と出す。
     # Excelは空セルを0として集計するため、ガードが無いと
     # 「送料0円」のもっともらしい数字が限界利益として表示されてしまう
@@ -348,13 +456,14 @@ def main():
         sys.exit(1)
     csv_path = sys.argv[1]
     fname = os.path.basename(csv_path)
+    m = re.match(r'(\d{4})(\d{2})_', fname)
+    ym = f'{m.group(1)}-{m.group(2)}' if m else os.environ.get('KPI_YM', '')   # RMS原価の対象月判定に使う
     if len(sys.argv) >= 3:
         sheet_name = sys.argv[2]
     else:
-        m = re.match(r'\d{4}(\d{2})_', fname)
         if not m:
             raise SystemExit('シート名を自動判定できません。第2引数で指定してください(例: 8月)')
-        sheet_name = f'{int(m.group(1))}月'
+        sheet_name = f'{int(m.group(2))}月'
 
     kpi_file = os.environ.get('KPI_FILE_OVERRIDE', KPI_FILE)
 
@@ -372,7 +481,7 @@ def main():
         print(f'バックアップ: {os.path.basename(bak)}')
 
     wb_values = load_workbook(kpi_file, data_only=True)
-    resolve = build_cost_resolver(wb_values)
+    resolve = build_cost_resolver(wb_values, ym)
     cost_by_pid, pair2pid, ctrl2pid = load_master()
 
     def master_cost_of(ctrl, sku):
@@ -381,13 +490,21 @@ def main():
 
     total_row, missing = build_sheet(kpi_file, sheet_name, head6, data, resolve,
                                      master_cost_of)
-    und_sales = 0
-    for m_ in missing:
-        pass
-    print(f'シート生成完了(原価未確定 {len(missing)}行)')
+    # 採用できた件数 / 未確定件数 / 対象売上額 を出所ごとに報告する(2026-09-12 Z-4)
     from collections import Counter
+    by_src = Counter(); sales_src = Counter()
+    for r in data:
+        cost, src, why, ref = resolve(r[COL['ctrl']], r[COL['pn']], r[COL['sku']])
+        lab = src if cost is not None else '未確定'
+        by_src[lab] += 1
+        sales_src[lab] += float(conv(r[COL['sales']]) or 0)
+    print(f'シート生成完了(原価未確定 {len(missing)}行)')
+    print('  出所別:')
+    for lab, c in by_src.most_common():
+        print(f'    {c:>4}行  売上 ¥{sales_src[lab]:>12,.0f}  {lab}')
+    print('  未確定の理由:')
     for why, c in Counter(m_[3] for m_ in missing).most_common():
-        print(f'  {c:>4}行  {why}')
+        print(f'    {c:>4}行  {why}')
 
     print('Excelで再計算中...')
     recalc_via_excel(kpi_file)
@@ -395,7 +512,10 @@ def main():
     ok, exp, got, errs, n_total, o_total = verify(kpi_file, sheet_name, data, total_row)
     print(f'検証: 合計{"一致" if ok else "不一致!"} (個数/売上/件数 CSV={exp} シート={got})')
     print(f'数式エラー: {len(errs)}件 {errs[:10] if errs else ""}')
-    print(f'粗利: {n_total:,.0f}円 ({o_total * 100:.1f}%)' if n_total else '')
+    if isinstance(n_total, (int, float)) and isinstance(o_total, (int, float)):
+        print(f'粗利: {n_total:,.0f}円 ({o_total * 100:.1f}%)')
+    else:
+        print(f'粗利: {n_total}(原価未確定の行があるため月全体の粗利は出ない)')
     if not ok or errs:
         sys.exit('*** FAIL — シートを確認してください ***')
     print('PASS。経費(黄色セル)入力後に限界利益が確定します。')

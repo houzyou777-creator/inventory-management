@@ -68,6 +68,18 @@ def load_master():
     return cost_by_pid, pair2pid, ctrl2pid
 
 
+def load_jan_by_pid():
+    """内部管理ID → 商品マスターのJAN(文字列)。構成違いの検出に使う(2026-09-12 Z-4)。"""
+    wb = load_workbook(MASTER_FILE, read_only=True, data_only=True)
+    out = {}
+    for r in wb[SH_MASTER].iter_rows(min_row=2, values_only=True):
+        if r and r[0] and r[PM_JAN - 1] not in (None, ''):
+            j = r[PM_JAN - 1]
+            out[str(r[0])] = str(int(j)) if isinstance(j, float) and j.is_integer() else str(j).strip()
+    wb.close()
+    return out
+
+
 def load_kpi_month(month_sheet):
     """KPI月次シートから 出品(管理番号×SKU)ごとに1件へまとめて返す。
 
@@ -402,6 +414,61 @@ PUSH_KPI_DIR = BASE + '/01_InventoryManagement/SourceData/Output'
 PACK_COLS = {'販売入数': None, '原価単位': None, '確認根拠': None}
 UNIT_SINGLE = '単品原価'      # マスターの標準原価が単品1個分を指す
 UNIT_SET = 'セット原価'       # マスターの標準原価がこの出品と同じ構成のセットを指す
+
+
+# 確認根拠(N列)の**明示トークン**。自由記述の中に `項目=値` の形で書く(区切りは / または改行)。
+#   含有範囲=確認済み(付属品なし)      … 付属品等の含有範囲を確認した   ← RMS商品番号の原価採用に必須
+#   含有範囲=未確認 / 含有範囲=資料待ち … 明示的に未確認(採用しない)
+#   RMS原価対象月=2026-08〜            … 番号に埋め込まれた原価が適用できる月(〜は以降ずっと)
+#   RMS原価対象月=2026-08,2026-09      … 列挙も可
+#   原価継続=可(2026-09-12確認)        … 過去月シートの確認済み原価を後の月へ引き継いでよい
+# ⚠️ 「含有範囲」という文字があるだけでは採用しない(2026-09-12 ChatGPT指摘)。
+#    値が「確認済」で始まるものだけを確認済みとし、「未確認」「資料待ち」を含めば必ず除外する。
+UNCONFIRMED_WORDS = ('未確認', '資料待ち', '未定', '不明')
+
+
+def parse_proof(text):
+    """確認根拠の自由記述から `項目=値` を抜き出す。{項目: 値} を返す(無ければ空)。"""
+    import re as _re
+    out = {}
+    for m in _re.finditer(r'([^\s/／=＝:：]+)\s*[=＝]\s*([^/／\n]+)', str(text or '')):
+        out.setdefault(m.group(1).strip(), m.group(2).strip())
+    return out
+
+
+def proof_status(text, item):
+    """項目の確認状態を返す: 'confirmed' / 'unconfirmed' / 'absent'。
+
+    確認済みと言えるのは 値が「確認済」で始まり、未確認語を含まないときだけ。
+    """
+    v = parse_proof(text).get(item)
+    if v is None:
+        return 'absent', None
+    if any(w in v for w in UNCONFIRMED_WORDS):
+        return 'unconfirmed', v
+    if v.startswith('確認済') or v.startswith('可'):
+        return 'confirmed', v
+    return 'unconfirmed', v
+
+
+def proof_months(text, item='RMS原価対象月'):
+    """`RMS原価対象月=2026-08〜` / `2026-08,2026-09` を読む。(月の集合, 以降ずっとの開始月)。"""
+    import re as _re
+    v = parse_proof(text).get(item) or ''
+    months = set(_re.findall(r'\d{4}-\d{2}', v))
+    open_from = None
+    m = _re.search(r'(\d{4}-\d{2})\s*[〜~～]', v)
+    if m:
+        open_from = m.group(1)
+    return months, open_from
+
+
+def month_covered(text, ym, item='RMS原価対象月'):
+    """対象月 ym('2026-08') が確認根拠の対象月に含まれるか。**記載が無ければ False。**"""
+    months, open_from = proof_months(text, item)
+    if ym in months:
+        return True
+    return bool(open_from) and ym >= open_from
 
 
 def load_pack_info():
