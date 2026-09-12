@@ -1,3 +1,4 @@
+Attribute VB_Name = "Module_Rakuten_Tool"
 Option Explicit
 
 ' ============================================================
@@ -139,6 +140,8 @@ Private Sub ImportFromCSV(filePath As String, wsTake As Worksheet)
 
     importDt = Format(Now, "yyyy/mm/dd hh:mm:ss")
     dataRow = 3
+    ' 識別子4列は代入の前に文字列書式へ(V-2)
+    Call SetIdColumnsAsText(wsTake, dataRow, UBound(lines))
     For i = 1 To UBound(lines)
         lineStr = Replace(Trim(lines(i)), Chr(13), "")
         If lineStr = "" Then GoTo NextLine
@@ -227,6 +230,8 @@ Private Sub ImportFromExcel(filePath As String, wsTake As Worksheet)
     lastRow = wsSrc.Cells(wsSrc.Rows.Count, lastRowCol).End(xlUp).Row
 
     dataRow = 3
+    ' 識別子4列は代入の前に文字列書式へ(V-2)
+    Call SetIdColumnsAsText(wsTake, dataRow, lastRow - 1)
     For i = 2 To lastRow
         skuVal = ""
         If colSkuNo > 0 Then skuVal = Trim(CStr(wsSrc.Cells(i, colSkuNo).Value))
@@ -409,8 +414,6 @@ Sub RunAggregation()
             End If
         End If
 
-        ' 楽天では同一SKU番号が別商品(管理番号違い)に使い回されるため、
-        ' 管理番号×SKUのペアで重複判定する(SKU単独だと別商品を誤って除外する)
         dupKey = manageNo & "|" & skuNo
         isDup = False
         On Error Resume Next
@@ -700,6 +703,27 @@ Private Function CleanNum(s As String) As String
     CleanNum = Replace(Replace(Replace(Replace(s, ",", ""), "\", ""), Chr(165), ""), " ", "")
 End Function
 
+' ---- 識別子4列を文字列書式にする(取込の代入より前に必ず呼ぶ) ----
+' 商品番号・JAN・管理番号・SKUを標準書式のまま .Value 代入すると、Excelが手入力と同じ解釈をする。
+'   先頭0の消失         0840414684973   → 840414684973
+'   カンマの桁区切り解釈 9761,4382,9785  → 976143829785
+'   スラッシュの分数評価 9808/2762       → 3.551…(#,##0 書式が残っていたセルで発生)
+' 2026-08-03 の取込で 商品番号43件・JAN729件・管理番号3件・SKU4件 が変わっていた(2026-09-11 V-2)。
+' 代入の【前】に "@" を設定する。取込後に書式だけ変えても、失われた値は戻らない。
+' 注意: 元データ(Import xlsx / RMS CSV)の時点で既に失われている文字は、この修正では復元できない。
+Private Sub SetIdColumnsAsText(wsTake As Worksheet, firstRow As Long, rowCount As Long)
+    Dim lastRow As Long
+    If rowCount < 1 Then Exit Sub
+    lastRow = firstRow + rowCount - 1
+    With wsTake
+        .Range(.Cells(firstRow, TC_JAN), .Cells(lastRow, TC_JAN)).NumberFormat = "@"
+        .Range(.Cells(firstRow, TC_MANAGE_NO), .Cells(lastRow, TC_MANAGE_NO)).NumberFormat = "@"
+        .Range(.Cells(firstRow, TC_ITEM_NO), .Cells(lastRow, TC_ITEM_NO)).NumberFormat = "@"
+        .Range(.Cells(firstRow, TC_SKU_NO), .Cells(lastRow, TC_SKU_NO)).NumberFormat = "@"
+    End With
+End Sub
+
+
 ' ============================================================
 ' 書式適用
 ' ============================================================
@@ -786,9 +810,7 @@ Sub SaveExcel()
     Dim wbNew As Workbook
 
     outDir = ThisWorkbook.Path & Application.PathSeparator & "Output"
-    ' Mac のサンドボックスでは未許可フォルダに対して Dir() が "" を返すため、
-    ' 存在チェックせず MkDir を試み、既存時のエラー75は無視する
-    On Error Resume Next
+        On Error Resume Next
     MkDir outDir
     On Error GoTo 0
 
@@ -813,9 +835,7 @@ Sub SavePDF()
     Dim outDir As String
 
     outDir = ThisWorkbook.Path & Application.PathSeparator & "Output"
-    ' Mac のサンドボックスでは未許可フォルダに対して Dir() が "" を返すため、
-    ' 存在チェックせず MkDir を試み、既存時のエラー75は無視する
-    On Error Resume Next
+        On Error Resume Next
     MkDir outDir
     On Error GoTo 0
 
@@ -823,9 +843,10 @@ Sub SavePDF()
         "楽天在庫金額集計結果_" & Format(Now, "yyyymmdd_hhmmss") & ".pdf"
 
     ThisWorkbook.Sheets("在庫金額集計").ExportAsFixedFormat _
-        Type:=xlTypePDF, Filename:=savePath, Quality:=xlQualityStandard, _
+        Type:=xlTypePDF, FileName:=savePath, Quality:=xlQualityStandard, _
         IncludeDocProperties:=True, IgnorePrintAreas:=False, OpenAfterPublish:=False
     MsgBox "PDFを保存しました。" & Chr(10) & savePath, vbInformation, "保存完了"
 End Sub
+
 
 

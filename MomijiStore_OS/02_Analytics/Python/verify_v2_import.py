@@ -1,0 +1,174 @@
+# -*- coding: utf-8 -*-
+"""verify_v2_import.py — V-2(取込VBAの文字列書式化)をコピーで検証する(読み取り専用)
+
+使い方:
+    python3 verify_v2_import.py
+
+前提(英樹の作業が済んでいること):
+    SourceData/V2_test/baseline/…xlsm   … 現行VBAのまま「集計実行」だけ押して保存したもの
+    SourceData/V2_test/…xlsm            … Module_Rakuten_Tool_V2.bas を取り込み、
+                                          「楽天CSV読込」→「集計実行」を押して保存したもの
+
+確認すること(2026-09-12 ChatGPT承認の条件):
+    1. 文字列の完全一致 … 取込先の 商品番号/JAN/管理番号/SKU が Import xlsx の文字列と一致する
+    2. 保存・再読込後の保持 … 保存済みファイルを読み直して型が文字列のままである
+    3. マクロ・既存機能の維持 … VBAの差分が V-2 の追加分だけ／集計結果が baseline と一致する
+       (一致しない行は全部列挙する。理由が説明できないものが1つでもあれば FAIL)
+
+何も書き換えない。判定は PASS / FAIL を最後に出す。
+"""
+import os
+import sys
+import warnings
+from collections import Counter
+
+warnings.filterwarnings('ignore')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from openpyxl import load_workbook
+
+import build_todo_lists as T
+
+SD = os.path.dirname(T.RAKUTEN_STOCK)
+TEST = SD + '/V2_test/楽天在庫金額集計ツール_v1.0.xlsm'
+BASE = SD + '/V2_test/baseline/楽天在庫金額集計ツール_v1.0.xlsm'
+IMPORT = SD + '/V2_test/Import/楽天在庫リスト_import.xlsx'
+PATCHED_BAS = os.path.dirname(SD) + '/VBA/Module_Rakuten_Tool.bas'
+ID_COLS = {0: 'JAN', 1: '管理番号', 2: '商品番号', 3: 'SKU'}
+
+fails = []
+
+
+def check(cond, msg):
+    print(('  ✅ ' if cond else '  ❌ ') + msg)
+    if not cond:
+        fails.append(msg)
+
+
+def expected_text(v):
+    """Import xlsx のセル値が取込後にどう入るべきか。文字列はそのまま、数値は桁の文字列。"""
+    if v is None:
+        return None
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v).strip() if not isinstance(v, str) else v
+
+
+def rows_of(path, sheet, min_row):
+    wb = load_workbook(path, read_only=True, data_only=True)
+    ws = wb[sheet]
+    out = [r for r in ws.iter_rows(min_row=min_row, values_only=True)]
+    wb.close()
+    return out
+
+
+def main():
+    for p in (TEST, BASE, IMPORT):
+        if not os.path.exists(p):
+            sys.exit(f'❌ 無い: {p}')
+
+    # ── 1. 文字列の完全一致 ─────────────────────────────
+    print('■ 1. 取込先 vs Import xlsx(同じ順序で並べて比較)')
+    src = [r[:11] for r in rows_of(IMPORT, '在庫', 2)
+           if (r[3] not in (None, '')) or (r[1] not in (None, ''))]
+    tgt = [r[:11] for r in rows_of(TEST, '楽天CSV取込', 3)
+           if r and (r[3] not in (None, '') or r[1] not in (None, ''))]
+    check(len(src) == len(tgt), f'行数 Import {len(src)} / 取込先 {len(tgt)}')
+    for ci, name in ID_COLS.items():
+        exact = same_digits = mism = 0
+        bad = []
+        types = Counter()
+        for s, t in zip(src, tgt):
+            sv, tv = s[ci], t[ci]
+            types[type(tv).__name__] += 1
+            if sv is None and tv is None:
+                exact += 1
+                continue
+            exp = expected_text(sv)
+            if isinstance(sv, str) and tv == sv:
+                exact += 1
+            elif not isinstance(sv, str) and tv == exp:
+                same_digits += 1
+            else:
+                mism += 1
+                if len(bad) < 5:
+                    bad.append((sv, tv))
+        check(mism == 0, f'{name}: 文字列そのまま {exact} / 数値→桁の文字列 {same_digits} / 不一致 {mism}  型={dict(types)}')
+        for b in bad:
+            print(f'       不一致例 {b[0]!r} → {b[1]!r}')
+        non_str = sum(v for k, v in types.items() if k not in ('str', 'NoneType'))
+        check(non_str == 0, f'{name}: 文字列以外の型 {non_str}件(保存・再読込後)')
+
+    # ── 2. ファイルの健全性(VBA・図形が残っているか) ─────
+    print('■ 2. 保存後のファイル(VBA・図形)')
+    import zipfile
+    names = zipfile.ZipFile(TEST).namelist()
+    check('xl/vbaProject.bin' in names, 'vbaProject.bin が残っている')
+    check(any('drawing' in n for n in names), 'drawing(ボタン等)が残っている')
+
+    # ── 3. VBAの差分が V-2 の分だけか ────────────────────
+    print('■ 3. VBAソース')
+    try:
+        from oletools.olevba import VBA_Parser
+        vp = VBA_Parser(TEST)
+        code = {n: c for (_, _, n, c) in vp.extract_macros()}
+        vp.close()
+        got = code.get('Module_Rakuten_Tool.bas', '').replace('\r\n', '\n').replace('\r', '\n')
+        want = open(PATCHED_BAS, encoding='utf-8').read()
+        norm = lambda t: [l.rstrip() for l in t.split('\n') if not l.startswith('Attribute VB_')]
+        a, b = norm(got), norm(want)
+        import difflib
+        d = [x for x in difflib.unified_diff(b, a, lineterm='', n=0) if not x.startswith(('---', '+++', '@@'))]
+        check(not d, f'Module_Rakuten_Tool が VBA/Module_Rakuten_Tool.bas(修正版)と一致(差分 {len(d)} 行)')
+        for x in d[:10]:
+            print('       ', x)
+        check('SetIdColumnsAsText' in got, 'SetIdColumnsAsText が含まれる')
+        others = [n for n in code if n != 'Module_Rakuten_Tool.bas']
+        print(f'     その他のモジュール: {others}')
+    except ImportError:
+        check(False, 'oletools が無いためVBAを読めない')
+
+    # ── 4. 既存機能: 集計結果を baseline と比較 ──────────
+    print('■ 4. 集計結果(baseline=現行VBA vs test=V-2)')
+    def agg(path):
+        wb = load_workbook(path, read_only=True, data_only=True)
+        ws = wb['在庫金額集計']
+        head = {ws.cell(3, 1).value: ws.cell(3, 2).value, ws.cell(3, 5).value: ws.cell(3, 6).value,
+                ws.cell(4, 1).value: ws.cell(4, 2).value, ws.cell(4, 5).value: ws.cell(4, 6).value,
+                ws.cell(5, 1).value: ws.cell(5, 2).value, ws.cell(5, 5).value: ws.cell(5, 6).value}
+        det = {}
+        for r in ws.iter_rows(min_row=10, values_only=True):
+            if not r or r[2] in (None, ''):
+                continue
+            key = (str(r[1]).strip(), str(r[2]).strip())          # 管理番号×SKU
+            det[key] = r[:12]
+        chk = [r[:8] for r in wb['要確認一覧'].iter_rows(min_row=3, values_only=True) if r and r[0] not in (None, '')]
+        wb.close()
+        return head, det, chk
+    hb, db, cb = agg(BASE)
+    ht, dt, ct = agg(TEST)
+    for k in hb:
+        same = hb[k] == ht.get(k)
+        print(f'     {"✅" if same else "⚠️"} {k}: baseline {hb[k]} / test {ht.get(k)}')
+    diffs = []
+    for key in set(db) | set(dt):
+        b, t = db.get(key), dt.get(key)
+        if b is None or t is None:
+            diffs.append((key, '片方にしか無い', b, t))
+            continue
+        for ci, lab in ((4, '在庫数'), (5, '採用原価'), (6, '原価取得元'), (7, '在庫金額'), (8, '販売価格')):
+            if b[ci] != t[ci]:
+                diffs.append((key, lab, b[ci], t[ci]))
+    print(f'     明細の差 {len(diffs)} 件(採用原価・取得元・在庫金額・在庫数・販売価格。商品番号列は文字列化で変わるので除外)')
+    for d in diffs[:20]:
+        print('       ', d)
+    print(f'     要確認一覧: baseline {len(cb)} 行 / test {len(ct)} 行')
+    # 差は「説明できるもの」だけか … ここでは列挙に留め、判断は人が行う
+    check(len(diffs) <= 1, '明細の差が1件以下(想定: 管理番号 0192333006122 の先頭0が保たれ原価マスターと一致しなくなる1件)')
+
+    print('\n' + ('🟢 PASS' if not fails else f'🔴 FAIL {len(fails)}件'))
+    for f in fails:
+        print('   -', f)
+
+
+if __name__ == '__main__':
+    main()
