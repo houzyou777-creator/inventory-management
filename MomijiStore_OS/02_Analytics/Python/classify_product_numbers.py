@@ -69,6 +69,28 @@ PREFIX_IGNORED_KNOWN = {
     'M-0089/1599-a': ('0089/1599-a', 'M接頭辞は意味なし(2026-09-12 英樹確認・この番号のみ)'),
 }
 
+# A-7(数字単独)の意味を英樹が**出品ごと**に回答したもの(2026-09-12 確認リスト Q3)。
+#   キーは (楽天商品管理番号, 商品番号)。同じ数字でも管理番号が違えば別に確認する(7480 は2商品で別回答)
+#   'JAN下4桁' = 基本JANの下4桁 / '原価' = 1販売分の原価(円) / 未回答・不明は載せない(要確認のまま)
+A7_KNOWN = {
+    ('3264680015946', '5946'): 'JAN下4桁',   # Q3-1  Nuxe プロディジュー フローラル 100mL
+    ('6941057452425', '272'):  '原価',       # Q3-2  INTEX 浮き輪
+    ('B000O7LK1C', '9785'):    'JAN下4桁',   # Q3-3  Nuxe ゴールドオイル
+    ('B06Y13F2SG', '9761'):    'JAN下4桁',   # Q3-4  Nuxe プロディジューオイル 50mL
+    ('B085P2F2V8', '1965'):    'JAN下4桁',   # Q3-5  ソフィーナiP
+    ('B0866FCR7T', '4382'):    'JAN下4桁',   # Q3-6  Nuxe フローラル 50mL
+    ('B09B2RLPLV', '7480'):    '原価',       # Q3-7  Echo Show 5
+    # ('B0BL6FDW1F', '15980')  Q3-8 Fire HD 10 → 不明(要確認のまま)
+    ('B0BTHTBCRN', '5538'):    'JAN下4桁',   # Q3-9  HAKU
+    ('B0C2S4K41G', '7480'):    '原価',       # Q3-10 Echo Spot
+    ('B0CHS4XY6D', '577'):     '原価',       # Q3-11 BOSCH
+    ('B0CJLFPRMH', '5980'):    '原価',       # Q3-12 Fire TV Stick 4K
+    ('B0CKHK5B77', '2176'):    'JAN下4桁',   # Q3-13 さらさ
+    ('B0DS2B3P2B', '32780'):   '原価',       # Q3-14 DJI Osmo Action 4
+    ('B0F3WYSS1S', '1980'):    '原価',       # Q3-15 ラックス
+    ('B0GSQCP1MX-A', '2000'):  '原価',       # Q3-16 クーリア 福袋
+}
+
 # 英樹に確認したが意味が確定できなかった番号。**再確認しない**ために記録する(2026-09-12)
 UNRESOLVED_KNOWN = {
     'M-8991/730': 'カタログが既に無く解明不能(2026-09-12 英樹確認)。新しい資料が得られた場合のみ再確認。'
@@ -90,8 +112,10 @@ UNRESOLVED_KNOWN = {
 #   14993499s1-3    型番-数量
 #   M-8991/730      確認済・解明不能(自動処理対象外)
 
-def parse(pn, jan4=None):
+def parse(pn, jan4=None, ctrl=None):
     """(区分, 原価, 原価の根拠, 入数, 入数の根拠, 廃盤, 共有在庫, 構成JAN下4桁, 備考)
+
+    ctrl(楽天商品管理番号)を渡すと、A-7(数字単独)の出品ごとの回答(A7_KNOWN)を使う。
 
     訳あり品(-w)は 備考 の先頭に「訳あり品(w)。」を付けて返す。
     呼び出し側(build_kpi_month.rms_cost)が9要素で受けているため、戻り値の形は変えない。
@@ -196,8 +220,16 @@ def parse(pn, jan4=None):
         return R('形式確認済み(原価なし)', None, '番号内に原価が無い', None, '',
                  s.split(','), 'A-3形式。全部JAN下4桁。入数は構成数と推定しない')
 
-    # A-7: 数字単独 — 基本はJAN下4桁だが原価のこともある → **自動確定しない**
+    # A-7: 数字単独 — 基本はJAN下4桁だが原価のこともある → **自動確定しない**。
+    #      ただし出品ごとに英樹が回答したもの(A7_KNOWN)はその意味で読む
     if re.fullmatch(r'\d{1,6}', s):
+        ans = A7_KNOWN.get((str(ctrl or '').strip().upper(), s))
+        if ans == 'JAN下4桁':
+            return R('形式確認済み(原価なし)', None, '番号内に原価が無い', None, '', [s.zfill(4)],
+                     'A-7: 基本JANの下4桁(2026-09-12 英樹回答 Q3・この出品のみ)')
+        if ans == '原価':
+            return R('形式確認済み', int(s), '1販売分の原価(A-7・2026-09-12 英樹回答 Q3・この出品のみ)', None, '', [],
+                     '数字単独=原価と回答。入数はこの番号から確定できない')
         c = jan4.get(s.zfill(4), []) if len(s) <= 4 else []
         if len(c) == 1:
             return R('要確認(A-7)', None, '', None, '', [s],
@@ -235,7 +267,7 @@ def main():
 
     out = []
     for rno, ctrl, sku, pn, jan, name in rows:
-        kind, cost, csrc, n, nsrc, disc, shared, comps, note = parse(pn, jan4)
+        kind, cost, csrc, n, nsrc, disc, shared, comps, note = parse(pn, jan4, ctrl)
 
         # ── 判定①: 出品を一意に特定できるか(管理番号×SKU→出品テーブル) ──
         pid = (pair2pid.get((ctrl, sku)) or ctrl2pid.get(ctrl)) if ctrl else None

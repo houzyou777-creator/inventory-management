@@ -70,7 +70,16 @@ TASKS = [
     ('V2-7', 'V-2テスト ③ 取込と集計', '同上', 'シート「楽天CSV取込」', '「楽天CSV読込」ボタン → 上書き確認は「はい」→ 完了は「OK」',
      'K列「読込日時」が今日の日時になる', ''),
     ('V2-8', '', '同上', 'ボタン', '「集計実行」→ 完了は「OK」', 'シート「在庫金額集計」の集計日時が今日になる', ''),
-    ('V2-9', '', '同上', '保存', '⌘S で保存 → ウィンドウを閉じる(**ここが最終操作**)', 'Finderでファイルの更新日時が今になる', ''),
+    ('V2-9', '', '同上', '保存', '⌘S で保存 → ウィンドウを閉じる(**ここがコピー検証の最終操作**)', 'Finderでファイルの更新日時が今になる', ''),
+    # ── 本番反映(方法A: Excel標準のモジュール差し替え)。**コピー検証PASS後、Claude Codeが「V2P 着手OK」と伝えてから** ──
+    ('V2P-0', 'V-2 本番反映(PASS後)', '—', '—', 'Claude Code が本番ファイルのバックアップを取り「V2P 着手OK」と伝える', 'チャットに「V2P 着手OK」', ''),
+    ('V2P-1', '', 'MomijiStore_OS/01_InventoryManagement/SourceData/楽天在庫金額集計ツール_v1.0.xlsm(**本番**)',
+     'Excelで開く', 'マクロを有効にして開く。**「楽天CSV読込」「集計実行」は押さない**', 'シートが見える', ''),
+    ('V2P-2', '', '同上', 'メニュー', 'ツール → マクロ → Visual Basic Editor', 'VBEが開く', ''),
+    ('V2P-3', '', '同上', 'VBE 左の一覧', '「Module_Rakuten_Tool」を右クリック →「解放」→ エクスポートは「いいえ」', '一覧から消える', ''),
+    ('V2P-4', '', '同上', 'VBE メニュー', 'ファイル → ファイルのインポート → ' + f'{V2}/Module_Rakuten_Tool_V2.bas', '「Module_Rakuten_Tool」が1つだけ戻る', ''),
+    ('V2P-5', '', '同上', 'VBE', 'VBEのウィンドウを閉じる', 'シートに戻る', ''),
+    ('V2P-6', '', '同上', '保存', '⌘S で保存 → ウィンドウを閉じる(**最終操作**。ボタンは押していないこと)', 'Finderで更新日時が今になる。Claude Code がデータ不変・VBA一致・ブック正常を検証する', ''),
 ]
 
 # ──────────────────────────────────────────────────────────────
@@ -156,25 +165,39 @@ def build_questions():
     facts = load_cost_facts()
     for i, (pid, ch, key, name) in enumerate(LISTINGS, 1):
         f = facts[(pid, ch, key)]
-        n = f['pack']
-        a = f['kpi']
-        b = (f['master'] * n) if isinstance(f['master'], (int, float)) and isinstance(n, (int, float)) else None
+        n, unit, mc, a = f['pack'], f['unit'], f['master'], f['kpi']
         src_a = f'{ch}運営KPI管理シート 8月 L列' + (f'(商品番号 {f["pn"]})' if f['pn'] else '')
-        text = (f'【{TARGET_YM} のKPI】この出品の「1販売分の原価」として {TARGET_YM} に適用してよい金額はどれですか？'
-                f'　A: ¥{a:,.0f}(参照元: {src_a})' if a is not None else
-                f'【{TARGET_YM} のKPI】この出品の「1販売分の原価」として {TARGET_YM} に適用してよい金額はどれですか？　A: 8月KPIに値なし')
-        text += (f'　B: 商品マスター単品原価 ¥{f["master"]:,.0f} × 販売入数{n} = ¥{b:,.0f}(参照元: 商品マスター E列 × 出品テーブル L列)'
-                 if b is not None else '　B: マスター単品×入数は算出不能(単品原価か入数が無い)')
+        head = f'【{TARGET_YM} のKPI】この出品の「1販売分の原価」として {TARGET_YM} に適用してよい金額はどれですか？'
+        text = head + (f'　A: ¥{a:,.0f}(参照元: {src_a})' if a is not None else '　A: 8月KPIに値なし')
+        # B は原価単位で分岐する(ChatGPT 2026-09-12)。未確認なら参考値であって確定値ではない
+        b = None; b_kind = ''
+        if isinstance(mc, (int, float)):
+            if unit == S.UNIT_SINGLE and isinstance(n, (int, float)):
+                b = mc * n; b_kind = '確定'
+                text += f'　B: 商品マスター単品原価 ¥{mc:,.0f} × 販売入数{n} = ¥{b:,.0f}(原価単位=単品原価・参照元: 商品マスター E列 × 出品テーブル L列)'
+            elif unit == S.UNIT_SET:
+                b = mc; b_kind = '確定'
+                text += f'　B: 商品マスターのセット原価 ¥{mc:,.0f} をそのまま(原価単位=セット原価・参照元: 商品マスター E列)'
+            else:
+                b_kind = '参考'
+                ref = f'単品なら ¥{mc:,.0f}×{n}=¥{mc * n:,.0f} ／ セットなら ¥{mc:,.0f}' if isinstance(n, (int, float)) else f'マスター ¥{mc:,.0f}(入数未記録)'
+                text += f'　B: **原価単位が未確認のため参考値**({ref}。参照元: 商品マスター E列。確定値ではありません)'
+        else:
+            text += '　B: 商品マスターに標準原価が無い'
         if a is not None and b is not None and a == b:
             text += '　※AとBは同額'
+        text += '　※この回答は事実確認です。記録(原価確認記録)の作成は別に承認をとります'
+        opts = ('A(8月KPIの値)／B(マスター由来)／AもBも違う(補足に金額)／不明' if b_kind == '確定'
+                else 'A(8月KPIの値)／AもBも違う(補足に金額)／不明')
         Q.append((f'Q4-{i}', FACT, text,
-                  f'{pid} {ch} {key} 入数{n} 原価単位={f["unit"] or "未記録"} / {name}',
-                  'A(8月KPIの値)／B(マスター単品×入数)／AもBも違う(補足に金額)／不明', f'Y-1 原価継続({TARGET_YM})'))
+                  f'{pid} {ch} {key} 入数{n} 原価単位={unit or "未記録"} 構成={f["pn"] or "—"} / {name}',
+                  opts, f'原価確認記録({TARGET_YM})'))
     for i, (pid, ch, key, name) in enumerate(LISTINGS, 1):
         Q.append((f'Q5a-{i}', FACT, 'この出品に付属品・おまけ(おしぼり、サンプル等)は付いていますか？',
                   f'{pid} {ch} {key} / {name}', 'なし／あり／不明', 'Z-4 含有範囲'))
-        Q.append((f'Q5b-{i}', FACT, '(Q5aが「あり」のとき)その付属品の費用は、上の原価に含まれていますか？ それとも別の費目で計上していますか？ Q5aが「なし」なら空欄でよい',
-                  f'{pid} {ch} {key} / {name}', '原価に含まれる／別費目で計上／不明', 'Z-4 含有範囲'))
+        Q.append((f'Q5b-{i}', FACT, '(Q5aが「あり」のとき)その付属品の費用は、上の原価に含まれていますか？ それとも別の費目で計上していますか？ '
+                  'Q5aが「なし」なら自動で「該当なし」になります。「別費目で計上」なら**計上先(費目名)を補足に**書いてください',
+                  f'{pid} {ch} {key} / {name}', '原価に含まれる／別費目で計上／該当なし／不明', 'Z-4 含有範囲'))
     Q.append(('Q6', APPROVE, '【承認】HDD(P000059)の標準原価を 17,980円 に更新してよいですか？ 8月KPIは変えません。今後の標準原価としての更新です(仕入値が変わった事実は2026-09-10 回答済み)',
               'P000059 商品マスター E列', '更新してよい／まだ／不明', '保留T-1'))
     Q.append(('Q7', APPROVE, '【承認】リポソームショット(B0FZ3Y7QNM / JAN 04571509302842)の標準原価 175円 を商品マスターへ登録してよいですか？(単価175円の事実は2026-09-10 回答済み)',
@@ -216,6 +239,12 @@ def build():
         q2, t2, _ = previous_answers('__none__')
         prev_q = {**prev_q, **{k: v for k, v in q2.items() if v[0]}}
         prev_t = {**prev_t, **{k: v for k, v in t2.items() if v}}
+
+    if os.path.exists(path):                       # 上書き前に必ず残す(2026-09-12 に回答済みの列を作り直して消しかけた)
+        bdir = OUT_DIR + '/Backup'
+        os.makedirs(bdir, exist_ok=True)
+        import shutil
+        shutil.copy2(path, f'{bdir}/英樹への確認リスト_{date.today():%Y%m%d}_backup_{__import__("datetime").datetime.now():%H%M%S}.xlsx')
 
     wb = Workbook()
     ws = wb.active
@@ -260,8 +289,10 @@ def build():
         wq.cell(1, c).value = h; wq.cell(1, c).font = BOLD; wq.cell(1, c).fill = HEAD
     Q = build_questions()
     carried = reask = 0
+    q5a_row = {}
     for r, (no, kind, text, target, opts, src) in enumerate(Q, 2):
-        k = qkey(text, opts)
+        # 質問キー = 質問文(金額を含む)＋選択肢＋対象(出品・入数・原価単位・構成)＋対象月。どれかが変われば再確認
+        k = qkey(text, opts, target, TARGET_YM)
         for c, v in enumerate((no, kind, text, target, opts), 1):
             wq.cell(r, c).value = v; wq.cell(r, c).alignment = WRAP
         ans, memo = wq.cell(r, 6), wq.cell(r, 7)
@@ -280,6 +311,12 @@ def build():
             wq.cell(r, 11).fill = GRAY
             reask += 1
         wq.cell(r, 9).value = f'=IF(F{r}<>"","回答済",IF(K{r}<>"","再確認","未回答"))'
+        if no.startswith('Q5a-'):
+            q5a_row[no.split('-', 1)[1]] = r
+        if no.startswith('Q5b-') and not ans.value:
+            ra = q5a_row.get(no.split('-', 1)[1])
+            if ra:
+                ans.value = f'=IF(F{ra}="なし","該当なし","")'     # Q5aが「なし」なら自動で該当なし。プルダウンで上書き可
         if opts:
             d = DataValidation(type='list', formula1='"' + opts.replace('／', ',') + '"', allow_blank=True)
             wq.add_data_validation(d); d.add(ans)
@@ -296,7 +333,11 @@ def build():
     logs = sorted(glob.glob(f'{OUT_DIR}/商品番号_復元ログ_*.csv'))
     r = 2
     if logs:
-        rows = [x for x in csv.DictReader(open(logs[-1], encoding='utf-8-sig')) if x['差の理由'] == '元xlsx時点で既に数値型']
+        rows, seen = [], set()
+        for lg in logs:
+            for x in csv.DictReader(open(lg, encoding='utf-8-sig')):
+                if x['差の理由'] == '元xlsx時点で既に数値型' and x['取込先行'] not in seen:
+                    rows.append(x); seen.add(x['取込先行'])
         for i, (num, ctrl, skus, name) in enumerate(UP24, 1):
             for x in rows:
                 if x['楽天商品管理番号'] == ctrl and x['元値'] == num:

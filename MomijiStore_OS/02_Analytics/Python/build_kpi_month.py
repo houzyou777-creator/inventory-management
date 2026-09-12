@@ -129,9 +129,9 @@ def build_cost_resolver(wb_values, ym=''):
             return None, amb
         return info, ''
 
-    def composition_conflict(pn, info):
+    def composition_conflict(pn, info, ctrl=None):
         """商品番号から読める構成と、出品テーブルの記録が食い違っていないか。食い違えば理由を返す。"""
-        kind, cost, csrc, n, nsrc, disc, shared, comps, note = CP.parse(pn, {})
+        kind, cost, csrc, n, nsrc, disc, shared, comps, note = CP.parse(pn, {}, ctrl)
         rec_n = (info or {}).get('pack')
         if n is not None and isinstance(rec_n, (int, float)) and int(rec_n) != int(n):
             return f'構成違い: 商品番号の入数{n} ≠ 出品テーブルの販売入数{int(rec_n)}'
@@ -159,7 +159,7 @@ def build_cost_resolver(wb_values, ym=''):
         """
         if not use_rms:
             return None, 'RMS原価は未承認(RMS_COST=1 で検証時のみ有効)'
-        kind, cost, csrc, n, nsrc, disc, shared, comps, note = CP.parse(pn, {})
+        kind, cost, csrc, n, nsrc, disc, shared, comps, note = CP.parse(pn, {}, ctrl)
         if cost is None:
             if kind.startswith('形式確認済み(積み上げ型'):
                 return None, '積み上げ型。構成の数量が未確認のため算定しない'
@@ -181,7 +181,7 @@ def build_cost_resolver(wb_values, ym=''):
             return None, (f'RMS原価はあるが対象月 {ym or "?"} への適用が未確認'
                           + (f'(記載: RMS原価対象月={rec} は {ym} を含まない)' if rec
                              else '(確認根拠に RMS原価対象月=… の記載なし)'))
-        conflict = composition_conflict(pn, info)
+        conflict = composition_conflict(pn, info, ctrl)
         if conflict:
             return None, f'RMS原価はあるが{conflict}'
         return cost, ''
