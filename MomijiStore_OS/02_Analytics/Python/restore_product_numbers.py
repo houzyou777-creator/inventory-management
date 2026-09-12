@@ -4,6 +4,8 @@
 使い方:
     python3 restore_product_numbers.py plan  <候補CSV>    読み取り専用。適用できる行と保留する行を表示
     python3 restore_product_numbers.py apply <候補CSV>    バックアップ → Excelで文字列として書込 → 再読込で検証 → ログ
+    python3 restore_product_numbers.py plan-ids           JAN/管理番号/SKU の先頭0消失の候補を表示(§7-3・読み取り専用)
+    python3 restore_product_numbers.py apply-ids          同上を適用(バックアップ・再読込検証・ログ)
 
 例:
     python3 restore_product_numbers.py plan  ../../01_InventoryManagement/SourceData/Output/商品番号_復元候補_20260911.csv
@@ -199,19 +201,21 @@ def apply_excel(targets):
     targets: [(row, current_value, new_str)]  戻り値: {row: 'written' | 'mismatch:<値>'}
     """
     lines = []
-    for rno, cur, new in targets:
+    for t in targets:
+        rno, cur, new = t[0], t[-2], t[-1]
+        col = t[1] if len(t) == 4 else 'C'            # (row, col, cur, new) または (row, cur, new)=商品番号C列
         # 型も見る: 数値のはずのセルが既に文字列なら書かない(値が同じでも「変わっている」)
         chk = (f'(class of (value of c)) is real and (value of c) is equal to {_as_lit(cur)}'
                if isinstance(cur, (int, float))
                else f'(class of (value of c)) is not real and ((value of c) as string) is equal to {_as_lit(str(cur))}')
         lines.append(f'''
-    set c to cell "C{rno}" of ws
+    set c to cell "{col}{rno}" of ws
     if {chk} then
         set number format of c to "@"
         set value of c to {_as_lit(new)}
-        set end of res to "{rno}:written"
+        set end of res to "{col}{rno}:written"
     else
-        set end of res to "{rno}:mismatch:" & ((value of c) as string)
+        set end of res to "{col}{rno}:mismatch:" & ((value of c) as string)
     end if''')
     script = f'''
 set p to POSIX file "{STOCK}"
@@ -236,12 +240,137 @@ return res as string
     out = {}
     for line in r.stdout.strip().split('\n'):
         if ':' in line:
-            rno, _, rest = line.partition(':')
-            out[int(rno)] = rest
+            addr, _, rest = line.partition(':')
+            key = int(addr[1:]) if addr.startswith('C') and len(targets) and len(targets[0]) == 3 else addr
+            out[key] = rest
     return out
 
 
+ID_COLS = {'JAN': 'A', '管理番号': 'B', 'SKU': 'D'}      # 商品番号(C)は plan/apply が扱う
+SRC_IDX = {'JAN': 0, '管理番号': 1, '商品番号': 2, 'SKU': 3}
+
+
+def _digits_equal(a, b):
+    """先頭0の有無・型の違いを無視して同じ数字列か(それ以外は文字列として同じか)。"""
+    ca, cb = canon(a), canon(b)
+    if ca.isdigit() and cb.isdigit():
+        return ca.lstrip('0') == cb.lstrip('0')
+    return ca == cb
+
+
+def plan_ids():
+    """JAN/管理番号/SKU の先頭0消失を、**行の対応を複数項目で一意に確認してから**候補にする(§7-3)。
+
+    対応の根拠: 商品名(完全一致)＋管理番号・SKU・商品番号(先頭0と型を無視して一致)＋販売価格＋在庫数。
+    この組が 元xlsx側でも取込先側でも1行だけ に絞れたときだけ候補にする。行番号だけでは決めない。
+    """
+    rows, _ = load_sheet()
+    src = load_source_aligned()
+    wb = load_workbook(STOCK, read_only=True, data_only=True)
+    full_t = {rno: r[:11] for rno, r in enumerate(wb[SHEET].iter_rows(min_row=3, values_only=True), 3) if rno in rows}
+    wb.close()
+    wb = load_workbook(IMPORT_XLSX, read_only=True, data_only=True)
+    ws = wb.worksheets[0]
+    full_s, rno = {}, 3
+    for r in ws.iter_rows(min_row=2, values_only=True):
+        sku = str(r[3]).strip() if r[3] is not None else ''
+        mg = str(r[1]).strip() if r[1] is not None else ''
+        if not (sku or mg):
+            continue
+        full_s[rno] = r[:11]
+        rno += 1
+    wb.close()
+
+    def blank0(v):
+        # 取込VBAは元xlsxの空欄(販売価格・在庫数)を 0 で書く。行の対応を見る目的では 空欄=0 と扱う
+        # (OS原則「0と空欄は別」に反しない: ここでは値を使わず、同じ行かどうかを見ているだけ)
+        c = canon(v)
+        return '' if c in ('', '0') else c
+
+    def sig(r):
+        return (str(r[4] or '').strip(), canon(r[1]).lstrip('0'), canon(r[3]).lstrip('0'),
+                canon(r[2]).lstrip('0'), blank0(r[5]), blank0(r[7]))
+    from collections import Counter
+    cs, ct = Counter(sig(r) for r in full_s.values()), Counter(sig(r) for r in full_t.values())
+
+    out = []
+    for rno, t in full_t.items():
+        s_ = full_s.get(rno)
+        for name, ci in SRC_IDX.items():
+            if name == '商品番号':
+                continue
+            sv, tv = (s_[ci] if s_ else None), t[ci]
+            if not (isinstance(sv, str) and isinstance(tv, (int, float)) and sv.startswith('0')):
+                continue                                   # 先頭0消失だけが対象(§7-3)
+            rec = {'取込先行': rno, '列': name, '楽天商品管理番号': canon(t[1]), 'SKU管理番号': canon(t[3]),
+                   '現在値': canon(tv), '元xlsx値': repr(sv), '復元候補': sv, '差の理由': '文字列→整数(先頭0消失)',
+                   '対応の根拠': '', '更新結果': '', '商品名': str(t[4] or '')[:40]}
+            if sig(t) != sig(s_):
+                rec['更新結果'] = '保留(同じ位置の元xlsx行と項目が一致しない)'
+            elif cs[sig(t)] != 1 or ct[sig(t)] != 1:
+                rec['更新結果'] = f'保留(対応が曖昧: 元xlsx {cs[sig(t)]}行 / 取込先 {ct[sig(t)]}行 が同じ項目)'
+            elif not _digits_equal(sv, tv):
+                rec['更新結果'] = '保留(先頭0を除いても数字が一致しない)'
+            else:
+                rec['対応の根拠'] = '商品名・管理番号・SKU・商品番号・販売価格・在庫数が元xlsxと1対1で一致'
+                rec['更新結果'] = '適用可'
+                rec['_col'] = ID_COLS[name]; rec['_cur'] = tv
+            out.append(rec)
+    return out
+
+
+def apply_ids(plan_rows, mode):
+    from collections import Counter
+    ok = [r for r in plan_rows if r['更新結果'] == '適用可']
+    print(f'■ 識別子(先頭0消失)候補 {len(plan_rows)}セル → 適用可 {len(ok)}セル')
+    for k, v in Counter(r['列'] for r in ok).items():
+        print(f'   {k:6} {v:3}セル')
+    for k, v in Counter(r['更新結果'] for r in plan_rows if r['更新結果'] != '適用可').items():
+        print(f'   保留 {v:3}  {k}')
+    if mode == 'plan-ids':
+        for r in ok[:12]:
+            print(f"   行{r['取込先行']:<4} {r['列']:6} {r['現在値']:>16} → {r['復元候補']!r}  {r['商品名'][:20]}")
+        if len(ok) > 12:
+            print(f'   … 他 {len(ok) - 12}セル')
+        return
+    bdir = os.path.dirname(STOCK) + '/Backup'
+    os.makedirs(bdir, exist_ok=True)
+    base = os.path.splitext(os.path.basename(STOCK))[0]
+    bpath = f'{bdir}/{base}_backup_{date.today():%Y%m%d}_識別子先頭0復元前.xlsm'
+    seq = 2
+    while os.path.exists(bpath):
+        bpath = f'{bdir}/{base}_backup_{date.today():%Y%m%d}_識別子先頭0復元前_{seq}.xlsm'; seq += 1
+    shutil.copy2(STOCK, bpath)
+    print(f'\n✅ バックアップ: {bpath}')
+    res = apply_excel([(r['取込先行'], r['_col'], r['_cur'], r['復元候補']) for r in ok])
+    wb = load_workbook(STOCK, read_only=True, data_only=True)
+    after = {rno: r[:11] for rno, r in enumerate(wb[SHEET].iter_rows(min_row=3, values_only=True), 3)}
+    wb.close()
+    n_ok = 0
+    for r in ok:
+        st = res.get(f"{r['_col']}{r['取込先行']}", 'no-result')
+        v = after[r['取込先行']][SRC_IDX[r['列']]]
+        if st == 'written' and isinstance(v, str) and v == r['復元候補']:
+            r['更新結果'] = '更新済(文字列・再読込で一致)'; n_ok += 1
+        elif st == 'written':
+            r['更新結果'] = f'⚠️ 書込後の再読込が一致しない: {v!r}'
+        else:
+            r['更新結果'] = f'スキップ(書込直前の照合で不一致: {st})'
+    print(f'✅ 更新 {n_ok}/{len(ok)}セル')
+    log = f'{OUT}/識別子_先頭0復元ログ_{date.today():%Y%m%d}.csv'
+    head = ['取込先行', '列', '楽天商品管理番号', 'SKU管理番号', '元値', '新値', '差の理由', '対応の根拠', '更新結果', '商品名']
+    with open(log, 'w', encoding='utf-8-sig', newline='') as f:
+        w = csv.writer(f); w.writerow(head)
+        for r in plan_rows:
+            w.writerow([r['取込先行'], r['列'], r['楽天商品管理番号'], r['SKU管理番号'], r['現在値'], r['復元候補'],
+                        r['差の理由'], r['対応の根拠'], r['更新結果'], r['商品名']])
+    print(f'   → {log}')
+
+
 def main():
+    if len(sys.argv) >= 2 and sys.argv[1] in ('plan-ids', 'apply-ids'):
+        apply_ids(plan_ids(), sys.argv[1])
+        return
     if len(sys.argv) < 3 or sys.argv[1] not in ('plan', 'apply'):
         print(__doc__)
         sys.exit(1)

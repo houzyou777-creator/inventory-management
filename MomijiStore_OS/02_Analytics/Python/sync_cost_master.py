@@ -375,6 +375,9 @@ tell application "Microsoft Excel"
     set calculation to calculation manual
     set screen updating to false
     clear contents of range "A3:G10000" of ws
+    -- JAN(A)・楽天商品管理番号(B)は**代入の前に**文字列書式にする(2026-09-12 §7-2)。
+    -- 標準書式のまま set value すると Excel が手入力と同じ解釈をし、先頭0が落ちる(102件が12桁になっていた)
+    set number format of range "A3:B10000" of ws to "@"
     {body}
     set calculation to calculation automatic
     calculate
@@ -393,6 +396,157 @@ return "push done: {len(rows)} rows"
     if r.returncode != 0:
         raise RuntimeError(f'AppleScript failed: {r.stderr}')
     return r.stdout.strip()
+
+
+def plan_tool_ids():
+    """在庫ツール「原価マスター」の JAN/管理番号 を、正本(商品マスター・出品テーブル)の完全な識別子へ戻す候補(§7-2)。
+
+    対応の決め方: 正本から push と同じ手順で作った行と、
+      JAN・管理番号(先頭0と型を無視して一致)＋商品名(完全一致)＋標準原価(一致)
+    が **1対1** のときだけ。12桁だからという理由で先頭0を足すことはしない(正本にある文字列をそのまま使う)。
+    原価金額は変更しない。
+    """
+    want = build_push_rows()                    # [jan, rctrl, name, type, cost, upd, note]
+    def d0(v):
+        c = str(int(v)) if isinstance(v, float) and v.is_integer() else str(v if v is not None else '').strip()
+        return c.lstrip('0') if c.isdigit() else c
+    from collections import Counter
+    def sig(jan, rctrl, name, cost):
+        return (d0(jan), d0(rctrl), str(name or '').strip(), float(cost) if isinstance(cost, (int, float)) else None)
+    idx = {}
+    cnt = Counter()
+    for w in want:
+        k = sig(w[0], w[1], w[2], w[4]); idx.setdefault(k, w); cnt[k] += 1
+    wb = load_workbook(TOOL_FILE, read_only=True, data_only=True)
+    ws = wb[SH_TOOL_COST]
+    out = []
+    for rno, r in enumerate(ws.iter_rows(min_row=3, values_only=True), 3):
+        if not r or all(v in (None, '') for v in r[:2]):
+            continue
+        jan, rctrl, name, cost = r[0], r[1], r[2], r[4]
+        k = sig(jan, rctrl, name, cost)
+        for col, cur, letter, label in ((0, jan, 'A', 'JAN'), (1, rctrl, 'B', '楽天商品管理番号')):
+            if cur in (None, ''):
+                continue
+            rec = {'行': rno, '列': label, '現在値': str(int(cur)) if isinstance(cur, float) and cur.is_integer() else str(cur),
+                   '正本の値': '', '商品名': str(name or '')[:40], '標準原価': cost, '更新結果': '', '_col': letter, '_cur': cur}
+            w = idx.get(k)
+            if w is None:
+                rec['更新結果'] = '保留(正本に同じ JAN・管理番号・商品名・原価 の行が無い)'
+            elif cnt[k] != 1:
+                rec['更新結果'] = f'保留(正本で {cnt[k]} 行が同じ項目。対応が曖昧)'
+            else:
+                tgt = str(w[col]).strip()
+                rec['正本の値'] = tgt
+                if isinstance(cur, str) and cur == tgt:
+                    continue                                # 既に一致。候補にしない
+                if d0(cur) != d0(tgt):
+                    rec['更新結果'] = '保留(先頭0を除いても数字が一致しない)'
+                elif tgt == '' :
+                    rec['更新結果'] = '保留(正本が空)'
+                elif not tgt.startswith('0'):
+                    # 承認範囲は「先頭0が落ちた識別子」(§7-2)。型だけの違いは次回の push(文字列書式)で揃う
+                    rec['更新結果'] = '対象外(型のみ。承認範囲外。次回pushで文字列になる)'
+                else:
+                    rec['更新結果'] = '適用可'
+            out.append(rec)
+    wb.close()
+    return out
+
+
+def apply_tool_ids(plan, mode):
+    """§7-2 の候補を在庫ツールの原価マスターへ書く(バックアップ・Excelで文字列書込・再読込検証・ログ)。"""
+    import subprocess
+    from collections import Counter
+    from datetime import date
+    ok = [r for r in plan if r['更新結果'] == '適用可']
+    print(f'■ 原価マスター(在庫ツール) 識別子の候補 {len(plan)}セル → 適用可 {len(ok)}セル')
+    for k, v in Counter(r['列'] for r in ok).items():
+        print(f'   {k:10} {v:3}セル')
+    for k, v in Counter(r['更新結果'] for r in plan if r['更新結果'] != '適用可').items():
+        print(f'   保留 {v:3}  {k}')
+    lead0 = sum(1 for r in ok if r['正本の値'].startswith('0'))
+    print(f'   うち先頭0が戻るもの {lead0}セル / 型だけ {len(ok) - lead0}セル')
+    if mode != 'apply':
+        for r in ok[:8]:
+            print(f"   行{r['行']:<4} {r['列']:10} {r['現在値']:>16} → {r['正本の値']!r}  {r['商品名'][:20]}")
+        return
+    bdir = os.path.dirname(TOOL_FILE) + '/Backup'
+    os.makedirs(bdir, exist_ok=True)
+    base = os.path.splitext(os.path.basename(TOOL_FILE))[0]
+    bpath = f'{bdir}/{base}_backup_{date.today():%Y%m%d}_原価マスター識別子復元前.xlsm'
+    seq = 2
+    while os.path.exists(bpath):
+        bpath = f'{bdir}/{base}_backup_{date.today():%Y%m%d}_原価マスター識別子復元前_{seq}.xlsm'; seq += 1
+    import shutil
+    shutil.copy2(TOOL_FILE, bpath)
+    print(f'\n✅ バックアップ: {bpath}')
+
+    def lit(v):
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return str(int(v)) if isinstance(v, float) and v.is_integer() else repr(v)
+        return '"' + str(v).replace('\\', '\\\\').replace('"', '\\"') + '"'
+    lines = []
+    for r in ok:
+        chk = (f'(class of (value of c)) is real and (value of c) is equal to {lit(r["_cur"])}'
+               if isinstance(r['_cur'], (int, float)) else
+               f'(class of (value of c)) is not real and ((value of c) as string) is equal to {lit(str(r["_cur"]))}')
+        lines.append(f'''
+    set c to cell "{r['_col']}{r['行']}" of ws
+    if {chk} then
+        set number format of c to "@"
+        set value of c to {lit(r['正本の値'])}
+        set end of res to "{r['_col']}{r['行']}:written"
+    else
+        set end of res to "{r['_col']}{r['行']}:mismatch:" & ((value of c) as string)
+    end if''')
+    script = f'''
+set p to POSIX file "{TOOL_FILE}"
+set res to {{}}
+with timeout of 900 seconds
+tell application "Microsoft Excel"
+    open p
+    delay 1
+    set wb to active workbook
+    set ws to worksheet "{SH_TOOL_COST}" of wb
+    {''.join(lines)}
+    save wb
+    close wb saving no
+end tell
+end timeout
+set AppleScript's text item delimiters to linefeed
+return res as string
+'''
+    rr = subprocess.run(['osascript', '-e', script], capture_output=True, text=True, timeout=960)
+    if rr.returncode != 0:
+        raise RuntimeError(f'Excelでの書込に失敗: {rr.stderr}')
+    res = {}
+    for line in rr.stdout.strip().split('\n'):
+        if ':' in line:
+            addr, _, rest = line.partition(':'); res[addr] = rest
+    wb = load_workbook(TOOL_FILE, read_only=True, data_only=True)
+    after = {rno: r[:2] for rno, r in enumerate(wb[SH_TOOL_COST].iter_rows(min_row=3, values_only=True), 3)}
+    wb.close()
+    n_ok = 0
+    for r in ok:
+        st = res.get(f"{r['_col']}{r['行']}", 'no-result')
+        v = after.get(r['行'], (None, None))[0 if r['_col'] == 'A' else 1]
+        if st == 'written' and isinstance(v, str) and v == r['正本の値']:
+            r['更新結果'] = '更新済(文字列・再読込で一致)'; n_ok += 1
+        elif st == 'written':
+            r['更新結果'] = f'⚠️ 書込後の再読込が一致しない: {v!r}'
+        else:
+            r['更新結果'] = f'スキップ(書込直前の照合で不一致: {st})'
+    print(f'✅ 更新 {n_ok}/{len(ok)}セル')
+    out_dir = os.path.dirname(TOOL_FILE) + '/Output'
+    log = f'{out_dir}/原価マスター_識別子復元ログ_{date.today():%Y%m%d}.csv'
+    import csv as _csv
+    with open(log, 'w', encoding='utf-8-sig', newline='') as f:
+        w = _csv.writer(f)
+        w.writerow(['行', '列', '現在値', '正本の値', '商品名', '標準原価(変更なし)', '更新結果'])
+        for r in plan:
+            w.writerow([r['行'], r['列'], r['現在値'], r['正本の値'], r['商品名'], r['標準原価'], r['更新結果']])
+    print(f'   → {log}')
 
 
 # ═══ push-kpi ═════════════════════════════════════════════════════════════
@@ -796,6 +950,9 @@ def main_amazon(mode, month_sheet):
 
 
 def main():
+    if len(sys.argv) >= 2 and sys.argv[1] in ('plan-tool-ids', 'apply-tool-ids'):
+        apply_tool_ids(plan_tool_ids(), 'apply' if sys.argv[1] == 'apply-tool-ids' else 'plan')
+        return
     if len(sys.argv) >= 2 and sys.argv[1] == 'push':
         rows = build_push_rows()
         print(f'配信対象: {len(rows)}行(商品マスター由来)')
