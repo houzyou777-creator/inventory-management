@@ -15,6 +15,7 @@ Const TC_STOCK As Long = 8
 Const TC_TOTAL As Long = 9
 Const TC_JAN_CHECK As Long = 10
 Const TC_IMPORT_DT As Long = 11
+Const TC_ID_CHECK As Long = 12     ' 識別子チェック(小数・エラー・日付など要確認の記録。2026-09-15 ③)
 
 Const PM_JAN As Long = 1
 Const PM_MANAGE_NO As Long = 2
@@ -49,6 +50,7 @@ Const CK_NOTE As Long = 8
 ' 識別子の型変換の件数(取込ごとにリセット)。「復元」ではなく「型の統一」であることを完了メッセージで示す
 Private g_idNumToText As Long      ' 元データで既に数値だった識別子を桁の文字列にした件数
 Private g_idNeedCheck As Long      ' 小数・エラー・日付など、そのまま識別子として扱えないもの(要確認)
+Private g_rowNote As String        ' いま取り込んでいる行の要確認メモ(列L「識別子チェック」へ書く)
 
 ' 列マッピング用（CSV読込時に設定）
 Private colJAN As Long
@@ -83,7 +85,8 @@ Sub CsvImport()
         If MsgBox("既存の取込データを上書きします。よろしいですか？", vbYesNo + vbQuestion, "取込データの上書き確認") = vbNo Then Exit Sub
     End If
 
-    wsTake.Range("A3:K100000").ClearContents
+    wsTake.Range("A3:L100000").ClearContents
+    If CStr(wsTake.Cells(2, TC_ID_CHECK).Value) = "" Then wsTake.Cells(2, TC_ID_CHECK).Value = "識別子チェック"
 
     g_idNumToText = 0: g_idNeedCheck = 0
     Call ImportFromExcel(filePath, wsTake)
@@ -95,7 +98,8 @@ Sub CsvImport()
               "  (元データで既に数値だったものを桁の文字列にしました。失われた先頭0などは戻りません)" & Chr(10)
     End If
     If g_idNeedCheck > 0 Then
-        msg = msg & "・要確認: 小数・エラー等の識別子 " & g_idNeedCheck & " 件(そのまま文字列にしています。元データを確認してください)" & Chr(10)
+        msg = msg & "・要確認: 小数・エラー・日付などの識別子 " & g_idNeedCheck & " 件 → L列「識別子チェック」に セル・元値・理由 を記録。" & Chr(10) & _
+              "  これらは原価マスターとの自動照合に使いません。元データを確認してください" & Chr(10)
     End If
     MsgBox msg & "続けて「集計実行」ボタンを押してください。", vbInformation, "読込完了"
 End Sub
@@ -167,10 +171,12 @@ Private Sub ImportFromCSV(filePath As String, wsTake As Worksheet)
         If skuVal = "" And colManageNo > 0 Then skuVal = Trim(SafeGetArr(cols, colManageNo))
         If skuVal = "" Then GoTo NextLine
 
-        wsTake.Cells(dataRow, TC_JAN).Value = IdText(SafeGetArr(cols, colJAN))
-        wsTake.Cells(dataRow, TC_MANAGE_NO).Value = IdText(SafeGetArr(cols, colManageNo))
-        wsTake.Cells(dataRow, TC_ITEM_NO).Value = IdText(SafeGetArr(cols, colItemNo))
-        wsTake.Cells(dataRow, TC_SKU_NO).Value = IdText(SafeGetArr(cols, colSkuNo))
+        g_rowNote = ""
+        wsTake.Cells(dataRow, TC_JAN).Value = IdText(SafeGetArr(cols, colJAN), "JAN")
+        wsTake.Cells(dataRow, TC_MANAGE_NO).Value = IdText(SafeGetArr(cols, colManageNo), "管理番号")
+        wsTake.Cells(dataRow, TC_ITEM_NO).Value = IdText(SafeGetArr(cols, colItemNo), "商品番号")
+        wsTake.Cells(dataRow, TC_SKU_NO).Value = IdText(SafeGetArr(cols, colSkuNo), "SKU")
+        If g_rowNote <> "" Then wsTake.Cells(dataRow, TC_ID_CHECK).Value = g_rowNote
         wsTake.Cells(dataRow, TC_NAME).Value = SafeGetArr(cols, colName)
 
         pStr = CleanNum(SafeGetArr(cols, colPrice))
@@ -252,10 +258,12 @@ Private Sub ImportFromExcel(filePath As String, wsTake As Worksheet)
         If skuVal = "" And colManageNo > 0 Then skuVal = Trim(CStr(wsSrc.Cells(i, colManageNo).Value))
         If skuVal = "" Then GoTo NextExcelLine
 
-        wsTake.Cells(dataRow, TC_JAN).Value = IdText(SafeGetCell(wsSrc, i, colJAN))
-        wsTake.Cells(dataRow, TC_MANAGE_NO).Value = IdText(SafeGetCell(wsSrc, i, colManageNo))
-        wsTake.Cells(dataRow, TC_ITEM_NO).Value = IdText(SafeGetCell(wsSrc, i, colItemNo))
-        wsTake.Cells(dataRow, TC_SKU_NO).Value = IdText(SafeGetCell(wsSrc, i, colSkuNo))
+        g_rowNote = ""
+        wsTake.Cells(dataRow, TC_JAN).Value = IdText(SafeGetCell(wsSrc, i, colJAN), "JAN")
+        wsTake.Cells(dataRow, TC_MANAGE_NO).Value = IdText(SafeGetCell(wsSrc, i, colManageNo), "管理番号")
+        wsTake.Cells(dataRow, TC_ITEM_NO).Value = IdText(SafeGetCell(wsSrc, i, colItemNo), "商品番号")
+        wsTake.Cells(dataRow, TC_SKU_NO).Value = IdText(SafeGetCell(wsSrc, i, colSkuNo), "SKU")
+        If g_rowNote <> "" Then wsTake.Cells(dataRow, TC_ID_CHECK).Value = g_rowNote
         wsTake.Cells(dataRow, TC_NAME).Value = SafeGetCell(wsSrc, i, colName)
 
         pVal = SafeGetCell(wsSrc, i, colPrice)
@@ -356,6 +364,7 @@ Sub RunAggregation()
     Dim invAmount As Variant, sellAmount As Variant
     Dim statusLabel As String
     Dim aggDt As String
+    Dim idChk As String, janMatch As String, mgMatch As String
 
     Set wsTake = ThisWorkbook.Sheets("楽天CSV取込")
     Set wsMaster = ThisWorkbook.Sheets("原価マスター")
@@ -405,6 +414,11 @@ Sub RunAggregation()
         manageNo = Trim(CStr(wsTake.Cells(i, TC_MANAGE_NO).Value))
         itemNo = Trim(CStr(wsTake.Cells(i, TC_ITEM_NO).Value))
         itemName = Trim(CStr(wsTake.Cells(i, TC_NAME).Value))
+        ' 取込時に要確認と記録された識別子(小数・エラー・日付)は原価マスターとの自動照合に使わない(2026-09-15 ③)
+        idChk = Trim(CStr(wsTake.Cells(i, TC_ID_CHECK).Value))
+        janMatch = janVal: mgMatch = manageNo
+        If InStr(idChk, "JAN:") > 0 Then janMatch = ""
+        If InStr(idChk, "管理番号:") > 0 Then mgMatch = ""
         stockVal = wsTake.Cells(i, TC_STOCK).Value
         priceVal = wsTake.Cells(i, TC_PRICE).Value
         csvCost = wsTake.Cells(i, TC_COST).Value
@@ -416,6 +430,9 @@ Sub RunAggregation()
 
         If janVal = "" And manageNo = "" Then
             hasIssue = True: issueReason = issueReason & "ID未設定 / "
+        End If
+        If idChk <> "" Then
+            hasIssue = True: issueReason = issueReason & "識別子要確認(" & idChk & ") / "
         End If
 
         stockNum = 0
@@ -466,7 +483,7 @@ Sub RunAggregation()
             adoptedCost = csvCostNum
             costSource = "CSV"
         ElseIf isSet Then
-            mVal = FindCostInMaster(wsMaster, skuNo, manageNo, mSrc)
+            mVal = FindCostInMaster(wsMaster, skuNo, mgMatch, mSrc)
             If mVal <> "" Then
                 adoptedCost = mVal: costSource = mSrc
             Else
@@ -483,10 +500,10 @@ Sub RunAggregation()
                 End If
             End If
         ElseIf isAst Then
-            aVal = FindCostByManageNo(wsMaster, manageNo, aSrc)
+            aVal = FindCostByManageNo(wsMaster, mgMatch, aSrc)
             If aVal <> "" Then adoptedCost = aVal: costSource = aSrc
         Else
-            nVal = FindCostInMaster(wsMaster, janVal, manageNo, nSrc)
+            nVal = FindCostInMaster(wsMaster, janMatch, mgMatch, nSrc)
             If nVal <> "" Then adoptedCost = nVal: costSource = nSrc
         End If
 
@@ -750,33 +767,39 @@ Private Sub SetIdColumnsAsText(wsTake As Worksheet, firstRow As Long, rowCount A
     End With
 End Sub
 
-' ---- 識別子を文字列にそろえる(型の統一。元文字列の「復元」ではない・2026-09-12 ③) ----
+' ---- 識別子を文字列にそろえる(型の統一。元文字列の「復元」ではない・2026-09-12/15 ③) ----
 '   文字列  → Trim してそのまま(先頭0・カンマ・スラッシュは保持)
 '   整数    → 桁の文字列(848061036985 → "848061036985")。指数表記にしない。**先頭0は付けない**(元資料の根拠が無いため)
-'   小数・エラー・日付・論理値 → そのまま CStr し、要確認として数える(正常扱いしない)
-'   空欄・Null → ""(空のまま)
-Private Function IdText(v As Variant) As String
+'   小数・エラー・日付・論理値 → そのまま CStr し、要確認として L列「識別子チェック」に 列名:理由(元値) を記録する。
+'              これらは原価マスターとの自動照合に使わない(RunAggregation 側で除外)
+'   空欄・Null → ""(空欄のまま)
+Private Function IdText(v As Variant, label As String) As String
+    Dim why As String
+    why = ""
     If IsEmpty(v) Or IsNull(v) Then
         IdText = ""
     ElseIf IsError(v) Then
-        IdText = CStr(v)
-        g_idNeedCheck = g_idNeedCheck + 1
+        IdText = CStr(v): why = "エラー"
     ElseIf VarType(v) = vbString Then
         IdText = Trim(v)
-    ElseIf VarType(v) = vbBoolean Or VarType(v) = vbDate Then
-        IdText = CStr(v)
-        g_idNeedCheck = g_idNeedCheck + 1
+    ElseIf VarType(v) = vbBoolean Then
+        IdText = CStr(v): why = "論理値"
+    ElseIf VarType(v) = vbDate Then
+        IdText = CStr(v): why = "日付"
     ElseIf IsNumeric(v) Then
         If v = Fix(v) And Abs(v) < 1E+15 Then
             IdText = Format(v, "0")
             g_idNumToText = g_idNumToText + 1
         Else
-            IdText = CStr(v)
-            g_idNeedCheck = g_idNeedCheck + 1
+            IdText = CStr(v): why = "小数"
         End If
     Else
-        IdText = CStr(v)
+        IdText = CStr(v): why = "型不明"
+    End If
+    If why <> "" Then
         g_idNeedCheck = g_idNeedCheck + 1
+        If g_rowNote <> "" Then g_rowNote = g_rowNote & " / "
+        g_rowNote = g_rowNote & label & ":" & why & "(" & IdText & ")"
     End If
 End Function
 
