@@ -212,6 +212,18 @@ def main():
             check(nonstr == 0, f'(V3) {label}: 識別子列の文字列以外 {nonstr}件 / 先頭0を保った値 {lead0}件')
         # 金額・数量が変わっていないこと(クリニーク以外)
         print('     (V3) 金額・数量・集計値は上の baseline 比較のとおり')
+        # ③ 要確認の記録(L列「識別子チェック」)と、空欄が空欄のまま保たれているか
+        wb = load_workbook(TEST, read_only=True, data_only=True)
+        tk = [r for r in wb['楽天CSV取込'].iter_rows(min_row=3, values_only=True) if r and (r[1] not in (None, '') or r[3] not in (None, ''))]
+        wb.close()
+        notes = [(i + 3, r[11]) for i, r in enumerate(tk) if len(r) > 11 and r[11] not in (None, '')]
+        src_dec = sum(1 for r in src for c in (0, 1, 2, 3) if isinstance(r[c], float) and not r[c].is_integer())
+        check(len(notes) == src_dec, f'(V3) L列「識別子チェック」の記録 {len(notes)}件 = 元xlsxの小数など {src_dec}件')
+        for n_ in notes[:5]:
+            print(f'       行{n_[0]}: {n_[1]}')
+        blanks_src = sum(1 for r in src for c in (0, 1, 2, 3) if r[c] is None)
+        blanks_tgt = sum(1 for r in tk for c in (0, 1, 2, 3) if r[c] in (None, ''))
+        check(blanks_src == blanks_tgt, f'(V3) 空欄は空欄のまま: 元 {blanks_src} / 取込先 {blanks_tgt}')
     # 差は「説明できるもの」だけか … ここでは列挙に留め、判断は人が行う
     diff_keys = {d[0] for d in diffs}
     expected_key = {k for k in diff_keys if k[0].lstrip('0') == '192333006122'}
