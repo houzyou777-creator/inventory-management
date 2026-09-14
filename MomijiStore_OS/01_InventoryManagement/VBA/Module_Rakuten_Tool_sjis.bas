@@ -172,10 +172,10 @@ Private Sub ImportFromCSV(filePath As String, wsTake As Worksheet)
         If skuVal = "" Then GoTo NextLine
 
         g_rowNote = ""
-        wsTake.Cells(dataRow, TC_JAN).Value = IdText(SafeGetArr(cols, colJAN), "JAN")
-        wsTake.Cells(dataRow, TC_MANAGE_NO).Value = IdText(SafeGetArr(cols, colManageNo), "管理番号")
-        wsTake.Cells(dataRow, TC_ITEM_NO).Value = IdText(SafeGetArr(cols, colItemNo), "商品番号")
-        wsTake.Cells(dataRow, TC_SKU_NO).Value = IdText(SafeGetArr(cols, colSkuNo), "SKU")
+        Call PutId(wsTake.Cells(dataRow, TC_JAN), IdText(SafeGetArr(cols, colJAN), "JAN"))
+        Call PutId(wsTake.Cells(dataRow, TC_MANAGE_NO), IdText(SafeGetArr(cols, colManageNo), "管理番号"))
+        Call PutId(wsTake.Cells(dataRow, TC_ITEM_NO), IdText(SafeGetArr(cols, colItemNo), "商品番号"))
+        Call PutId(wsTake.Cells(dataRow, TC_SKU_NO), IdText(SafeGetArr(cols, colSkuNo), "SKU"))
         If g_rowNote <> "" Then wsTake.Cells(dataRow, TC_ID_CHECK).Value = g_rowNote
         wsTake.Cells(dataRow, TC_NAME).Value = SafeGetArr(cols, colName)
 
@@ -259,10 +259,10 @@ Private Sub ImportFromExcel(filePath As String, wsTake As Worksheet)
         If skuVal = "" Then GoTo NextExcelLine
 
         g_rowNote = ""
-        wsTake.Cells(dataRow, TC_JAN).Value = IdText(SafeGetCell(wsSrc, i, colJAN), "JAN")
-        wsTake.Cells(dataRow, TC_MANAGE_NO).Value = IdText(SafeGetCell(wsSrc, i, colManageNo), "管理番号")
-        wsTake.Cells(dataRow, TC_ITEM_NO).Value = IdText(SafeGetCell(wsSrc, i, colItemNo), "商品番号")
-        wsTake.Cells(dataRow, TC_SKU_NO).Value = IdText(SafeGetCell(wsSrc, i, colSkuNo), "SKU")
+        Call PutId(wsTake.Cells(dataRow, TC_JAN), IdText(SafeGetCell(wsSrc, i, colJAN), "JAN"))
+        Call PutId(wsTake.Cells(dataRow, TC_MANAGE_NO), IdText(SafeGetCell(wsSrc, i, colManageNo), "管理番号"))
+        Call PutId(wsTake.Cells(dataRow, TC_ITEM_NO), IdText(SafeGetCell(wsSrc, i, colItemNo), "商品番号"))
+        Call PutId(wsTake.Cells(dataRow, TC_SKU_NO), IdText(SafeGetCell(wsSrc, i, colSkuNo), "SKU"))
         If g_rowNote <> "" Then wsTake.Cells(dataRow, TC_ID_CHECK).Value = g_rowNote
         wsTake.Cells(dataRow, TC_NAME).Value = SafeGetCell(wsSrc, i, colName)
 
@@ -773,6 +773,12 @@ End Sub
 '   小数・エラー・日付・論理値 → そのまま CStr し、要確認として L列「識別子チェック」に 列名:理由(元値) を記録する。
 '              これらは原価マスターとの自動照合に使わない(RunAggregation 側で除外)
 '   空欄・Null → ""(空欄のまま)
+' 識別子セルへ書く。**空欄は空欄のまま**(長さ0の文字列を入れない。"@" 書式のセルに "" を代入すると
+' 長さ0の文字列が入り、ISBLANK が FALSE になる。2026-09-15 コピー検証で判明)
+Private Sub PutId(c As Range, s As String)
+    If s <> "" Then c.Value = s
+End Sub
+
 Private Function IdText(v As Variant, label As String) As String
     Dim why As String
     why = ""
