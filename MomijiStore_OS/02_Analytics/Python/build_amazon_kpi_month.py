@@ -295,26 +295,10 @@ def build_sheet(data, sheet_name, source_name, resolve):
 
 
 def recalc_via_excel(path):
-    script = f'''
-set p to POSIX file "{path}"
-with timeout of 600 seconds
-tell application "Microsoft Excel"
-    set wasRunning to running
-    open p
-    delay 2
-    calculate
-    -- 「active workbook」は使わない。人が別のブックを開いていると、そちらを保存・閉じてしまう(2026-09-12 発生)
-    set wb to workbook (name of (info for p))
-    save wb
-    close wb saving no
-    if not wasRunning then quit
-end tell
-end timeout
-return "ok"
-'''
-    r = subprocess.run(['osascript', '-e', script], capture_output=True, text=True, timeout=660)
-    if r.returncode != 0:
-        raise RuntimeError(f'Excel再計算に失敗: {r.stderr}')
+    """Excelで再計算して保存する。**必ず excel_bridge を通す**(対象をフルパスで特定し、
+    人が開いているブックや同名ブックがあれば何もせず止まる。2026-09-15 事故対策)"""
+    import excel_bridge as XB
+    return XB.recalc(path)
 
 
 def verify(sheet_name, data, total_row):

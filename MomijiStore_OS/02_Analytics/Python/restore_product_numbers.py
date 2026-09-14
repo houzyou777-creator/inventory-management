@@ -217,27 +217,16 @@ def apply_excel(targets):
     else
         set end of res to "{col}{rno}:mismatch:" & ((value of c) as string)
     end if''')
-    script = f'''
-set p to POSIX file "{STOCK}"
-set res to {{}}
-with timeout of 600 seconds
-tell application "Microsoft Excel"
-    open p
-    delay 1
-    -- 「active workbook」は使わない(2026-09-12: 人が開いていた別ブックを閉じてしまった)
-    set wb to workbook (name of (info for p))
-    set ws to worksheet "{SHEET}" of wb
-    {''.join(lines)}
-    save wb
-    close wb saving no
-end tell
-end timeout
-set AppleScript's text item delimiters to linefeed
-return res as string
-'''
-    r = subprocess.run(['osascript', '-e', script], capture_output=True, text=True, timeout=660)
-    if r.returncode != 0:
-        raise RuntimeError(f'Excelでの書込に失敗: {r.stderr}')
+    import excel_bridge as XB
+    body = f'''set ws to worksheet "{SHEET}" of wb
+        set res to {{}}
+        {''.join(lines)}
+        set AppleScript's text item delimiters to linefeed
+        set resText to res as string'''
+    out_text = XB.run_on_workbook(STOCK, body, result_expr='resText', timeout=600)
+    class _R:  # 以降の解析コードを変えないための薄い入れ物
+        stdout = out_text
+    r = _R()
     out = {}
     for line in r.stdout.strip().split('\n'):
         if ':' in line:

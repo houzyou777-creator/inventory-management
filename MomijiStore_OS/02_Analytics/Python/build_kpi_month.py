@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
@@ -438,26 +439,10 @@ def build_sheet(kpi_file, sheet_name, head6, data, resolve, master_cost_of=None)
 
 
 def recalc_via_excel(path):
-    script = f'''
-set p to POSIX file "{path}"
-with timeout of 600 seconds
-tell application "Microsoft Excel"
-    set wasRunning to running
-    open p
-    delay 2
-    calculate
-    -- 「active workbook」は使わない。人が別のブックを開いていると、そちらを保存・閉じてしまう(2026-09-12 発生)
-    set wb to workbook (name of (info for p))
-    save wb
-    close wb saving no
-    if not wasRunning then quit
-end tell
-end timeout
-return "ok"
-'''
-    r = subprocess.run(['osascript', '-e', script], capture_output=True, text=True, timeout=660)
-    if r.returncode != 0:
-        raise RuntimeError(f'Excel再計算に失敗: {r.stderr}')
+    """Excelで再計算して保存する。**必ず excel_bridge を通す**(対象をフルパスで特定し、
+    人が開いているブックや同名ブックがあれば何もせず止まる。2026-09-15 事故対策)"""
+    import excel_bridge as XB
+    return XB.recalc(path)
 
 
 def verify(kpi_file, sheet_name, data, total_row):
@@ -470,6 +455,33 @@ def verify(kpi_file, sheet_name, data, total_row):
     errs = [c.coordinate for row in ws.iter_rows() for c in row
             if isinstance(c.value, str) and c.value.startswith('#')]
     return ok, exp, got, errs, ws.cell(total_row, 14).value, ws.cell(total_row, 15).value
+
+
+def verify_identifiers(kpi_file, sheet_name, data):
+    """保存・再読込後の 管理番号・商品番号・SKU が入力CSVの文字列と**型込みで**一致するか(2026-09-15)。
+
+    先頭0・カンマ・スラッシュ・ハイフンを含む例を数えて出す。1件でも違えば FAIL。
+    """
+    wb = load_workbook(kpi_file, data_only=True)
+    ws = wb[sheet_name]
+    mism, feats = [], Counter()
+    for i, r in enumerate(data):
+        row = 8 + i
+        for key, col in (('ctrl', 3), ('pn', 4), ('sku', 5)):
+            src = (r[COL[key]] or '').strip()
+            got = ws.cell(row, col).value
+            if src == '':
+                if got not in (None, ''):
+                    mism.append((row, key, src, got))
+                continue
+            if not (isinstance(got, str) and got == src):
+                mism.append((row, key, src, got))
+            for tag, cond in (('先頭0', src.startswith('0')), ('カンマ', ',' in src),
+                              ('スラッシュ', '/' in src), ('ハイフン', '-' in src)):
+                if cond:
+                    feats[tag] += 1
+    wb.close()
+    return mism, feats
 
 
 def main():
@@ -538,7 +550,11 @@ def main():
         print(f'粗利: {n_total:,.0f}円 ({o_total * 100:.1f}%)')
     else:
         print(f'粗利: {n_total}(原価未確定の行があるため月全体の粗利は出ない)')
-    if not ok or errs:
+    mism, feats = verify_identifiers(kpi_file, sheet_name, data)
+    print(f'識別子の往復検証: 不一致 {len(mism)}件 / 例の内訳 ' + ' '.join(f'{k}{v}' for k, v in feats.items()))
+    for m_ in mism[:10]:
+        print(f'   行{m_[0]} {m_[1]}: CSV {m_[2]!r} → シート {m_[3]!r}')
+    if not ok or errs or mism:
         sys.exit('*** FAIL — シートを確認してください ***')
     print('PASS。経費(黄色セル)入力後に限界利益が確定します。')
     print('新商品があれば: python3 sync_cost_master.py register ' + sheet_name)

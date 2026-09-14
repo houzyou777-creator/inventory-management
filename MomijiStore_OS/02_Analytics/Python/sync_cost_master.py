@@ -361,42 +361,22 @@ def push_to_tool(rows):
         data = ','.join('{' + ','.join(esc(v) for v in row) + '}' for row in chunk)
         r1, r2 = 3 + i, 2 + i + len(chunk)
         stmts.append(f'set value of range ("A{r1}:G{r2}") of ws to {{{data}}}')
-    body = '\n    '.join(stmts)
-    # 集計シートが10万行あるため、書き込み中は手動計算にして最後に一括再計算する
-    script = f'''
-set p to POSIX file "{TOOL_FILE}"
-with timeout of 900 seconds
-tell application "Microsoft Excel"
-    set wasRunning to running
-    open p
-    delay 2
-    -- 「active workbook」は使わない(2026-09-12: 人が開いていた別ブックを閉じてしまった)
-    set wb to workbook (name of (info for p))
-    set ws to worksheet "{SH_TOOL_COST}" of wb
-    set calculation to calculation manual
-    set screen updating to false
-    clear contents of range "A3:G10000" of ws
-    -- JAN(A)・楽天商品管理番号(B)は**代入の前に**文字列書式にする(2026-09-12 §7-2)。
-    -- 標準書式のまま set value すると Excel が手入力と同じ解釈をし、先頭0が落ちる(102件が12桁になっていた)
-    set number format of range "A3:B10000" of ws to "@"
-    {body}
-    set calculation to calculation automatic
-    calculate
-    set screen updating to true
-    save wb
-    close wb saving no
-    if not wasRunning then quit
-end tell
-end timeout
-return "push done: {len(rows)} rows"
-'''
-    with tempfile.NamedTemporaryFile('w', suffix='.applescript', delete=False) as f:
-        f.write(script)
-        path = f.name
-    r = subprocess.run(['osascript', path], capture_output=True, text=True, timeout=960)
-    if r.returncode != 0:
-        raise RuntimeError(f'AppleScript failed: {r.stderr}')
-    return r.stdout.strip()
+    body_stmts = '\n        '.join(stmts)
+    # 集計シートが10万行あるため、書き込み中は手動計算にして最後に一括再計算する。
+    # Excel の操作は excel_bridge 経由(対象をフルパスで特定・人が開いていれば停止・quit しない)
+    import excel_bridge as XB
+    body = f'''set ws to worksheet "{SH_TOOL_COST}" of wb
+        set calculation to calculation manual
+        set screen updating to false
+        clear contents of range "A3:G10000" of ws
+        -- JAN(A)・楽天商品管理番号(B)は**代入の前に**文字列書式にする(2026-09-12 §7-2)
+        set number format of range "A3:B10000" of ws to "@"
+        {body_stmts}
+        set calculation to calculation automatic
+        calculate
+        set screen updating to true'''
+    XB.run_on_workbook(TOOL_FILE, body, timeout=900)
+    return f'push done: {len(rows)} rows'
 
 
 def plan_tool_ids():
@@ -501,27 +481,16 @@ def apply_tool_ids(plan, mode):
     else
         set end of res to "{r['_col']}{r['行']}:mismatch:" & ((value of c) as string)
     end if''')
-    script = f'''
-set p to POSIX file "{TOOL_FILE}"
-set res to {{}}
-with timeout of 900 seconds
-tell application "Microsoft Excel"
-    open p
-    delay 1
-    -- 「active workbook」は使わない(2026-09-12: 人が開いていた別ブックを閉じてしまった)
-    set wb to workbook (name of (info for p))
-    set ws to worksheet "{SH_TOOL_COST}" of wb
-    {''.join(lines)}
-    save wb
-    close wb saving no
-end tell
-end timeout
-set AppleScript's text item delimiters to linefeed
-return res as string
-'''
-    rr = subprocess.run(['osascript', '-e', script], capture_output=True, text=True, timeout=960)
-    if rr.returncode != 0:
-        raise RuntimeError(f'Excelでの書込に失敗: {rr.stderr}')
+    import excel_bridge as XB
+    body = f'''set ws to worksheet "{SH_TOOL_COST}" of wb
+        set res to {{}}
+        {''.join(lines)}
+        set AppleScript's text item delimiters to linefeed
+        set resText to res as string'''
+    out_text = XB.run_on_workbook(TOOL_FILE, body, result_expr='resText', timeout=900)
+    class _R:
+        stdout = out_text
+    rr = _R()
     res = {}
     for line in rr.stdout.strip().split('\n'):
         if ':' in line:

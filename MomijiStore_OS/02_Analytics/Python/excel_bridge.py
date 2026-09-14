@@ -1,0 +1,148 @@
+# -*- coding: utf-8 -*-
+"""excel_bridge.py — Excel(AppleScript)へ書くときの共通の安全装置(2026-09-15 ChatGPT指示)
+
+2026-09-12 22:45 の事故:
+    英樹が本番の在庫ツールを開いている最中に、KPIコピーの再計算スクリプトが
+    「active workbook」を保存して閉じた(事故後の保存内容はバックアップと一致。
+    直前の未保存状態まで影響なしとは断定しない)。
+
+この層を通さずに Excel を操作するスクリプトを書かない。守ること:
+    1. 対象は**フルパス**で特定する(ブック名だけでは本番とコピーを取り違える)
+    2. 開いた直後だけでなく、**書込み・保存・閉じる直前にも**対象を再確認する
+    3. スクリプト開始前から開いていたブックは、保存も閉じもしない
+    4. その実行で自分が開いたブックだけを保存・閉じる。エラー時も同じ
+    5. 対象ブックがすでに(人によって)開かれていたら、処理を止めて知らせる。
+       他のブックが開いているだけでは止めない。ただし**同名の別ブック**が開いていたら止める
+       (Excel は同名のブックを2つ開けず、取り違えのもと)
+    6. Excel の終了(quit)や、全ブックを対象にする保存・終了は使わない
+
+使い方:
+    from excel_bridge import run_on_workbook, recalc
+    out = run_on_workbook(path, body, timeout=600)   # body は wb / ws を使う AppleScript 断片
+    recalc(path)                                     # 開く→再計算→保存→閉じる
+body の中では `wb`(対象ブック)が使える。`active workbook` は書かない。
+戻り値はスクリプトの return 文字列。'ABORT:' で始まれば何もしていない。
+"""
+import os
+import subprocess
+import tempfile
+
+
+class ExcelAbort(RuntimeError):
+    """対象ブックが人に開かれている等、安全に処理できないため**何もせず**止めたことを表す。"""
+
+
+def _lit(s):
+    return '"' + str(s).replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def build_script(path, body, result_expr='"ok"', timeout=600):
+    """安全装置つきの AppleScript を組み立てる。body は tell ブロック内に挿入される。
+
+    Excel は `full name of every workbook`(リスト)は返すが、`repeat with w in workbooks` の
+    要素に対する `full name of w` はエラー(-50)になるため、名前とフルパスのリストを添字で回す。
+    /tmp は /private/tmp のシンボリックリンクで、Excel は開いたときの表記で返すため両方を対象にする。
+    """
+    path = os.path.abspath(path)
+    real = os.path.realpath(path)
+    name = os.path.basename(path)
+    # macOS の /tmp,/var,/etc は /private/... へのシンボリックリンク。Excel は開いたときの表記で返すので両表記を対象にする
+    variants = set()
+    for x in (path, real):
+        variants.add(x)
+        if x.startswith('/private/'):
+            variants.add(x[len('/private'):])
+        elif x.startswith(('/tmp/', '/var/', '/etc/')):
+            variants.add('/private' + x)
+    paths = '{' + ', '.join(_lit(x) for x in sorted(variants)) + '}'
+    return f'''
+set targetPaths to {paths}
+set targetName to {_lit(name)}
+set p to POSIX file {_lit(path)}
+with timeout of {int(timeout)} seconds
+tell application "Microsoft Excel"
+    -- 【事前】対象(フルパス)や同名のブックが開いていないか。開いていたら何もしない
+    set fns to {{}}
+    set nms to {{}}
+    try
+        set fns to full name of every workbook
+        set nms to name of every workbook
+    end try
+    repeat with i from 1 to (count of nms)
+        set fn to (item i of fns) as string
+        set nm to (item i of nms) as string
+        if targetPaths contains fn then return "ABORT:already-open:" & fn
+        if nm is targetName then return "ABORT:same-name-open:" & fn
+    end repeat
+    set preCount to count of nms
+
+    open p
+    -- 【開いた直後】フルパスで対象を特定する(active workbook は使わない)
+    set fns to full name of every workbook
+    set nms to name of every workbook
+    set wbName to ""
+    repeat with i from 1 to (count of nms)
+        if targetPaths contains ((item i of fns) as string) then set wbName to (item i of nms) as string
+    end repeat
+    if wbName is "" then return "ABORT:not-opened"
+    set wb to workbook wbName
+
+    try
+        {body}
+        -- 【保存直前】対象が変わっていないことを再確認してから、自分が開いたブックだけ保存して閉じる
+        if not (targetPaths contains ((full name of wb) as string)) then error "target changed before save"
+        save wb
+        close wb saving no
+    on error errMsg
+        try
+            if targetPaths contains ((full name of wb) as string) then close wb saving no
+        end try
+        return "ERROR:" & errMsg
+    end try
+    if (count of workbooks) is not preCount then return "WARN:workbook-count-changed:" & (count of workbooks)
+end tell
+end timeout
+return {result_expr}
+'''
+
+
+def run_on_workbook(path, body, result_expr='"ok"', timeout=600):
+    """対象ブックを開き body を実行し、保存して閉じる。ABORT/ERROR は例外にする。"""
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    script = build_script(path, body, result_expr, timeout)
+    with tempfile.NamedTemporaryFile('w', suffix='.applescript', delete=False, encoding='utf-8') as f:
+        f.write(script)
+        sp = f.name
+    try:
+        r = subprocess.run(['osascript', sp], capture_output=True, text=True, timeout=timeout + 60)
+    finally:
+        os.unlink(sp)
+    if r.returncode != 0:
+        raise RuntimeError(f'AppleScript failed: {r.stderr.strip()}')
+    out = r.stdout.strip()
+    if out.startswith('ABORT:already-open:'):
+        raise ExcelAbort(f'対象ブックが既に開かれています。閉じてから再実行してください: {out.split(":", 2)[2]}')
+    if out.startswith('ABORT:same-name-open:'):
+        raise ExcelAbort(f'同名の別ブックが開かれています(本番/コピーの取り違え防止で停止): {out.split(":", 2)[2]}')
+    if out.startswith('ABORT:'):
+        raise ExcelAbort(out)
+    if out.startswith('ERROR:'):
+        raise RuntimeError(f'Excel処理でエラー(対象ブックは保存せず閉じた): {out[6:]}')
+    return out
+
+
+def recalc(path, timeout=600):
+    """開く → 再計算 → 保存 → 閉じる(対象ブックだけ)。"""
+    return run_on_workbook(path, 'delay 1\n        calculate', timeout=timeout)
+
+
+def open_workbooks():
+    """いま開いているブックのフルパス一覧(読み取り専用の確認用)。"""
+    r = subprocess.run(['osascript', '-e',
+                        'tell application "Microsoft Excel" to if running then get full name of every workbook'],
+                       capture_output=True, text=True, timeout=60)
+    s = r.stdout.strip()
+    if not s or s == 'missing value':
+        return []
+    return [x.strip() for x in s.split(',')]
