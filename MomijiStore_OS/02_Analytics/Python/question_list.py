@@ -410,6 +410,16 @@ def previous_answers(exclude):
 
 def build():
     path = f'{OUT_DIR}/英樹への確認リスト_{date.today():%Y%m%d}.xlsx'
+    # 英樹が Excel で開いている最中に上書きしない(2026-09-16 に開いたまま再生成してしまった)
+    try:
+        import excel_bridge as XB
+        opened = [x for x in XB.open_workbooks() if os.path.basename(x) == os.path.basename(path)]
+        if opened:
+            sys.exit(f'⛔ 確認リストが Excel で開かれています。閉じてから再生成してください: {opened[0]}')
+    except SystemExit:
+        raise
+    except Exception:
+        pass
     prev_q, prev_t, prev_file = previous_answers(path)
     if os.path.exists(path):                       # 同日の再生成: 今日のファイルの回答も引き継ぐ
         q2, t2, _ = previous_answers('__none__')
