@@ -69,6 +69,8 @@ TASKS = [
      'いつも「楽天在庫リスト_import.xlsx」を作るときに使っている在庫リストのCSVダウンロード画面',
      'CSVをダウンロードする。**Excelで開いて保存しない**(先頭の0やカンマが消えるため)。ダウンロードしたファイルをそのまま '
      + IMPORT_DIR + '/ に入れる(ファイル名はダウンロード時のまま)', 'Import フォルダにCSVが入っている。チャットで「CSVを置いた」と送る', ''),
+    ('T-5', 'ファイル整理の可否を決める', LIST_NAME, 'シート「質問」の Q12・Q13',
+     '整理案(Output/整理案_20260916.txt)を見て、Q12(移動)と Q13(削除)の黄色セルを選ぶ', 'Q12・Q13 の状態が「回答済」になる', ''),
     ('T-4', '(Q10で「再取込する」を選んだ場合だけ) 本番の在庫ツールで再取込', 'MomijiStore_OS/01_InventoryManagement/SourceData/楽天在庫金額集計ツール_v1.0.xlsm(**本番**)',
      'ボタン', '**Claude Code が「着手OK」と伝えるまで押さない。** 着手OK後: 開く → 「楽天在庫ファイル読込」→ 上書き「はい」→(アクセス許可は「アクセス権を付与」)→ OK → 「集計実行」→ OK → ⌘S → 閉じる',
      'K列 読込日時と 在庫金額集計の集計日時が今になる。チャットで「再取込した」と送る', ''),
@@ -227,6 +229,14 @@ def build_questions():
               'トイレその後に フレッシュグリーン 280ml×2本セット(P000846)の商品マスター標準原価 453円 は、何の金額ですか？ '
               '(英樹回答の単品278円×2本=556円と比べるために、453円が2本セット分か1本分かを確認します。Q8-5「更新してよい」は記録済みで、この回答が入れば更新します)',
               'P000846 商品マスター E列', '2本セット分／1本分／不明', '標準原価更新(P000846 保留解除の条件)'))
+    Q.append(('Q12', APPROVE,
+              '【承認・ファイル整理】Output と Backup が増えたので整理します。案は Output/整理案_20260916.txt。'
+              '「移動(退避)52件」は Archive/<年月>/ へ動かすだけ(名前は変えず、消しません)。実行してよいですか？',
+              'Output/整理案_20260916.txt（tidy_files.py plan の出力）', '実行してよい／一部だけ(補足に書く)／まだ', 'ファイル整理'))
+    Q.append(('Q13', APPROVE,
+              '【承認・削除】同じ整理案の「削除候補31件・2.9MB」(確認リストの途中バックアップ12本、8/3作業中の在庫リスト連続バックアップ13本、7月の作業中バックアップ等)を消してよいですか？ '
+              '消すのは英樹の承認後に Claude Code が候補どおりに行い、消したファイル名を記録します。',
+              'Output/整理案_20260916.txt の「削除候補」', '全部消してよい／一部だけ(補足に書く)／消さない', 'ファイル整理'))
     Q.append(('Q9-2', FACT, 'リポソームショット(P000897 / B0FZ3Y7QNM)の原価 175円 に付属品・おまけの費用は含まれていますか？ また商品マスターのJANが空欄です。JANは 4571509302842(13桁)でよいですか？(補足に書いてください)',
               'P000897 Amazon B0FZ3Y7QNM 現在の標準原価=0', '付属品なし／付属品あり・原価に含まれる／付属品あり・別費目で計上／不明', '標準原価更新(Q7の条件)'))
     return Q
@@ -420,7 +430,8 @@ def build():
     for c, h in enumerate(head, 1):
         wt.cell(1, c).value = h; wt.cell(1, c).font = BOLD; wt.cell(1, c).fill = HEAD
     dv = DataValidation(type='list', formula1='"済,未,できない"', allow_blank=True)
-    wt.add_data_validation(dv)
+    # ⚠️ セルを1つも持たない DataValidation を add_data_validation すると <dataValidations count="0"/> が書かれ、
+    #    Excel が「一部の内容に問題」と修復を求める(2026-09-16 承認シートで発生)。セルを足してから登録する
     for r, t in enumerate(TASKS, 2):
         for c, v in enumerate(t[:6], 1):
             wt.cell(r, c).value = v; wt.cell(r, c).alignment = WRAP
@@ -429,6 +440,8 @@ def build():
         done.fill = YELLOW
         wt.cell(r, 8).fill = YELLOW
         dv.add(done)
+    if dv.sqref:
+        wt.add_data_validation(dv)
     for col, w in zip('ABCDEFGH', (7, 22, 44, 16, 56, 44, 8, 30)):
         wt.column_dimensions[col].width = w
     wt.freeze_panes = 'A2'
@@ -551,7 +564,6 @@ def build():
                 if k[0]:
                     prev_appr[k] = (pws.cell(r, pc['承認']).value, pws.cell(r, pc['修正・コメント']).value)
     dva = DataValidation(type='list', formula1='"承認,修正あり,保留"', allow_blank=True)
-    wp.add_data_validation(dva)
     # 既に原価確認記録へ登録済みの案は「登録済(記録ID)」として固定し、承認欄を黄色にしない
     try:
         import cost_confirmations as K
@@ -588,6 +600,8 @@ def build():
         L = lambda i: wp.cell(1, i).column_letter
         st.value = (f'=IF({L(col_blk)}{r}<>"","登録不可("&{L(col_blk)}{r}&")",'
                     f'IF({L(col_ap)}{r}="承認","登録待ち(Claude Code)",IF({L(col_ap)}{r}<>"",{L(col_ap)}{r},"未承認")))')
+    if dva.sqref:                                  # セルがあるときだけ登録(空の dataValidations を書かない)
+        wp.add_data_validation(dva)
     if prop_err:
         wp.cell(2, 1).value = f'(追加案を作れませんでした: {prop_err})'
     for col, w in zip('ABCDEFGHIJKLMNOPQRSTUV', (8, 8, 14, 10, 28, 9, 9, 10, 7, 12, 9, 18, 18, 18, 40, 46, 16, 40, 30, 10, 26, 22)):
