@@ -28,7 +28,7 @@ V2T = BASE + '/01_InventoryManagement/SourceData/V2_test'
 
 
 def _ym_of(name):
-    m = re.search(r'(20\d{2})-?(\d{2})-?\d{2}', name)
+    m = re.search(r'(20\d{2})-?(\d{2})-?\d{2}', name) or re.search(r'(20\d{2})-(\d{2})', name)   # 2026-08_… も拾う
     return f'{m.group(1)}-{m.group(2)}' if m else '不明'
 
 
