@@ -61,24 +61,32 @@ LIST_NAME = '英樹への確認リスト_<日付>.xlsx(このファイル)'
 
 # いま英樹がやる操作だけを載せる(1行1操作)。終わったものは DONE(シート「完了」)へ移す。
 TASKS = [
-    ('T-1', '本番再取込をどうするか決める', LIST_NAME, 'シート「質問」の Q10', '黄色の「回答」セルをプルダウンから選ぶ(再取込する／新しい在庫リストを取る／しない／不明)',
+    ('T-1', '本番再取込をどうするか決める(Q10)', LIST_NAME, 'シート「質問」の Q10', 'プルダウンから選ぶ。判断できないときは「ChatGPTに確認する」を選ぶ(シート「ChatGPTへの確認」に載る)',
      'Q10 の「状態」が「回答済」になる', ''),
-    ('T-2', 'トイレその後に(P000846)の 453円 が何の金額か答える', LIST_NAME, 'シート「質問」の Q11', '黄色の「回答」セルをプルダウンから選ぶ(2本セット分／1本分／不明)',
-     'Q11 の「状態」が「回答済」になる', ''),
-    ('T-3', '(Q10で「新しい在庫リストを取る」を選んだ場合だけ) RMSから在庫リストCSVを落とす', 'RMS(楽天の管理画面)',
-     'いつも「楽天在庫リスト_import.xlsx」を作るときに使っている在庫リストのCSVダウンロード画面',
-     'CSVをダウンロードする。**Excelで開いて保存しない**(先頭の0やカンマが消えるため)。ダウンロードしたファイルをそのまま '
-     + IMPORT_DIR + '/ に入れる(ファイル名はダウンロード時のまま)', 'Import フォルダにCSVが入っている。チャットで「CSVを置いた」と送る', ''),
-    ('T-5', 'ファイル整理の可否を決める', LIST_NAME, 'シート「質問」の Q12・Q13',
-     '整理案(Output/整理案_20260916.txt)を見て、Q12(移動)と Q13(削除)の黄色セルを選ぶ', 'Q12・Q13 の状態が「回答済」になる', ''),
-    ('T-4', '(Q10で「再取込する」を選んだ場合だけ) 本番の在庫ツールで再取込', 'MomijiStore_OS/01_InventoryManagement/SourceData/楽天在庫金額集計ツール_v1.0.xlsm(**本番**)',
-     'ボタン', '**Claude Code が「着手OK」と伝えるまで押さない。** 着手OK後: 開く → 「楽天在庫ファイル読込」→ 上書き「はい」→(アクセス許可は「アクセス権を付与」)→ OK → 「集計実行」→ OK → ⌘S → 閉じる',
-     'K列 読込日時と 在庫金額集計の集計日時が今になる。チャットで「再取込した」と送る', ''),
+    # ── 最新在庫への更新(T-3a〜e)。ChatGPT 2026-09-16 の5段階。「古い資料の再処理」(T-4)とは別 ──
+    ('T-3a', '最新在庫への更新①: RMSの商品番号の誤り2件を直す(直していれば「済」)', 'RMS → 商品管理 → 該当商品の商品番号',
+     '2件', 'b087lzdd59: 現在 `3036/1273`(8/3資料) → 正 `5036/1273`。 b0dfyjnwjt: 現在 `4987176260659-2` → 正 `4987176260635-2`。RMS上の現在値を見て、違っていれば訂正する',
+     'RMSの商品ページで正しい値になっている(Q2で「直した」と回答済み。念のため確認)', ''),
+    ('T-3b', '最新在庫への更新②: 訂正後の最新の在庫リストCSVをRMSから落とす', 'RMS(いつも在庫リストを落とす画面)',
+     'CSVダウンロード', 'ダウンロードした **CSVをExcelで開かず、そのまま** ' + IMPORT_DIR + '/ に保存(ファイル名はそのまま)',
+     'Import フォルダにCSVがある。ダウンロードした日時をメモしておく(チャットで「楽天CSVを置いた 9/16 10:00」のように)', ''),
+    ('T-3c', '最新在庫への更新③: Amazonの在庫も近い時刻に取る', 'セラーセントラル → 在庫 → 在庫管理(レポート)',
+     'ダウンロード', 'Amazon の在庫レポートを **楽天と近い時刻に** 落とし、Excelで開かず ' + IMPORT_DIR + '/ に保存。取得日時をメモ',
+     'Import フォルダにAmazonのファイルもある。チャットで「Amazonも置いた 9/16 10:05」', ''),
+    ('T-3d', '最新在庫への更新④: (Claude Code) コピーで取込・共有在庫除外・原価未登録・数量と評価額の差分を確認', '—', '—',
+     '英樹の操作なし。Claude Code が文字列を保ったまま xlsx 化し、コピーで取込・集計して差分を出す', 'チャットで差分の表が届く', ''),
+    ('T-3e', '最新在庫への更新⑤: 差分を見て本番へ進めるか決める', LIST_NAME, 'シート「質問」に追加される Q(差分提示後)',
+     '差分の表を見て 実施する／しない を選ぶ。実施のときは Claude Code の「着手OK」の後に本番で 読込 → 集計 → 保存', '本番の取込日時・集計日時が更新される', ''),
+    ('T-4', '(Q10で「再取込する」のときだけ) 古い資料(8/3)の再処理を本番で行う', 'MomijiStore_OS/01_InventoryManagement/SourceData/楽天在庫金額集計ツール_v1.0.xlsm(**本番**)',
+     'ボタン', '**Claude Code が「着手OK」と伝えるまで押さない。** これは8/3資料の再処理で現在在庫の更新ではない。着手OK後: 開く → 「楽天在庫ファイル読込」→ 上書き「はい」→ OK → 「集計実行」→ OK → ⌘S → 閉じる → 直後に Claude Code が誤記2行を再訂正',
+     'K列 読込日時と集計日時が今になる。チャットで「再取込した」', ''),
 ]
 DONE = [
     ('V2', 'V-2 取込4列の文字列書式', 'コピー検証PASS → 本番差し替え 2026-09-12 22:37 検証PASS'),
     ('V3', 'V-3 識別子の型統一＋集計先の文字列書式', 'コピー検証2回目PASS(09-16 06:16) → 本番差し替え検証PASS(着手OK前に差し替えられていた: 引継ぎ102)'),
-    ('Q1〜Q9', '質問 63件', '2026-09-16 までに全件回答。原価確認記録 K00001〜12 登録、商品マスター6件更新に使用'),
+    ('Q1〜Q9', '質問 63件', '2026-09-16 までに全件回答。原価確認記録 K00001〜12 登録、商品マスター7件更新に使用'),
+    ('T-2/Q11', 'トイレその後に 453円の単位', '「2本セット分」→ P000846 453→556(セット原価のまま) 2026-09-16 更新'),
+    ('T-5/Q12・Q13', 'ファイル整理', 'Q12 移動52件を実行。Q13 削除候補31件は ChatGPT の推奨で**削除せず** Archive/削除候補_20260916/ へ退避(対応表あり)'),
 ]
 
 # ──────────────────────────────────────────────────────────────
@@ -252,6 +260,13 @@ def build_questions():
 #   ・「通常」も金額一致だけで承認済みにしない。承認は確認リストの黄色セル
 # ──────────────────────────────────────────────────────────────
 PROPOSAL_YM = '2026-09'
+
+# 「ChatGPTへの確認」シートに添える Claude Code の整理(判断材料)
+CHATGPT_NOTES = {
+    'Q10': '2択: (a) 8/3資料の再処理 = 数量不変・評価額+90,984(原価マスター更新分)・未登録24→20。ただし上流誤記2件が戻るため直後に2行を再訂正する。'
+           '(b) 最新在庫への更新 = T-3a〜e(RMS誤記訂正→最新CSV→Amazonも近い時刻→コピー検証→差分提示→英樹判断)。'
+           'Claude Code の見立て: (a)の効用は評価額の再計算だけで小さく、(b)へ進む方が本来の目的(現在在庫)に合う。',
+}
 
 
 def _answers(path):
@@ -511,7 +526,8 @@ def build():
             if ra:
                 ans.value = f'=IF(F{ra}="なし","該当なし","")'     # Q5aが「なし」なら自動で該当なし。プルダウンで上書き可
         if opts:
-            d = DataValidation(type='list', formula1='"' + opts.replace('／', ',') + '"', allow_blank=True)
+            opts_all = opts + ('／ChatGPTに確認する' if kind == APPROVE and 'ChatGPTに確認する' not in opts else '')
+            d = DataValidation(type='list', formula1='"' + opts_all.replace('／', ',') + '"', allow_blank=True)
             wq.add_data_validation(d); d.add(ans)
     for col, w in zip('ABCDEFGHIJK', (7, 9, 78, 44, 36, 24, 30, 16, 8, 10, 24)):
         wq.column_dimensions[col].width = w
@@ -523,7 +539,7 @@ def build():
     for c, h in enumerate(head, 1):
         wm.cell(1, c).value = h; wm.cell(1, c).font = BOLD; wm.cell(1, c).fill = HEAD
     import csv
-    logs = sorted(glob.glob(f'{OUT_DIR}/商品番号_復元ログ_*.csv'))
+    logs = sorted(glob.glob(f'{OUT_DIR}/商品番号_復元ログ_*.csv') + glob.glob(f'{OUT_DIR}/Archive/*/*/商品番号_復元ログ_*.csv'))   # 退避後も読める
     r = 2
     if logs:
         rows, seen = [], set()
@@ -612,6 +628,25 @@ def build():
         import csv as _csv
         with open(f'{OUT_DIR}/原価確認記録_追加案_{date.today():%Y%m%d}.csv', 'w', encoding='utf-8-sig', newline='') as f:
             w = _csv.DictWriter(f, fieldnames=list(props[0].keys())); w.writeheader(); w.writerows(props)
+
+    # ── ChatGPTへの確認(英樹が判断できないもの・ChatGPTの判断待ち) ──
+    wc = wb.create_sheet('ChatGPTへの確認')
+    for c, h in enumerate(['番号', '質問', '英樹の回答', '英樹の補足', 'Claude Code の整理', 'ChatGPTの判断(貼り付け)'], 1):
+        wc.cell(1, c).value = h; wc.cell(1, c).font = BOLD; wc.cell(1, c).fill = HEAD
+    rr = 2
+    for r in range(2, wq.max_row + 1):
+        no, kind, ans_v, memo_v = wq.cell(r, 1).value, wq.cell(r, 2).value, wq.cell(r, 6).value, wq.cell(r, 7).value
+        if ans_v == 'ChatGPTに確認する' or (kind == APPROVE and ans_v == '不明'):
+            wc.cell(rr, 1).value = no; wc.cell(rr, 2).value = wq.cell(r, 3).value; wc.cell(rr, 3).value = ans_v
+            wc.cell(rr, 4).value = memo_v
+            wc.cell(rr, 5).value = CHATGPT_NOTES.get(str(no), '')
+            wc.cell(rr, 6).fill = YELLOW
+            for c in (2, 4, 5, 6):
+                wc.cell(rr, c).alignment = WRAP
+            rr += 1
+    for col, w in zip('ABCDEF', (8, 70, 16, 30, 50, 40)):
+        wc.column_dimensions[col].width = w
+    wc.freeze_panes = 'A2'
 
     # ── 完了(終わった作業。やることには載せない) ──
     wd = wb.create_sheet('完了')

@@ -8,7 +8,8 @@
     python3 restore_product_numbers.py apply-ids          同上を適用(バックアップ・再読込検証・ログ)
 
 例:
-    python3 restore_product_numbers.py plan  ../../01_InventoryManagement/SourceData/Output/商品番号_復元候補_20260911.csv
+    python3 restore_product_numbers.py plan  ../../01_InventoryManagement/SourceData/Output/Archive/2026-09/証跡/商品番号_復元候補_20260911.csv
+    (候補CSVは 2026-09-16 の整理で Output/Archive/<年月>/証跡/ へ退避した)
 
 なぜ必要か:
     在庫ツールの取込VBAは商品番号を `.Value` 代入しており、Excelが手入力と同じ解釈をする。

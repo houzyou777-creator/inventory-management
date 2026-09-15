@@ -5,6 +5,7 @@
     python3 tidy_files.py plan              何をどこへ動かすかを表示する(何もしない)
     python3 tidy_files.py apply             plan の「移動」だけを実行する(削除はしない)
     python3 tidy_files.py delete-candidates 削除候補の一覧を表示する(削除はしない)
+    python3 tidy_files.py apply-quarantine  移動に加え、削除候補を 削除候補_<日付>/ へ退避する(削除はしない)
 
 方針(CLAUDE.md: 削除・移動・リネームは承認制。古いバックアップの自動削除禁止):
     ・**削除はこのスクリプトでは行わない。** 候補を提示し、英樹が承認したものだけ別途手で消す
@@ -112,19 +113,37 @@ def show(moves, deletes, keeps):
         print(f'  {os.path.relpath(f, BASE)}  ({why})')
 
 
-def apply(moves):
-    n = 0
-    for f, d, why in moves:
+def apply(moves, quarantine=None):
+    """移動を実行する。削除は**しない**。quarantine に削除候補を渡すと 削除候補_<日付>/ へ退避する
+    (ChatGPT 2026-09-16: 今回は削除せず別の退避フォルダへ)。移動元→移動先の対応表を Output/Archive に残す。"""
+    import csv
+    from datetime import date
+    rows, n = [], 0
+    jobs = [(f, d, why, '退避') for f, d, why in moves]
+    for f, why in (quarantine or []):
+        base = OUT if f.startswith(OUT) else (BK2 if f.startswith(BK2) else BK)
+        jobs.append((f, f'{base}/Archive/削除候補_{date.today():%Y%m%d}', why, '削除候補(消していない)'))
+    for f, d, why, kind in jobs:
         if not os.path.exists(f):
-            continue
+            rows.append((kind, f, d, '元が無い', why)); continue
         os.makedirs(d, exist_ok=True)
         dst = os.path.join(d, os.path.basename(f))
         if os.path.exists(dst):
-            print(f'  ⚠️ 既にある(移動しない): {dst}')
+            rows.append((kind, f, dst, '同名があるため移動しない', why))
+            print(f'  ⚠️ 同名があるため移動しない: {dst}')
             continue
         shutil.move(f, dst)
+        rows.append((kind, f, dst, '移動', why))
         n += 1
-    print(f'✅ 移動 {n}件(削除は0件)')
+    os.makedirs(OUT + '/Archive', exist_ok=True)
+    log = f'{OUT}/Archive/移動対応表_{date.today():%Y%m%d}.csv'
+    new = not os.path.exists(log)
+    with open(log, 'a', encoding='utf-8-sig', newline='') as fh:
+        w = csv.writer(fh)
+        if new:
+            w.writerow(['区分', '移動元', '移動先', '結果', '理由'])
+        w.writerows(rows)
+    print(f'✅ 移動 {n}件(削除は0件) → 対応表 {log}')
 
 
 if __name__ == '__main__':
@@ -134,6 +153,8 @@ if __name__ == '__main__':
         show(moves, deletes, keeps)
     elif mode == 'apply':
         apply(moves)
+    elif mode == 'apply-quarantine':
+        apply(moves, quarantine=deletes)
     elif mode == 'delete-candidates':
         show([], deletes, [])
     else:
