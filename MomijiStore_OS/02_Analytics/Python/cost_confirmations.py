@@ -34,8 +34,10 @@ BASE = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS'
 FILE = os.environ.get('COST_CONFIRM_FILE', BASE + '/02_Analytics/SourceData/原価確認記録.xlsx')
 SHEET = '記録'
 HEAD = ['記録ID', '確認日', '確認者', 'チャネル', '楽天商品管理番号', 'SKU/ASIN', '適用開始月', '適用終了月',
-        '1販売分の原価', '販売入数', '原価単位', '含有範囲', '販売構成(確認時の商品番号)', '参照月', '根拠',
-        '無効化日', '無効化理由']
+        '1販売分の原価', '販売入数', '原価単位', '含有範囲', '付属品費用の扱い', '販売構成(確認時の商品番号)', '参照月', '根拠',
+        '比較情報', '無効化日', '無効化理由']
+# 参照月 … 採用した参照元(その月のL列と原価が一致しなければ記録は無効)。空欄なら「人が確認した値」だけが根拠
+# 比較情報 … 採用はしないが履歴として残す比較(例: 8月KPI L=1,034 / 差+10 / 差の理由は未確認)。判定には使わない
 
 
 def _norm(v):
@@ -120,7 +122,7 @@ def add(rec):
     for c, h in enumerate(HEAD, 1):
         ws.cell(row, c).value = rec.get(h)
     # 識別子は文字列のまま保つ(先頭0を落とさない)
-    for c in (5, 6, 13):
+    for c in (5, 6, 14):
         ws.cell(row, c).number_format = '@'
     wb.save(FILE)
     return rec['記録ID']

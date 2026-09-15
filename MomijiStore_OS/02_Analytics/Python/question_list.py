@@ -197,6 +197,122 @@ def build_questions():
     return Q
 
 
+# ──────────────────────────────────────────────────────────────
+# 原価確認記録の追加案(2026-09-15 ChatGPT指示で修正)
+#   ・1販売分 = 英樹回答の単品原価 × 確認済み販売入数。適用期間は 2026-09 のみ(質問範囲を超えて延ばさない)
+#   ・マスターとの比較は「比較単位」で分ける: 出品テーブルM列が セット原価 なら1販売分と、単品原価 なら単品と比べる。
+#     M列が空欄なら両方を出し「どちらの単位か未確認」と書く(アリエールは ChatGPT 2026-09-15 の情報で4個セット分)
+#   ・8月KPI L との差は「比較情報」として履歴に残す(参照月にはしない。8月は変更しない。差の理由は未確認)
+#   ・含有範囲(Q5a)が「なし」のときだけ Q5b=該当なし。「あり」なら Q5b を人が答え、別費目なら計上先。不明は記録しない
+#   ・「通常」も金額一致だけで承認済みにしない。承認は確認リストの黄色セル
+# ──────────────────────────────────────────────────────────────
+PROPOSAL_YM = '2026-09'
+
+
+def _answers(path):
+    wb = load_workbook(path, data_only=True)
+    ws = wb['質問']
+    hdr = [str(c.value or '') for c in ws[1]]
+    col = {h: i + 1 for i, h in enumerate(hdr)}
+    out = {}
+    for r in range(2, ws.max_row + 1):
+        no = ws.cell(r, col['番号']).value
+        if no:
+            out[str(no)] = (ws.cell(r, col['回答']).value, ws.cell(r, col['補足(自由に)']).value)
+    return out
+
+
+def build_cost_proposals(list_path):
+    import re
+    facts = load_cost_facts()
+    ans = _answers(list_path)
+    # 出品テーブルM列(原価単位)。マスター金額が何を表すかの記録
+    unit_rec = {}
+    pack, pos = S.load_pack_info()
+    for (ch, key), lst in pack.items():
+        for it in lst:
+            unit_rec[(ch, key, it['sku'])] = it.get('unit')
+    rows = []
+    for i, (pid, ch, key, name) in enumerate(LISTINGS, 1):
+        f = facts[(pid, ch, key)]
+        a, memo = ans.get(f'Q4-{i}', (None, None))
+        q5a = (ans.get(f'Q5a-{i}', (None, None))[0] or '')
+        q5b, q5b_memo = ans.get(f'Q5b-{i}', (None, None))
+        q5b = q5b or ''
+        n, kpi, master = f['pack'], f['kpi'], f['master']
+        unit_cost = per_sale = None
+        basis = ''
+        if a == 'A(8月KPIの値)':
+            per_sale = kpi; basis = f'英樹確認(確認リストQ4-{i} 回答A: 8月KPI L={kpi})'
+        elif a and a.startswith('B'):
+            unit_cost = master; per_sale = master * n if isinstance(n, (int, float)) else None
+            basis = f'英樹確認(確認リストQ4-{i} 回答B: マスター単品 {master}×入数{n})'
+        elif a and a.startswith('AもBも違う'):
+            m = re.search(r'(\d[\d,]*)\s*円', str(memo or ''))
+            unit_cost = int(m.group(1).replace(',', '')) if m else None
+            per_sale = unit_cost * n if unit_cost is not None and isinstance(n, (int, float)) else None
+            basis = f'英樹確認(確認リストQ4-{i} 回答「{memo}」×確認済み入数{n})'
+        # マスターとの比較(比較単位で分ける)
+        # 出品テーブルM列(原価単位)。楽天は管理番号×SKU、Amazonは同じASINの出品で単位が1つに決まるときだけ採る
+        if ch == '楽天':
+            mu = unit_rec.get((ch, S.norm(key), S.norm(key)))
+        else:
+            units = {u for (c_, k_, s_), u in unit_rec.items() if c_ == ch and k_ == S.norm(key) and u}
+            mu = units.pop() if len(units) == 1 else None
+        cmp_notes, exceptions = [], []
+        if isinstance(master, (int, float)):
+            if mu == S.UNIT_SET or (pid == 'P000655'):
+                # セット原価: 1販売分と比べる(アリエール P000655 は ChatGPT 2026-09-15「3,940円は4個セット分」)
+                lab = 'セット原価(M列)' if mu == S.UNIT_SET else 'セット原価(M列は空欄。ChatGPT 2026-09-15 情報)'
+                cmp_notes.append(f'マスター {master:,}[{lab}] vs 1販売分 {per_sale:,}' if per_sale is not None else f'マスター {master:,}[{lab}]')
+                if per_sale is not None and per_sale != master:
+                    exceptions.append(f'マスター(セット) {master:,} ≠ 1販売分 {per_sale:,}(差 {per_sale - master:+,})→マスター更新は別承認')
+            elif mu == S.UNIT_SINGLE:
+                cmp_notes.append(f'マスター {master:,}[単品原価(M列)] vs 単品 {unit_cost}')
+                if unit_cost is not None and unit_cost != master:
+                    exceptions.append(f'マスター(単品) {master:,} ≠ 回答単品 {unit_cost:,}→マスター更新は別承認')
+            else:
+                cmp_notes.append(f'マスター {master:,}[単位未記録] 単品比較: {unit_cost} / 1販売分比較: {per_sale} (どちらの単位か未確認)')
+                if unit_cost is not None and unit_cost != master and per_sale != master:
+                    exceptions.append(f'マスター {master:,} は 単品 {unit_cost:,} とも 1販売分 {per_sale:,} とも一致しない(単位未記録)→単位確認とマスター更新は別承認')
+        # 8月KPI との比較(履歴。参照月にはしない)
+        if per_sale is not None and kpi is not None and per_sale != kpi:
+            cmp_notes.append(f'8月KPI L={kpi:,} / 差 {per_sale - kpi:+,} / 差の理由は未確認(8月は変更しない)')
+            exceptions.append(f'8月KPI L={kpi:,} と不一致(差 {per_sale - kpi:+,})')
+        elif kpi is not None:
+            cmp_notes.append(f'8月KPI L={kpi:,} と一致')
+        # 含有範囲(Q5)
+        if q5a == 'なし':
+            scope, fee = '付属品なし(英樹確認Q5a)', '該当なし'
+        elif q5a == 'あり':
+            scope = '付属品あり(英樹確認Q5a)'
+            fee = {'原価に含まれる': '原価に含まれる', '別費目で計上': f'別費目で計上(計上先: {q5b_memo or "未記入"})'}.get(q5b, '')
+        else:
+            scope, fee = '', ''
+        blockers = []
+        if per_sale is None:
+            blockers.append('Q4の金額が読めない')
+        if not q5a or q5a == '不明':
+            blockers.append('含有範囲(Q5a)が未回答/不明')
+        elif q5a == 'あり' and (not fee or (q5b == '別費目で計上' and not q5b_memo)):
+            blockers.append('Q5b(費用の扱い/計上先)が未回答')
+        rows.append({
+            '案No': f'K案-{i:02d}', 'チャネル': ch, '楽天商品管理番号': key if ch == '楽天' else '', 'SKU/ASIN': key,
+            '内部管理ID': pid, '商品名': name, '適用開始月': PROPOSAL_YM, '適用終了月': PROPOSAL_YM,
+            '単品原価(回答)': unit_cost, '販売入数': n, '1販売分の原価(案)': per_sale, '原価単位': '単品原価',
+            '含有範囲': scope, '付属品費用の扱い': fee, '販売構成(現在の商品番号)': f['pn'] or '', '参照月': '',
+            '根拠': basis, '比較情報': ' / '.join(cmp_notes), '区分': ('例外(ChatGPT判断済: 作成可)' if exceptions else '通常'),
+            '例外理由': ' / '.join(exceptions),
+            '登録できない理由': ' / '.join(blockers), '確認者': '英樹', '確認日': date.today().isoformat(),
+        })
+    return rows
+
+
+PROPOSAL_HEAD = ['案No', 'チャネル', 'SKU/ASIN', '内部管理ID', '商品名', '適用開始月', '適用終了月', '単品原価(回答)', '販売入数',
+                 '1販売分の原価(案)', '原価単位', '含有範囲', '付属品費用の扱い', '販売構成(現在の商品番号)', '根拠', '比較情報',
+                 '区分', '例外理由', '登録できない理由', '承認', '修正・コメント', '状態']
+
+
 def previous_answers(exclude):
     """前回の確認リストから 質問ID＋対象＋質問キー → (回答, 補足) を読む。やることは 番号＋操作 → 済。"""
     files = sorted(f for f in glob.glob(f'{OUT_DIR}/英樹への確認リスト_*.xlsx') if os.path.abspath(f) != os.path.abspath(exclude))
@@ -340,6 +456,57 @@ def build():
     for col, w in zip('ABCDEF', (9, 9, 20, 20, 14, 70)):
         wm.column_dimensions[col].width = w
 
+    # ── 原価記録の承認(追加案を黄色セルで承認する。CSVは内部処理用) ──
+    try:
+        src_list = prev_file or path
+        props = build_cost_proposals(src_list) if os.path.exists(src_list) else []
+    except Exception as e:                        # 案が作れない状態なら空シートにして理由を書く
+        props, prop_err = [], str(e)
+    else:
+        prop_err = ''
+    wp = wb.create_sheet('原価記録の承認')
+    for c, h in enumerate(PROPOSAL_HEAD, 1):
+        wp.cell(1, c).value = h; wp.cell(1, c).font = BOLD; wp.cell(1, c).fill = HEAD
+    prev_appr = {}
+    if prev_file and os.path.exists(prev_file):
+        pw = load_workbook(prev_file, data_only=True)
+        if '原価記録の承認' in pw.sheetnames:
+            pws = pw['原価記録の承認']
+            ph = [str(c.value or '') for c in pws[1]]; pc = {h: i + 1 for i, h in enumerate(ph)}
+            for r in range(2, pws.max_row + 1):
+                k = (pws.cell(r, pc['案No']).value, pws.cell(r, pc['SKU/ASIN']).value, pws.cell(r, pc['1販売分の原価(案)']).value,
+                     pws.cell(r, pc['適用開始月']).value, pws.cell(r, pc.get('含有範囲', 12)).value)
+                if k[0]:
+                    prev_appr[k] = (pws.cell(r, pc['承認']).value, pws.cell(r, pc['修正・コメント']).value)
+    dva = DataValidation(type='list', formula1='"承認,修正あり,保留"', allow_blank=True)
+    wp.add_data_validation(dva)
+    for r, pr in enumerate(props, 2):
+        for c, h in enumerate(PROPOSAL_HEAD, 1):
+            if h in ('承認', '修正・コメント', '状態'):
+                continue
+            wp.cell(r, c).value = pr.get(h); wp.cell(r, c).alignment = WRAP
+        ca, cm = wp.cell(r, PROPOSAL_HEAD.index('承認') + 1), wp.cell(r, PROPOSAL_HEAD.index('修正・コメント') + 1)
+        ca.fill = YELLOW; cm.fill = YELLOW; dva.add(ca)
+        # 金額・対象月・含有範囲が同じ案だけ前回の承認を引き継ぐ(変わっていれば再確認)
+        k = (pr['案No'], pr['SKU/ASIN'], pr['1販売分の原価(案)'], pr['適用開始月'], pr['含有範囲'])
+        if k in prev_appr and prev_appr[k][0]:
+            ca.value, cm.value = prev_appr[k]
+        st = wp.cell(r, PROPOSAL_HEAD.index('状態') + 1)
+        col_ok, col_ap, col_blk = (PROPOSAL_HEAD.index(x) + 1 for x in ('承認', '承認', '登録できない理由'))
+        L = lambda i: wp.cell(1, i).column_letter
+        st.value = (f'=IF({L(col_blk)}{r}<>"","登録不可("&{L(col_blk)}{r}&")",'
+                    f'IF({L(col_ap)}{r}="承認","登録待ち(Claude Code)",IF({L(col_ap)}{r}<>"",{L(col_ap)}{r},"未承認")))')
+    if prop_err:
+        wp.cell(2, 1).value = f'(追加案を作れませんでした: {prop_err})'
+    for col, w in zip('ABCDEFGHIJKLMNOPQRSTUV', (8, 8, 14, 10, 28, 9, 9, 10, 7, 12, 9, 18, 18, 18, 40, 46, 16, 40, 30, 10, 26, 22)):
+        wp.column_dimensions[col].width = w
+    wp.freeze_panes = 'A2'
+    # 内部処理用CSV(承認の入力はここに求めない)
+    if props:
+        import csv as _csv
+        with open(f'{OUT_DIR}/原価確認記録_追加案_{date.today():%Y%m%d}.csv', 'w', encoding='utf-8-sig', newline='') as f:
+            w = _csv.DictWriter(f, fieldnames=list(props[0].keys())); w.writeheader(); w.writerows(props)
+
     # ── 既知の回答 ──
     wk = wb.create_sheet('既知の回答')
     for c, h in enumerate(['回答日(チャット)', '内容'], 1):
@@ -351,7 +518,7 @@ def build():
     os.makedirs(OUT_DIR, exist_ok=True)
     wb.save(path)
     print(f'→ {path}')
-    print(f'   やること {len(TASKS)}行 / 質問 {len(Q)}件(前回から引き継ぎ {carried}・再確認 {reask}) / Q3対応表 {n_map}行 / 既知の回答 {len(KNOWN)}件')
+    print(f'   やること {len(TASKS)}行 / 質問 {len(Q)}件(前回から引き継ぎ {carried}・再確認 {reask}) / Q3対応表 {n_map}行 / 原価記録の承認 {len(props)}件 / 既知の回答 {len(KNOWN)}件')
     return path
 
 
