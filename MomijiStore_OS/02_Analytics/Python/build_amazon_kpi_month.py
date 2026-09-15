@@ -338,8 +338,10 @@ def main():
     ok, exp, got, errs, n_total, o_total = verify(sheet_name, data, total_row)
     print(f'検証: 合計{"一致" if ok else "不一致!"} (個数/売上/件数 CSV={exp} シート={got})')
     print(f'数式エラー: {len(errs)}件')
-    if n_total is not None and o_total is not None:
+    if isinstance(n_total, (int, float)) and isinstance(o_total, (int, float)):
         print(f'粗利(仕入値未解決{len(missing)}行を除く): {n_total:,.0f}円 ({o_total * 100:.1f}%)')
+    else:
+        print(f'粗利: {n_total}(原価未確定の行があるため月全体の粗利は出ない。仕入値未解決 {len(missing)}行)')
     if not ok or errs:
         sys.exit('*** FAIL — シートを確認してください ***')
     print('PASS。黄色セル(仕入値・経費)入力後に確定します。')

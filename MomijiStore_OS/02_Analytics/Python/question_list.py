@@ -340,6 +340,13 @@ def previous_answers(exclude):
             key = (str(no), str(ws.cell(r, col.get('対象', 3)).value or ''),
                    str(ws.cell(r, col['質問キー']).value or '') if '質問キー' in col else '')
             qa[key] = (ws.cell(r, col.get('回答', 5)).value, ws.cell(r, col.get('補足(自由に)', 6)).value)
+            # 「前回の回答」欄に退避された回答も履歴として持ち続ける(再生成を重ねても消えないように)
+            pv = ws.cell(r, col['前回の回答']).value if '前回の回答' in col else None
+            if pv and not qa[key][0]:
+                import re as _re
+                base = _re.sub(r'\((条件が変わったため再確認|処理済.*)\)$', '', str(pv)).strip()
+                if base:
+                    qa[(str(no), key[1], '__prev__')] = (base, None)
     if 'やること' in wb.sheetnames:
         ws = wb['やること']
         for r in range(2, ws.max_row + 1):
@@ -407,6 +414,18 @@ def build():
     Q = build_questions()
     carried = reask = 0
     q5a_row = {}
+    # 原価確認記録へ登録済みの出品(Q4/Q5)は、その後マスター金額が変わって質問文の数字が変わっても
+    # 再確認にしない(回答は記録として確定済み)。処理済みと表示する
+    try:
+        import cost_confirmations as K
+        reg_by_sku = {}
+        for rec in K.load():
+            if not rec.get('無効化日'):
+                reg_by_sku[(str(rec.get('チャネル') or ''), S.norm(rec.get('SKU/ASIN')))] = rec.get('記録ID')
+    except Exception:
+        reg_by_sku = {}
+    done_idx = {i: reg_by_sku[(ch, S.norm(key))] for i, (pid, ch, key, name) in enumerate(LISTINGS, 1)
+                if (ch, S.norm(key)) in reg_by_sku}
     for r, (no, kind, text, target, opts, src) in enumerate(Q, 2):
         # 質問キー = 質問文(金額を含む)＋選択肢＋対象(出品・入数・原価単位・構成)＋対象月。どれかが変われば再確認
         k = qkey(text, opts, target, TARGET_YM)
@@ -420,8 +439,18 @@ def build():
         # 前回の回答: 質問ID＋対象＋質問キーが一致すれば引き継ぐ。IDと対象が同じでキーが違えば「再確認」
         same = prev_q.get((no, target, k))
         changed = [v for (pn, pt, pk), v in prev_q.items() if pn == no and pt == target and pk != k and v[0]]
+        m_idx = None
+        import re as _re
+        mm = _re.match(r'Q(?:4|5a|5b)-(\d+)$', no)
+        if mm:
+            m_idx = int(mm.group(1))
         if same and same[0]:
             ans.value, memo.value = same[0], same[1]
+            carried += 1
+        elif changed and m_idx in done_idx:
+            ans.value, memo.value = changed[0]           # 回答は記録として確定済み。質問文の数字だけが変わった
+            ans.fill = GRAY
+            wq.cell(r, 11).value = f'処理済(原価確認記録 {done_idx[m_idx]} 登録済み。マスター金額の変更で質問文の数字は更新)'
             carried += 1
         elif changed:
             wq.cell(r, 11).value = f'{changed[0][0]}(条件が変わったため再確認)'
@@ -511,7 +540,9 @@ def build():
                               float(pr['1販売分の原価(案)'] or 0)))
         if rid:
             ca.value = f'登録済({rid})'; ca.fill = GRAY
-            wp.cell(r, PROPOSAL_HEAD.index('状態') + 1).value = f'登録済({rid})。KPIへの反映は次の新月生成から'
+            wp.cell(r, PROPOSAL_HEAD.index('状態') + 1).value = (
+                f'登録済({rid})・反映未対応(Amazonの生成処理は記録を参照しない)' if pr['チャネル'] == 'Amazon'
+                else f'登録済({rid})・次の新月生成で反映(本番の新月生成は保留)')
             continue
         ca.fill = YELLOW; cm.fill = YELLOW; dva.add(ca)
         # 金額・対象月・含有範囲が同じ案だけ前回の承認を引き継ぐ(変わっていれば再確認)
