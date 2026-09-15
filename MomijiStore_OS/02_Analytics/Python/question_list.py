@@ -480,12 +480,30 @@ def build():
                     prev_appr[k] = (pws.cell(r, pc['承認']).value, pws.cell(r, pc['修正・コメント']).value)
     dva = DataValidation(type='list', formula1='"承認,修正あり,保留"', allow_blank=True)
     wp.add_data_validation(dva)
+    # 既に原価確認記録へ登録済みの案は「登録済(記録ID)」として固定し、承認欄を黄色にしない
+    try:
+        import cost_confirmations as K
+        registered = {}
+        for rec in K.load():
+            if rec.get('無効化日'):
+                continue
+            key = (str(rec.get('チャネル') or ''), S.norm(rec.get('SKU/ASIN')), K._ym(rec.get('適用開始月')),
+                   float(rec.get('1販売分の原価') or 0))
+            registered[key] = rec.get('記録ID')
+    except Exception:
+        registered = {}
     for r, pr in enumerate(props, 2):
         for c, h in enumerate(PROPOSAL_HEAD, 1):
             if h in ('承認', '修正・コメント', '状態'):
                 continue
             wp.cell(r, c).value = pr.get(h); wp.cell(r, c).alignment = WRAP
         ca, cm = wp.cell(r, PROPOSAL_HEAD.index('承認') + 1), wp.cell(r, PROPOSAL_HEAD.index('修正・コメント') + 1)
+        rid = registered.get((pr['チャネル'], S.norm(pr['SKU/ASIN']), pr['適用開始月'],
+                              float(pr['1販売分の原価(案)'] or 0)))
+        if rid:
+            ca.value = f'登録済({rid})'; ca.fill = GRAY
+            wp.cell(r, PROPOSAL_HEAD.index('状態') + 1).value = f'登録済({rid})。KPIへの反映は次の新月生成から'
+            continue
         ca.fill = YELLOW; cm.fill = YELLOW; dva.add(ca)
         # 金額・対象月・含有範囲が同じ案だけ前回の承認を引き継ぐ(変わっていれば再確認)
         k = (pr['案No'], pr['SKU/ASIN'], pr['1販売分の原価(案)'], pr['適用開始月'], pr['含有範囲'])
