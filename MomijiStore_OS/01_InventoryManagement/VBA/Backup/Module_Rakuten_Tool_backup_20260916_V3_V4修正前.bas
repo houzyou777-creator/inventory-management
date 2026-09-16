@@ -383,12 +383,19 @@ Sub RunAggregation()
     wsAgg.Range("A10:L100000").Interior.ColorIndex = xlNone
     wsCheck.Range("A3:H100000").ClearContents
     wsCheck.Range("A3:H100000").Interior.ColorIndex = xlNone
-    ' 転記先の識別子は「書き込むセルだけ」代入の直前に文字列書式にする(V-4・2026-09-16)。
-    ' V-3 では 10万行に一括で "@" を付けていたため、Excel が書式付きの空セルを保存し
-    ' 集計後のファイルが 300KB→7MB になった。ここでは V-3 が付けた書式を識別子列の
-    ' データ領域(見出し行より下)に限って標準へ戻す。金額・日付・見出しの書式は触らない
-    Call ResetIdFormats(wsAgg, 10, Array(AG_JAN, AG_MANAGE_NO, AG_SKU_NO, AG_ITEM_NO))
-    Call ResetIdFormats(wsCheck, 3, Array(CK_SKU, CK_JAN, CK_MANAGE_NO))
+    ' 転記先の識別子列も代入の前に文字列書式にする(2026-09-12 ②)。
+    ' 取込シートで文字列を保っても、.Value で書き写す先が標準書式だと再び数値になり先頭0が落ちる
+    With wsAgg
+        .Range(.Cells(10, AG_JAN), .Cells(100000, AG_JAN)).NumberFormat = "@"
+        .Range(.Cells(10, AG_MANAGE_NO), .Cells(100000, AG_MANAGE_NO)).NumberFormat = "@"
+        .Range(.Cells(10, AG_SKU_NO), .Cells(100000, AG_SKU_NO)).NumberFormat = "@"
+        .Range(.Cells(10, AG_ITEM_NO), .Cells(100000, AG_ITEM_NO)).NumberFormat = "@"
+    End With
+    With wsCheck
+        .Range(.Cells(3, CK_SKU), .Cells(100000, CK_SKU)).NumberFormat = "@"
+        .Range(.Cells(3, CK_JAN), .Cells(100000, CK_JAN)).NumberFormat = "@"
+        .Range(.Cells(3, CK_MANAGE_NO), .Cells(100000, CK_MANAGE_NO)).NumberFormat = "@"
+    End With
 
     lastRow = wsTake.Cells(wsTake.Rows.Count, TC_SKU_NO).End(xlUp).Row
     If lastRow < 3 Then lastRow = wsTake.Cells(wsTake.Rows.Count, TC_MANAGE_NO).End(xlUp).Row
@@ -512,9 +519,9 @@ Sub RunAggregation()
         sellAmount = ""
         If IsNumeric(priceVal) Then sellAmount = stockNum * CDbl(priceVal)
 
-        Call PutIdText(wsAgg.Cells(aggRow, AG_JAN), janVal)
-        Call PutIdText(wsAgg.Cells(aggRow, AG_MANAGE_NO), manageNo)
-        Call PutIdText(wsAgg.Cells(aggRow, AG_SKU_NO), skuNo)
+        wsAgg.Cells(aggRow, AG_JAN).Value = janVal
+        wsAgg.Cells(aggRow, AG_MANAGE_NO).Value = manageNo
+        wsAgg.Cells(aggRow, AG_SKU_NO).Value = skuNo
         wsAgg.Cells(aggRow, AG_NAME).Value = itemName
         wsAgg.Cells(aggRow, AG_STOCK).Value = stockNum
         If adoptedCost <> "" Then wsAgg.Cells(aggRow, AG_COST).Value = adoptedCost
@@ -531,7 +538,7 @@ Sub RunAggregation()
             Case Else: statusLabel = "未登録"
         End Select
         wsAgg.Cells(aggRow, AG_STATUS).Value = statusLabel
-        Call PutIdText(wsAgg.Cells(aggRow, AG_ITEM_NO), itemNo)
+        wsAgg.Cells(aggRow, AG_ITEM_NO).Value = itemNo
 
         totalStock = totalStock + stockNum
         If stockNum > 0 Then skuWithStock = skuWithStock + 1
@@ -547,9 +554,9 @@ Sub RunAggregation()
 WriteCheckOnly:
         If hasIssue Then
             If Len(issueReason) >= 3 Then issueReason = Left(issueReason, Len(issueReason) - 3)
-            Call PutIdText(wsCheck.Cells(chkRow, CK_SKU), skuNo)
-            Call PutIdText(wsCheck.Cells(chkRow, CK_JAN), janVal)
-            Call PutIdText(wsCheck.Cells(chkRow, CK_MANAGE_NO), manageNo)
+            wsCheck.Cells(chkRow, CK_SKU).Value = skuNo
+            wsCheck.Cells(chkRow, CK_JAN).Value = janVal
+            wsCheck.Cells(chkRow, CK_MANAGE_NO).Value = manageNo
             wsCheck.Cells(chkRow, CK_NAME).Value = itemName
             wsCheck.Cells(chkRow, CK_REASON).Value = issueReason
             wsCheck.Cells(chkRow, CK_STOCK).Value = stockVal
@@ -770,28 +777,6 @@ End Sub
 ' 長さ0の文字列が入り、ISBLANK が FALSE になる。2026-09-15 コピー検証で判明)
 Private Sub PutId(c As Range, s As String)
     If s <> "" Then c.Value = s
-End Sub
-
-' 転記先(在庫金額集計・要確認一覧)の識別子セルへ書く(V-4・2026-09-16)。
-' 書き込むセルだけを代入の【直前】に "@" にする(10万行の一括書式はやめた)。空欄は空欄のまま(書式も付けない)
-Private Sub PutIdText(c As Range, s As String)
-    If s <> "" Then
-        c.NumberFormat = "@"
-        c.Value = s
-    End If
-End Sub
-
-' V-3 が付けた 10万行分の "@" を、識別子列のデータ領域(firstRow 〜 使用範囲の最終行)に限って標準へ戻す(V-4)。
-' ClearFormats で「標準スタイル」に戻す(NumberFormat=General だけでは空セルが保存され続けることがある)。
-' 対象は識別子列だけ。見出し行(firstRow より上)・金額列・日付・数式の書式は触らない。
-' 行の色(Interior)はこの後 FormatAggSheet / FormatCheckSheet がデータ行にだけ付け直す
-Private Sub ResetIdFormats(ws As Worksheet, firstRow As Long, cols As Variant)
-    Dim lastUsed As Long, k As Long
-    lastUsed = ws.UsedRange.Row + ws.UsedRange.Rows.Count - 1
-    If lastUsed < firstRow Then Exit Sub
-    For k = LBound(cols) To UBound(cols)
-        ws.Range(ws.Cells(firstRow, cols(k)), ws.Cells(lastUsed, cols(k))).ClearFormats
-    Next k
 End Sub
 
 Private Function IdText(v As Variant, label As String) As String

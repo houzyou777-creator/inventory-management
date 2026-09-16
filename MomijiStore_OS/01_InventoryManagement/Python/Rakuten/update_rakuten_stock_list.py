@@ -20,8 +20,10 @@ RMS CSV の形(2026-09-16 確認):
 やること(2026-08-03 に確立した流れ・引継ぎ/記憶「在庫更新パイプライン」):
     1. 既存の「在庫」シートを (商品管理番号×SKU管理番号) ペアで照合し、在庫数と商品番号を更新する
     2. 新規ペアは追加(商品名・販売価格・単価は空欄 → 単価は黄色。JANは商品番号の先頭13桁だけから補完)
-    3. CSVに無いペアは**消さない・0にしない・繰り越さない**。旧数量・旧単価・旧基準日を保持したまま
-       シート「未掲載_未確認」へ分け、本体(ツールが読む「在庫」)は最新CSV掲載分だけにする(ChatGPT 2026-09-16 別枠管理)
+    3. CSVに無いペアは本体(ツールが読む「在庫」)から外し、最新CSV掲載分だけにする。外した行の扱いは --missing で選ぶ:
+         sheet … 旧数量・旧単価・旧基準日を保持したままシート「未掲載_未確認」へ分ける(別枠管理)
+         log   … シートには残さず、同じ内容を 変更ログCSV(…_削除記録_<日時>.csv)に残す(英樹 Q14「消す」・ChatGPT 2026-09-16 採用)
+       どちらも「在庫0」「損失確定」の意味ではない(今回のCSVに無いだけ・現在在庫は未確認)
     4. 識別子(JAN・管理番号・商品番号・SKU)は **文字列のまま**書く(数値化しない)
     5. 差分(在庫数変更・新規・消えた・商品番号変更)をCSVに残す
 
@@ -130,7 +132,7 @@ def diff(parents, skus, cur):
     return out
 
 
-def build(parents, skus, cur, out_path, stamp):
+def build(parents, skus, cur, out_path, stamp, missing='sheet'):
     """既存の在庫シートの構造を保ったまま、コピー先へ新しいリストを書く。"""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     wb = load_workbook(CUR_LIST)                        # 書式・2シート構成をそのまま使う
@@ -182,34 +184,45 @@ def build(parents, skus, cur, out_path, stamp):
             ws.cell(r, C_MISSING).fill = PINK
             n_missing += 1
             drop_rows.append(r)
-    # ChatGPT 2026-09-16: 「最新CSVに未掲載・現在在庫未確認として別枠管理」。
-    #   消す／0にする／旧数量を繰り越す のどれもしない。旧数量・旧単価・旧基準日を保持したまま別シートへ分け、
-    #   本体(在庫シート=ツールが読む Sheets(1))には最新CSV掲載分だけを残す
+    # 外した行の記録(旧数量・旧単価・旧基準日・SKU変更候補)。sheet=別シートへ / log=変更ログCSVへ
     old_stamp = datetime.fromtimestamp(os.path.getmtime(CUR_LIST)).strftime('%Y-%m-%d %H:%M')
-    wu = wb['未掲載_未確認'] if '未掲載_未確認' in wb.sheetnames else wb.create_sheet('未掲載_未確認')
-    if wu.max_row <= 1 and wu.cell(1, 1).value is None:
-        for c, h in enumerate(['JAN', '楽天商品管理番号（ASIN)', '商品番号', 'SKU管理番号', '商品名', '販売価格', '単価(旧)', '在庫数(旧)', '合計金額(旧・参考)',
-                               '旧基準日', '状態', '最新CSV(取得)', 'SKU変更候補(同じ管理番号の新規SKU)'], 1):
-            wu.cell(1, c).value = h
+    head = ['JAN', '楽天商品管理番号（ASIN)', '商品番号', 'SKU管理番号', '商品名', '販売価格', '単価(旧)', '在庫数(旧)', '合計金額(旧・参考)',
+            '旧基準日', '状態', '最新CSV(取得)', 'SKU変更候補(同じ管理番号の新規SKU)']
     # 同じ管理番号で「消えたSKU」と「新規SKU」がある場合は候補として書くだけ(統合はしない)
     new_by_ctrl = {}
     for (c, s_) in skus:
         if (norm(c), norm(s_)) not in pos:
             new_by_ctrl.setdefault(norm(c), []).append(s_)
+    records = []
     for r in sorted(drop_rows):
         vals = [ws.cell(r, c).value for c in range(1, 12)]
+        vals = [(str(int(v)) if float(v).is_integer() else str(v)) if isinstance(v, (int, float)) and not isinstance(v, bool) and i < 4 else v
+                for i, v in enumerate(vals)]                # 旧リストで数値になっていた識別子も文字列に揃える
         qty, cost = vals[7], vals[6]
-        rowv = vals[:6] + [cost, qty, (qty * cost if isinstance(qty, (int, float)) and isinstance(cost, (int, float)) else None),
-                           old_stamp, '最新CSVに未掲載・現在在庫未確認', stamp or '', ', '.join(new_by_ctrl.get(norm(vals[1]), []))]
-        rr = wu.max_row + 1
-        for c, v in enumerate(rowv, 1):
-            wu.cell(rr, c).value = v
-        for c in (1, 2, 3, 4):                           # 旧リストで数値になっていた識別子も文字列に揃える
-            wu.cell(rr, c).number_format = '@'
-            v = wu.cell(rr, c).value
-            if isinstance(v, (int, float)) and not isinstance(v, bool):
-                wu.cell(rr, c).value = str(int(v)) if float(v).is_integer() else str(v)
-    for r in sorted(drop_rows, reverse=True):            # 本体からは外す(別シートに保持済み)
+        records.append(vals[:6] + [cost, qty, (qty * cost if isinstance(qty, (int, float)) and isinstance(cost, (int, float)) else None),
+                                   old_stamp, '最新CSVに未掲載・現在在庫未確認', stamp or '', ', '.join(new_by_ctrl.get(norm(vals[1]), []))])
+    if missing == 'sheet':
+        wu = wb['未掲載_未確認'] if '未掲載_未確認' in wb.sheetnames else wb.create_sheet('未掲載_未確認')
+        if wu.max_row <= 1 and wu.cell(1, 1).value is None:
+            for c, h in enumerate(head, 1):
+                wu.cell(1, c).value = h
+        for rowv in records:
+            rr = wu.max_row + 1
+            for c, v in enumerate(rowv, 1):
+                wu.cell(rr, c).value = v
+            for c in (1, 2, 3, 4):
+                wu.cell(rr, c).number_format = '@'
+    else:
+        if '未掲載_未確認' in wb.sheetnames:                  # 元リストに残っていても運用中の一覧には持ち込まない
+            del wb['未掲載_未確認']
+        log = os.path.splitext(out_path)[0] + f'_削除記録_{datetime.now():%Y%m%d_%H%M%S}.csv'
+        with open(log, 'w', encoding='utf-8-sig', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(['削除日時', '元リスト'] + head)
+            for rowv in records:
+                w.writerow([f'{datetime.now():%Y-%m-%d %H:%M:%S}', os.path.basename(CUR_LIST)] + rowv)
+        print(f'   外した{len(records)}行の記録: {log}')
+    for r in sorted(drop_rows, reverse=True):            # 本体からは外す(記録は別シートまたは変更ログに保持済み)
         ws.delete_rows(r, 1)
     wb.save(out_path)
     return n_upd, n_new, n_missing
@@ -220,6 +233,8 @@ def main():
     ap.add_argument('mode', choices=['plan', 'build'])
     ap.add_argument('csv', nargs='+')
     ap.add_argument('--out')
+    ap.add_argument('--missing', choices=['sheet', 'log'], default='sheet',
+                    help='CSVに無い行: sheet=シート「未掲載_未確認」へ分ける / log=変更ログCSVだけに残す(Q14「消す」)')
 
     a = ap.parse_args()
     paths = sorted(p for pat in a.csv for p in glob.glob(pat))
@@ -242,8 +257,8 @@ def main():
     if a.mode == 'build':
         if not a.out or os.path.abspath(a.out) == os.path.abspath(CUR_LIST):
             sys.exit('❌ --out はコピー先を指定してください(本番の Import は書き換えません)')
-        n_upd, n_new, n_missing = build(parents, skus, cur, a.out, stamp)
-        print(f'✅ 書出: {a.out}  更新 {n_upd} / 新規 {n_new} / CSVに無い(印) {n_missing}')
+        n_upd, n_new, n_missing = build(parents, skus, cur, a.out, stamp, a.missing)
+        print(f'✅ 書出: {a.out}  更新 {n_upd} / 新規 {n_new} / CSVに無い(本体から外した) {n_missing} [{a.missing}]')
         log = os.path.splitext(a.out)[0] + f'_差分_{datetime.now():%Y%m%d_%H%M%S}.csv'
         with open(log, 'w', encoding='utf-8-sig', newline='') as f:
             w = csv.writer(f)
