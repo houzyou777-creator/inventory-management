@@ -379,13 +379,16 @@ Sub RunAggregation()
     Application.ScreenUpdating = False
     Application.Calculation = xlCalculationManual
 
-    ' 出力先(集計・要確認)のデータ領域を、値・書式とも「使用範囲まで」で消す(V-4・2026-09-16/17)。
-    ' 10万行への一括操作(V-3 の "@"、以前からの Interior.ColorIndex=xlNone)は Excel が書式付きの
-    ' 空セルを保存し、集計後のファイルが 300KB→7MB(V-3)・4.7MB(V-4 1回目)になった。
-    ' 転記先の識別子は書き込むセルだけ代入の直前に "@" にする(PutIdText)。
-    ' 見出し行(集計 1〜9行・要確認 1〜2行)は触らない。金額列の #,##0 と行の色は FormatAggSheet が付け直す
-    Call ClearDataArea(wsAgg, 10, 12)
-    Call ClearDataArea(wsCheck, 3, 8)
+    wsAgg.Range("A10:L100000").ClearContents
+    wsAgg.Range("A10:L100000").Interior.ColorIndex = xlNone
+    wsCheck.Range("A3:H100000").ClearContents
+    wsCheck.Range("A3:H100000").Interior.ColorIndex = xlNone
+    ' 転記先の識別子は「書き込むセルだけ」代入の直前に文字列書式にする(V-4・2026-09-16)。
+    ' V-3 では 10万行に一括で "@" を付けていたため、Excel が書式付きの空セルを保存し
+    ' 集計後のファイルが 300KB→7MB になった。ここでは V-3 が付けた書式を識別子列の
+    ' データ領域(見出し行より下)に限って標準へ戻す。金額・日付・見出しの書式は触らない
+    Call ResetIdFormats(wsAgg, 10, Array(AG_JAN, AG_MANAGE_NO, AG_SKU_NO, AG_ITEM_NO))
+    Call ResetIdFormats(wsCheck, 3, Array(CK_SKU, CK_JAN, CK_MANAGE_NO))
 
     lastRow = wsTake.Cells(wsTake.Rows.Count, TC_SKU_NO).End(xlUp).Row
     If lastRow < 3 Then lastRow = wsTake.Cells(wsTake.Rows.Count, TC_MANAGE_NO).End(xlUp).Row
@@ -778,18 +781,17 @@ Private Sub PutIdText(c As Range, s As String)
     End If
 End Sub
 
-' 出力先シートのデータ領域(firstRow 以降・A～lastCol 列)を「使用範囲の最終行まで」値も書式も消す(V-4)。
-' 10万行までではなく使用範囲までにするのは、範囲への書式操作が空セルを作り保存サイズを肥大させるため。
-' ClearFormats で標準スタイルに戻すので、V-3 が付けた "@" や以前の "塗りつぶしなし" の残りも消える。
-' 見出し行(firstRow より上)は触らない。データ行の書式(識別子 "@"・金額 #,##0・行の色)は書き込み時に付け直す
-Private Sub ClearDataArea(ws As Worksheet, firstRow As Long, lastCol As Long)
-    Dim lastUsed As Long
+' V-3 が付けた 10万行分の "@" を、識別子列のデータ領域(firstRow 〜 使用範囲の最終行)に限って標準へ戻す(V-4)。
+' ClearFormats で「標準スタイル」に戻す(NumberFormat=General だけでは空セルが保存され続けることがある)。
+' 対象は識別子列だけ。見出し行(firstRow より上)・金額列・日付・数式の書式は触らない。
+' 行の色(Interior)はこの後 FormatAggSheet / FormatCheckSheet がデータ行にだけ付け直す
+Private Sub ResetIdFormats(ws As Worksheet, firstRow As Long, cols As Variant)
+    Dim lastUsed As Long, k As Long
     lastUsed = ws.UsedRange.Row + ws.UsedRange.Rows.Count - 1
     If lastUsed < firstRow Then Exit Sub
-    With ws.Range(ws.Cells(firstRow, 1), ws.Cells(lastUsed, lastCol))
-        .ClearContents
-        .ClearFormats
-    End With
+    For k = LBound(cols) To UBound(cols)
+        ws.Range(ws.Cells(firstRow, cols(k)), ws.Cells(lastUsed, cols(k))).ClearFormats
+    Next k
 End Sub
 
 Private Function IdText(v As Variant, label As String) As String
@@ -885,14 +887,16 @@ Sub ClearData()
     ThisWorkbook.Sheets("楽天CSV取込").Range("A3:K100000").ClearContents
 
     Set wsAgg = ThisWorkbook.Sheets("在庫金額集計")
-    Call ClearDataArea(wsAgg, 10, 12)                 ' V-4: 10万行への一括書式操作はしない
+    wsAgg.Range("A10:L100000").ClearContents
+    wsAgg.Range("A10:L100000").Interior.ColorIndex = xlNone
     wsAgg.Cells(3, 2).Value = "": wsAgg.Cells(3, 6).Value = ""
     wsAgg.Cells(4, 2).Value = "": wsAgg.Cells(4, 6).Value = ""
     wsAgg.Cells(5, 2).Value = "": wsAgg.Cells(5, 6).Value = ""
     wsAgg.Cells(6, 2).Value = ""
 
     Set wsCheck = ThisWorkbook.Sheets("要確認一覧")
-    Call ClearDataArea(wsCheck, 3, 8)
+    wsCheck.Range("A3:H100000").ClearContents
+    wsCheck.Range("A3:H100000").Interior.ColorIndex = xlNone
 
     MsgBox "クリアしました。", vbInformation, "完了"
 End Sub

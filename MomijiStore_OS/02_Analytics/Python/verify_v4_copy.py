@@ -33,7 +33,7 @@ IMPORT2 = SD + '/V4_test/Import_2回目/楽天在庫リスト_import.xlsx'
 BAS = os.path.dirname(SD) + '/VBA/Module_Rakuten_Tool.bas'
 EXPECT = {1: dict(amount=15077081, qty=6801, unreg=20, rows=864),      # 8/3資料: Python予測(引継ぎ107)。V-3テストコピー実測 15,064,681/21 は原価マスター復元前(クリニーク12,400の差)
           2: dict(amount=12621422, qty=5911, unreg=59, rows=814)}      # 9/16資料: V3_stock_test コピーの Excel 実測(引継ぎ123)
-SIZE_LIMIT = 1_000_000   # これを超えたら肥大(V-3 は 6,985,292)
+SIZE_LIMIT = 1_000_000   # これを超えたら肥大(V-3 は 6,985,292。V-4 1回目(2026-09-16 17:52)は Interior.ColorIndex=xlNone の10万行で 4,714,370)
 
 fails = []
 
@@ -75,7 +75,8 @@ def vba_modules(path):
 
 
 def body(s):
-    return '\n'.join(l for l in s.split('\n') if not l.startswith('Attribute VB_'))
+    # VBE(cp932)を往復すると「〜」が「～」になる(コメントのみ)。比較ではそろえる
+    return '\n'.join(l for l in s.split('\n') if not l.startswith('Attribute VB_')).replace('\u301c', '\uff5e')
 
 
 def check_vba(target, label):
@@ -86,8 +87,9 @@ def check_vba(target, label):
     others = [k for k in base if k != 'Module_Rakuten_Tool.bas']
     check(all(mods.get(k) == base[k] for k in others) and set(mods) == set(base), f'{label}: 他の {len(others)} モジュールは変更なし')
     v3 = body(base['Module_Rakuten_Tool.bas'])
-    check('ResetIdFormats' in mods.get('Module_Rakuten_Tool.bas', '') and 'Cells(100000, AG_JAN)' not in mods.get('Module_Rakuten_Tool.bas', ''),
-          f'{label}: V-4 の中身(ResetIdFormats あり・10万行の一括書式なし)')
+    m = mods.get('Module_Rakuten_Tool.bas', '')
+    check('ClearDataArea' in m and 'PutIdText' in m and 'Cells(100000, AG_JAN)' not in m and 'A10:L100000' not in m and 'A3:H100000' not in m,
+          f'{label}: V-4 の中身(ClearDataArea・PutIdText あり／10万行への書式操作 "@"・Interior なし)')
     check('Cells(100000, AG_JAN)' in v3, '基準(V-3)には10万行の一括書式がある(比較の前提)')
 
 
@@ -133,7 +135,12 @@ def check_run(run):
     st, sb = check_static(COPY, f'{run}回目')
     zt, _ = zip_sizes(COPY)
     print(f'   サイズ: 基準 {sb:,} → コピー {st:,} bytes / sheet4(集計) {zt.get("xl/worksheets/sheet4.xml", 0):,} / sheet5(要確認) {zt.get("xl/worksheets/sheet5.xml", 0):,}')
-    check(st < SIZE_LIMIT, f'{run}回目: 保存後のファイルが {st:,} bytes(< {SIZE_LIMIT:,}。V-3 は 6,985,292)')
+    check(st < SIZE_LIMIT, f'{run}回目: 保存後のファイルが {st:,} bytes(< {SIZE_LIMIT:,}。V-3 は 6,985,292・V-4 1回目 4,714,370)')
+    import re as _re
+    z = zipfile.ZipFile(COPY)
+    nrow4 = z.read('xl/worksheets/sheet4.xml').count(b'<row ')
+    nrow5 = z.read('xl/worksheets/sheet5.xml').count(b'<row ')
+    check(nrow4 < exp['rows'] + 300 and nrow5 < 1000, f'{run}回目: 保存された行要素 集計 {nrow4:,}・要確認 {nrow5:,}(10万行ではない)')
     check_vba(COPY, f'{run}回目')
     # 2. 取込 = Import
     wi = load_workbook(imp, read_only=True, data_only=True)['在庫']
