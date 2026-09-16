@@ -13,7 +13,7 @@ CSVの形(2026-09-16 確認・Shift_JIS・値は ="..." 形式):
     ・SKUで照合して 在庫数・販売価格・単価 を更新。合計金額は数式でなく値(在庫数×単価)
     ・SKUが無く同じASINが1つだけあれば「SKU変更」として JAN/商品名を引き継ぐ(候補として印を付ける。自動確定しない)
     ・新規SKUはセクション末尾に追加(JANは空欄)
-    ・CSVに無い行は**消さない**。「CSVに無い」列に印。削除は英樹判断
+    ・CSVに無い行は**消さない・0にしない・繰り越さない**。旧数量・旧単価・旧基準日ごと「未掲載_未確認」シートへ分ける(別枠管理)
     ・識別子(JAN・ASIN・SKU)は文字列のまま
 本番の Amazon在庫リスト_import.xlsx は書き換えない(--out はコピー先)。
 """
@@ -159,6 +159,36 @@ def run(mode, self_csv, fba_csv, out_path=None):
                     ws.cell(r, C_COST).fill = YELLOW
                 for col in (C_JAN, C_ASIN, C_SKU):
                     ws.cell(r, col).number_format = '@'
+        # 別枠管理(ChatGPT 2026-09-16): CSVに無い行は本体から外し「未掲載_未確認」へ(旧数量・旧単価・旧基準日を保持)
+        old_stamp = datetime.fromtimestamp(os.path.getmtime(CUR_LIST)).strftime('%Y-%m-%d %H:%M')
+        wu = wb.create_sheet('未掲載_未確認')
+        for c, h in enumerate(['JAN', 'ASIN', '商品番号', 'SKU管理番号', '商品名', '販売価格', '単価(旧)', '在庫数(旧)', '合計金額(旧・参考)',
+                               '旧基準日', '状態', 'セクション', '同じASINの新規SKU(候補・統合しない)'], 1):
+            wu.cell(1, c).value = h
+        drop = []
+        sec_of = {}
+        for name, s0, s1 in sections(ws):
+            for r in range(s0, s1 + 1):
+                sec_of[r] = 'FBA' if 'FBA' in name else '自己発送'
+        new_by_asin = {}
+        for key, rows in src.items():
+            for sku, rec in rows.items():
+                new_by_asin.setdefault(norm(rec['ASIN']), []).append(rec['SKU'])
+        for r in range(2, ws.max_row + 1):
+            if ws.cell(r, C_MISSING).value == 'CSVに無い':
+                vals = [ws.cell(r, c).value for c in range(1, 10)]
+                qty, cost = vals[7], vals[6]
+                cands = [x for x in new_by_asin.get(norm(vals[1]), []) if norm(x) != norm(vals[3])]
+                rowv = vals[:6] + [cost, qty, (qty * cost if isinstance(qty, (int, float)) and isinstance(cost, (int, float)) else None),
+                                   old_stamp, '最新CSVに未掲載・現在在庫未確認', sec_of.get(r, ''), ', '.join(cands)]
+                rr = wu.max_row + 1
+                for c, v in enumerate(rowv, 1):
+                    wu.cell(rr, c).value = v
+                for c in (1, 2, 4):
+                    wu.cell(rr, c).number_format = '@'
+                drop.append(r)
+        for r in sorted(drop, reverse=True):
+            ws.delete_rows(r, 1)
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         wb.save(out_path)
         log = os.path.splitext(out_path)[0] + f'_差分_{datetime.now():%Y%m%d_%H%M%S}.csv'

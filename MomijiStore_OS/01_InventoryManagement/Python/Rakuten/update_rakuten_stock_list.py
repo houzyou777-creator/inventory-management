@@ -20,7 +20,8 @@ RMS CSV の形(2026-09-16 確認):
 やること(2026-08-03 に確立した流れ・引継ぎ/記憶「在庫更新パイプライン」):
     1. 既存の「在庫」シートを (商品管理番号×SKU管理番号) ペアで照合し、在庫数と商品番号を更新する
     2. 新規ペアは追加(商品名・販売価格・単価は空欄 → 単価は黄色。JANは商品番号の先頭13桁だけから補完)
-    3. CSVに無いペアは**消さない**。「CSVに無い」列に印を付けて残し、英樹が削除方針を決める
+    3. CSVに無いペアは**消さない・0にしない・繰り越さない**。旧数量・旧単価・旧基準日を保持したまま
+       シート「未掲載_未確認」へ分け、本体(ツールが読む「在庫」)は最新CSV掲載分だけにする(ChatGPT 2026-09-16 別枠管理)
     4. 識別子(JAN・管理番号・商品番号・SKU)は **文字列のまま**書く(数値化しない)
     5. 差分(在庫数変更・新規・消えた・商品番号変更)をCSVに残す
 
@@ -54,10 +55,16 @@ def norm(v):
     return str(v).strip().upper() if v is not None and str(v).strip() else ''
 
 
-# CSV出力後にRMS側で直った商品番号(英樹の申告)。CSVの値が「旧」と一致するときだけ「新」に置き換え、備考に根拠を残す
-OVERRIDES = {
-    'b0dktchdgk': ('4987176260659-2', '4987176260635-2', '英樹 2026-09-16「現在はRMS上では修正済み」(CSV出力 08:11 の後)。正しい値は 2026-09-11 回答'),
-}
+# CSV出力後にRMS側で直った商品番号(英樹の申告)。CSVの値が「旧」と一致するときだけ「新」に置き換え、備考に根拠を残す。
+# 生CSVは変えない。適用するのは根拠が揃ったものだけ(ChatGPT 2026-09-16: 根拠不足なら自動適用しない)。
+#
+# 取り下げ(2026-09-16): 'b0dktchdgk': '4987176260659-2' → '4987176260635-2'
+#   一度は「英樹 2026-09-16 現在はRMS上では修正済み」を根拠に置換したが、根拠不足として外した。
+#   ・最新CSV(08:11)の親行は …659-2 のまま。CSVで変わったのは SKU(b0dfyjnwjt → b0dktchdgk)だけ
+#   ・旧リストの b0dktchdgk 行は JAN 4987176260659・商品名「ホワイトピーチ&カモミール」。…635 は別商品(ホワイトリリー・管理番号 b0dfyjnwjt)のJAN
+#   ・2026-09-11 の回答「b0dfyjnwjt は 4987176260635-2 が正」は SKU b0dfyjnwjt について。管理番号 b0dktchdgk の商品番号を指すかは未確認
+#   → 確認リスト Q15 で英樹に確認。回答が出るまで派生データはCSVの値(…659-2)のまま
+OVERRIDES = {}
 
 
 def read_rms(paths):
@@ -123,7 +130,7 @@ def diff(parents, skus, cur):
     return out
 
 
-def build(parents, skus, cur, out_path, stamp, drop_missing=False):
+def build(parents, skus, cur, out_path, stamp):
     """既存の在庫シートの構造を保ったまま、コピー先へ新しいリストを書く。"""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     wb = load_workbook(CUR_LIST)                        # 書式・2シート構成をそのまま使う
@@ -175,9 +182,35 @@ def build(parents, skus, cur, out_path, stamp, drop_missing=False):
             ws.cell(r, C_MISSING).fill = PINK
             n_missing += 1
             drop_rows.append(r)
-    if drop_missing:                                    # 英樹が削除を選んだ場合だけ。既定は残す
-        for r in sorted(drop_rows, reverse=True):
-            ws.delete_rows(r, 1)
+    # ChatGPT 2026-09-16: 「最新CSVに未掲載・現在在庫未確認として別枠管理」。
+    #   消す／0にする／旧数量を繰り越す のどれもしない。旧数量・旧単価・旧基準日を保持したまま別シートへ分け、
+    #   本体(在庫シート=ツールが読む Sheets(1))には最新CSV掲載分だけを残す
+    old_stamp = datetime.fromtimestamp(os.path.getmtime(CUR_LIST)).strftime('%Y-%m-%d %H:%M')
+    wu = wb['未掲載_未確認'] if '未掲載_未確認' in wb.sheetnames else wb.create_sheet('未掲載_未確認')
+    if wu.max_row <= 1 and wu.cell(1, 1).value is None:
+        for c, h in enumerate(['JAN', '楽天商品管理番号（ASIN)', '商品番号', 'SKU管理番号', '商品名', '販売価格', '単価(旧)', '在庫数(旧)', '合計金額(旧・参考)',
+                               '旧基準日', '状態', '最新CSV(取得)', 'SKU変更候補(同じ管理番号の新規SKU)'], 1):
+            wu.cell(1, c).value = h
+    # 同じ管理番号で「消えたSKU」と「新規SKU」がある場合は候補として書くだけ(統合はしない)
+    new_by_ctrl = {}
+    for (c, s_) in skus:
+        if (norm(c), norm(s_)) not in pos:
+            new_by_ctrl.setdefault(norm(c), []).append(s_)
+    for r in sorted(drop_rows):
+        vals = [ws.cell(r, c).value for c in range(1, 12)]
+        qty, cost = vals[7], vals[6]
+        rowv = vals[:6] + [cost, qty, (qty * cost if isinstance(qty, (int, float)) and isinstance(cost, (int, float)) else None),
+                           old_stamp, '最新CSVに未掲載・現在在庫未確認', stamp or '', ', '.join(new_by_ctrl.get(norm(vals[1]), []))]
+        rr = wu.max_row + 1
+        for c, v in enumerate(rowv, 1):
+            wu.cell(rr, c).value = v
+        for c in (1, 2, 3, 4):                           # 旧リストで数値になっていた識別子も文字列に揃える
+            wu.cell(rr, c).number_format = '@'
+            v = wu.cell(rr, c).value
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                wu.cell(rr, c).value = str(int(v)) if float(v).is_integer() else str(v)
+    for r in sorted(drop_rows, reverse=True):            # 本体からは外す(別シートに保持済み)
+        ws.delete_rows(r, 1)
     wb.save(out_path)
     return n_upd, n_new, n_missing
 
@@ -187,7 +220,7 @@ def main():
     ap.add_argument('mode', choices=['plan', 'build'])
     ap.add_argument('csv', nargs='+')
     ap.add_argument('--out')
-    ap.add_argument('--drop-missing', action='store_true', help='CSVに無い行を除外した版を作る(英樹が削除を選んだ場合)')
+
     a = ap.parse_args()
     paths = sorted(p for pat in a.csv for p in glob.glob(pat))
     if not paths:
@@ -209,7 +242,7 @@ def main():
     if a.mode == 'build':
         if not a.out or os.path.abspath(a.out) == os.path.abspath(CUR_LIST):
             sys.exit('❌ --out はコピー先を指定してください(本番の Import は書き換えません)')
-        n_upd, n_new, n_missing = build(parents, skus, cur, a.out, stamp, drop_missing=a.drop_missing)
+        n_upd, n_new, n_missing = build(parents, skus, cur, a.out, stamp)
         print(f'✅ 書出: {a.out}  更新 {n_upd} / 新規 {n_new} / CSVに無い(印) {n_missing}')
         log = os.path.splitext(a.out)[0] + f'_差分_{datetime.now():%Y%m%d_%H%M%S}.csv'
         with open(log, 'w', encoding='utf-8-sig', newline='') as f:
