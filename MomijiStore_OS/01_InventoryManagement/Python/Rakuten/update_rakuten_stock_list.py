@@ -54,6 +54,12 @@ def norm(v):
     return str(v).strip().upper() if v is not None and str(v).strip() else ''
 
 
+# CSV出力後にRMS側で直った商品番号(英樹の申告)。CSVの値が「旧」と一致するときだけ「新」に置き換え、備考に根拠を残す
+OVERRIDES = {
+    'b0dktchdgk': ('4987176260659-2', '4987176260635-2', '英樹 2026-09-16「現在はRMS上では修正済み」(CSV出力 08:11 の後)。正しい値は 2026-09-11 回答'),
+}
+
+
 def read_rms(paths):
     """複数パートを読み、親行(管理番号→商品番号)とSKU行(管理番号,SKU→在庫数)を返す。"""
     parents, skus, stamp = {}, OrderedDict(), None
@@ -75,6 +81,8 @@ def read_rms(paths):
                 continue
             ctrl, pn, sku, stock = (r[i[n]].strip() for n in need)
             if sku == '':
+                if ctrl in OVERRIDES and pn == OVERRIDES[ctrl][0]:
+                    pn = OVERRIDES[ctrl][1]           # 申告済みの訂正を反映(根拠は OVERRIDES)
                 parents[ctrl] = pn                     # 親行
             else:
                 skus[(ctrl, sku)] = stock              # SKU行(文字列のまま)
@@ -115,7 +123,7 @@ def diff(parents, skus, cur):
     return out
 
 
-def build(parents, skus, cur, out_path, stamp):
+def build(parents, skus, cur, out_path, stamp, drop_missing=False):
     """既存の在庫シートの構造を保ったまま、コピー先へ新しいリストを書く。"""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     wb = load_workbook(CUR_LIST)                        # 書式・2シート構成をそのまま使う
@@ -160,11 +168,16 @@ def build(parents, skus, cur, out_path, stamp):
     # CSVに無いペア: 消さずに印
     n_missing = 0
     new_keys = {(norm(c), norm(s)) for (c, s) in skus}
+    drop_rows = []
     for k, r in pos.items():
         if k not in new_keys:
             ws.cell(r, C_MISSING).value = 'CSVに無い'
             ws.cell(r, C_MISSING).fill = PINK
             n_missing += 1
+            drop_rows.append(r)
+    if drop_missing:                                    # 英樹が削除を選んだ場合だけ。既定は残す
+        for r in sorted(drop_rows, reverse=True):
+            ws.delete_rows(r, 1)
     wb.save(out_path)
     return n_upd, n_new, n_missing
 
@@ -174,6 +187,7 @@ def main():
     ap.add_argument('mode', choices=['plan', 'build'])
     ap.add_argument('csv', nargs='+')
     ap.add_argument('--out')
+    ap.add_argument('--drop-missing', action='store_true', help='CSVに無い行を除外した版を作る(英樹が削除を選んだ場合)')
     a = ap.parse_args()
     paths = sorted(p for pat in a.csv for p in glob.glob(pat))
     if not paths:
@@ -195,7 +209,7 @@ def main():
     if a.mode == 'build':
         if not a.out or os.path.abspath(a.out) == os.path.abspath(CUR_LIST):
             sys.exit('❌ --out はコピー先を指定してください(本番の Import は書き換えません)')
-        n_upd, n_new, n_missing = build(parents, skus, cur, a.out, stamp)
+        n_upd, n_new, n_missing = build(parents, skus, cur, a.out, stamp, drop_missing=a.drop_missing)
         print(f'✅ 書出: {a.out}  更新 {n_upd} / 新規 {n_new} / CSVに無い(印) {n_missing}')
         log = os.path.splitext(a.out)[0] + f'_差分_{datetime.now():%Y%m%d_%H%M%S}.csv'
         with open(log, 'w', encoding='utf-8-sig', newline='') as f:
