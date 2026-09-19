@@ -52,6 +52,11 @@ Private g_idNumToText As Long      ' Œ³ƒf[ƒ^‚ÅŠù‚É”’l‚¾‚Á‚½¯•Êq‚ğŒ…‚Ì•¶š—ñ‚
 Private g_idNeedCheck As Long      ' ¬”EƒGƒ‰[E“ú•t‚È‚ÇA‚»‚Ì‚Ü‚Ü¯•Êq‚Æ‚µ‚Äˆµ‚¦‚È‚¢‚à‚Ì(—vŠm”F)
 Private g_rowNote As String        ' ‚¢‚Üæ‚è‚ñ‚Å‚¢‚és‚Ì—vŠm”Fƒƒ‚(—ñLu¯•Êqƒ`ƒFƒbƒNv‚Ö‘‚­)
 
+' ©“®Às(V-4): AppleScript ‚Ì run VB macro ‚©‚ç AutoImport / AutoAggregate ‚ğŒÄ‚Ô‚ÆA‰æ–Ê‚Ì MsgBox ‚ğo‚³‚¸‚É
+' Œ‹‰Ê‚ğ•¶š—ñ‚Å•Ô‚·Bƒ{ƒ^ƒ“‚©‚ç‚Ì‘€ì‚Í]—ˆ‚Ç‚¨‚è MsgBox ‚ğo‚·(g_silent = False)
+Private g_silent As Boolean
+Private g_lastMsg As String
+
 ' —ñƒ}ƒbƒsƒ“ƒO—piCSV“Ç‚Éİ’èj
 Private colJAN As Long
 Private colManageNo As Long
@@ -75,14 +80,17 @@ Sub CsvImport()
                Application.PathSeparator & "Šy“VİŒÉƒŠƒXƒg_import.xlsx"
 
     If Dir(filePath) = "" Then
-        MsgBox "ImportƒtƒHƒ‹ƒ_‚ÉŠy“VİŒÉƒŠƒXƒg_import.xlsx‚ğ•Û‘¶‚µ‚Ä‚­‚¾‚³‚¢B", vbExclamation, "“ü—Íƒtƒ@ƒCƒ‹‚È‚µ"
+        Call Notify("ImportƒtƒHƒ‹ƒ_‚ÉŠy“VİŒÉƒŠƒXƒg_import.xlsx‚ğ•Û‘¶‚µ‚Ä‚­‚¾‚³‚¢B", vbExclamation, "“ü—Íƒtƒ@ƒCƒ‹‚È‚µ")
         Exit Sub
     End If
 
     Set wsTake = ThisWorkbook.Sheets("Šy“VCSVæ")
 
     If wsTake.Cells(3, TC_SKU_NO).Value <> "" Or wsTake.Cells(3, TC_MANAGE_NO).Value <> "" Then
-        If MsgBox("Šù‘¶‚Ìæƒf[ƒ^‚ğã‘‚«‚µ‚Ü‚·B‚æ‚ë‚µ‚¢‚Å‚·‚©H", vbYesNo + vbQuestion, "æƒf[ƒ^‚Ìã‘‚«Šm”F") = vbNo Then Exit Sub
+        ' ©“®Às‚Å‚Íã‘‚«Šm”F‚ğo‚³‚È‚¢(ã‘‚«‚Í©“®Às‚Ì‘O’ñBƒoƒbƒNƒAƒbƒv‚ÍŒÄ‚Ño‚µ‘¤‚ªæ‚é)
+        If Not g_silent Then
+            If MsgBox("Šù‘¶‚Ìæƒf[ƒ^‚ğã‘‚«‚µ‚Ü‚·B‚æ‚ë‚µ‚¢‚Å‚·‚©H", vbYesNo + vbQuestion, "æƒf[ƒ^‚Ìã‘‚«Šm”F") = vbNo Then Exit Sub
+        End If
     End If
 
     wsTake.Range("A3:L100000").ClearContents
@@ -101,7 +109,7 @@ Sub CsvImport()
         msg = msg & "E—vŠm”F: ¬”EƒGƒ‰[E“ú•t‚È‚Ç‚Ì¯•Êq " & g_idNeedCheck & " Œ ¨ L—ñu¯•Êqƒ`ƒFƒbƒNv‚É ƒZƒ‹EŒ³’lE——R ‚ğ‹L˜^B" & Chr(10) & _
               "  ‚±‚ê‚ç‚ÍŒ´‰¿ƒ}ƒXƒ^[‚Æ‚Ì©“®Æ‡‚Ég‚¢‚Ü‚¹‚ñBŒ³ƒf[ƒ^‚ğŠm”F‚µ‚Ä‚­‚¾‚³‚¢" & Chr(10)
     End If
-    MsgBox msg & "‘±‚¯‚ÄuWŒvÀsvƒ{ƒ^ƒ“‚ğ‰Ÿ‚µ‚Ä‚­‚¾‚³‚¢B", vbInformation, "“ÇŠ®—¹"
+    Call Notify(msg & "‘±‚¯‚ÄuWŒvÀsvƒ{ƒ^ƒ“‚ğ‰Ÿ‚µ‚Ä‚­‚¾‚³‚¢B", vbInformation, "“ÇŠ®—¹")
 End Sub
 
 ' ---- CSVŒ`®‚©‚ç“ÇiMac‘Î‰: Open For Input g—pj----
@@ -134,7 +142,7 @@ Private Sub ImportFromCSV(filePath As String, wsTake As Worksheet)
     On Error GoTo 0
 
     If Len(content) = 0 Then
-        MsgBox "CSV‚Ì“à—e‚ğ“Ç‚İæ‚ê‚Ü‚¹‚ñ‚Å‚µ‚½B", vbExclamation
+        Call Notify("CSV‚Ì“à—e‚ğ“Ç‚İæ‚ê‚Ü‚¹‚ñ‚Å‚µ‚½B", vbExclamation)
         Exit Sub
     End If
 
@@ -148,7 +156,7 @@ Private Sub ImportFromCSV(filePath As String, wsTake As Worksheet)
     End If
 
     If UBound(lines) < 1 Then
-        MsgBox "CSV‚Ìƒf[ƒ^‚ª1sˆÈ‰º‚Å‚·B", vbExclamation
+        Call Notify("CSV‚Ìƒf[ƒ^‚ª1sˆÈ‰º‚Å‚·B", vbExclamation)
         Exit Sub
     End If
 
@@ -324,11 +332,11 @@ Private Function MapColumns(headers() As String) As Boolean
     Next i
 
     If colSkuNo = 0 And colManageNo = 0 Then
-        MsgBox "CSV‚ÉuSKUŠÇ—”Ô†v‚Ü‚½‚ÍuŠy“V¤•iŠÇ—”Ô†v—ñ‚ªŒ©‚Â‚©‚è‚Ü‚¹‚ñB" & Chr(10) & "CSVƒtƒ@ƒCƒ‹‚ğŠm”F‚µ‚Ä‚­‚¾‚³‚¢B", vbExclamation, "—ñ–¼ƒGƒ‰["
+        Call Notify("CSV‚ÉuSKUŠÇ—”Ô†v‚Ü‚½‚ÍuŠy“V¤•iŠÇ—”Ô†v—ñ‚ªŒ©‚Â‚©‚è‚Ü‚¹‚ñB" & Chr(10) & "CSVƒtƒ@ƒCƒ‹‚ğŠm”F‚µ‚Ä‚­‚¾‚³‚¢B", vbExclamation, "—ñ–¼ƒGƒ‰[")
         MapColumns = False: Exit Function
     End If
     If colStock = 0 Then
-        MsgBox "CSV‚ÉuİŒÉ”v—ñ‚ªŒ©‚Â‚©‚è‚Ü‚¹‚ñB", vbExclamation, "—ñ–¼ƒGƒ‰["
+        Call Notify("CSV‚ÉuİŒÉ”v—ñ‚ªŒ©‚Â‚©‚è‚Ü‚¹‚ñB", vbExclamation, "—ñ–¼ƒGƒ‰[")
         MapColumns = False: Exit Function
     End If
     MapColumns = True
@@ -372,7 +380,7 @@ Sub RunAggregation()
     Set wsCheck = ThisWorkbook.Sheets("—vŠm”Fˆê——")
 
     If wsTake.Cells(3, TC_SKU_NO).Value = "" And wsTake.Cells(3, TC_MANAGE_NO).Value = "" Then
-        MsgBox "æƒf[ƒ^‚ª‚ ‚è‚Ü‚¹‚ñBæ‚ÉuŠy“VCSV“Çvƒ{ƒ^ƒ“‚ğ‰Ÿ‚µ‚Ä‚­‚¾‚³‚¢B", vbExclamation, "ƒf[ƒ^‚È‚µ"
+        Call Notify("æƒf[ƒ^‚ª‚ ‚è‚Ü‚¹‚ñBæ‚ÉuŠy“VCSV“Çvƒ{ƒ^ƒ“‚ğ‰Ÿ‚µ‚Ä‚­‚¾‚³‚¢B", vbExclamation, "ƒf[ƒ^‚È‚µ")
         Exit Sub
     End If
 
@@ -581,12 +589,12 @@ NextRow:
     Application.ScreenUpdating = True
     wsAgg.Activate
 
-    MsgBox "WŒvŠ®—¹B" & Chr(10) & Chr(10) & _
+    Call Notify("WŒvŠ®—¹B" & Chr(10) & Chr(10) & _
            "¡ ‘İŒÉ‹àŠz    : " & Format(totalAmount, "#,##0") & " ‰~" & Chr(10) & _
            "¡ ‘İŒÉ”—Ê    : " & Format(totalStock, "#,##0") & " ŒÂ" & Chr(10) & _
            "¡ Œ´‰¿–¢“o˜^    : " & skuUnregistered & " SKU" & Chr(10) & Chr(10) & _
            IIf(skuUnregistered > 0, "u—vŠm”Fˆê——vƒV[ƒg‚ğŠm”F‚µ‚Ä‚­‚¾‚³‚¢B", "—vŠm”F–€‚Í‚ ‚è‚Ü‚¹‚ñB"), _
-           vbInformation, "WŒvŠ®—¹"
+           vbInformation, "WŒvŠ®—¹")
 End Sub
 
 ' ============================================================
@@ -822,6 +830,48 @@ Private Function IdText(v As Variant, label As String) As String
     End If
 End Function
 
+
+' ============================================================
+' ©“®Às(V-4): ‰æ–Ê‚ğo‚³‚¸‚É“ÇEWŒv‚ğs‚¢AŒ‹‰Ê‚ğ•¶š—ñ‚Å•Ô‚·
+'   AppleScript:  run VB macro "Šy“VİŒÉ‹àŠzWŒvƒc[ƒ‹_v1.0.xlsm!AutoImport"  (–ß‚è’l "OK: ..." / "ERROR: ...")
+'   Eƒ{ƒ^ƒ“‘€ì(CsvImport / RunAggregation)‚Ìˆ—‚Í‚»‚Ì‚Ü‚ÜBMsgBox ‚Ì‘ã‚í‚è‚É Notify ‚ª•¶š—ñ‚ÖÏ‚Ş
+'   EImport ƒtƒ@ƒCƒ‹‚ÌêŠEã‘‚«‚Ì¥”ñEƒoƒbƒNƒAƒbƒvE•Û‘¶‚ÍŒÄ‚Ño‚µ‘¤(excel_bridge)‚ªŠÇ—‚·‚é
+' ============================================================
+Private Sub Notify(msg As String, Optional style As VbMsgBoxStyle = vbInformation, Optional title As String = "")
+    If g_silent Then
+        If g_lastMsg <> "" Then g_lastMsg = g_lastMsg & " | "
+        g_lastMsg = g_lastMsg & IIf(title <> "", "[" & title & "] ", "") & Replace(Replace(msg, Chr(13), " "), Chr(10), " ")
+    Else
+        MsgBox msg, style, title
+    End If
+End Sub
+
+Public Function AutoImport() As String
+    On Error GoTo Fail
+    g_silent = True: g_lastMsg = ""
+    Call CsvImport
+    AutoImport = "OK: " & g_lastMsg
+    g_silent = False
+    Exit Function
+Fail:
+    AutoImport = "ERROR: " & Err.Number & " " & Err.Description & " | " & g_lastMsg
+    g_silent = False
+    Application.ScreenUpdating = True
+End Function
+
+Public Function AutoAggregate() As String
+    On Error GoTo Fail
+    g_silent = True: g_lastMsg = ""
+    Call RunAggregation
+    AutoAggregate = "OK: " & g_lastMsg
+    g_silent = False
+    Exit Function
+Fail:
+    AutoAggregate = "ERROR: " & Err.Number & " " & Err.Description & " | " & g_lastMsg
+    g_silent = False
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+End Function
 
 ' ============================================================
 ' ‘®“K—p

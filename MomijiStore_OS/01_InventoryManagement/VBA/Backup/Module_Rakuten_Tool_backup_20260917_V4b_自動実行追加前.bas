@@ -52,11 +52,6 @@ Private g_idNumToText As Long      ' 元データで既に数値だった識別�
 Private g_idNeedCheck As Long      ' 小数・エラー・日付など、そのまま識別子として扱えないもの(要確認)
 Private g_rowNote As String        ' いま取り込んでいる行の要確認メモ(列L「識別子チェック」へ書く)
 
-' 自動実行(V-4): AppleScript の run VB macro から AutoImport / AutoAggregate を呼ぶと、画面の MsgBox を出さずに
-' 結果を文字列で返す。ボタンからの操作は従来どおり MsgBox を出す(g_silent = False)
-Private g_silent As Boolean
-Private g_lastMsg As String
-
 ' 列マッピング用（CSV読込時に設定）
 Private colJAN As Long
 Private colManageNo As Long
@@ -80,17 +75,14 @@ Sub CsvImport()
                Application.PathSeparator & "楽天在庫リスト_import.xlsx"
 
     If Dir(filePath) = "" Then
-        Call Notify("Importフォルダに楽天在庫リスト_import.xlsxを保存してください。", vbExclamation, "入力ファイルなし")
+        MsgBox "Importフォルダに楽天在庫リスト_import.xlsxを保存してください。", vbExclamation, "入力ファイルなし"
         Exit Sub
     End If
 
     Set wsTake = ThisWorkbook.Sheets("楽天CSV取込")
 
     If wsTake.Cells(3, TC_SKU_NO).Value <> "" Or wsTake.Cells(3, TC_MANAGE_NO).Value <> "" Then
-        ' 自動実行では上書き確認を出さない(上書きは自動実行の前提。バックアップは呼び出し側が取る)
-        If Not g_silent Then
-            If MsgBox("既存の取込データを上書きします。よろしいですか？", vbYesNo + vbQuestion, "取込データの上書き確認") = vbNo Then Exit Sub
-        End If
+        If MsgBox("既存の取込データを上書きします。よろしいですか？", vbYesNo + vbQuestion, "取込データの上書き確認") = vbNo Then Exit Sub
     End If
 
     wsTake.Range("A3:L100000").ClearContents
@@ -109,7 +101,7 @@ Sub CsvImport()
         msg = msg & "・要確認: 小数・エラー・日付などの識別子 " & g_idNeedCheck & " 件 → L列「識別子チェック」に セル・元値・理由 を記録。" & Chr(10) & _
               "  これらは原価マスターとの自動照合に使いません。元データを確認してください" & Chr(10)
     End If
-    Call Notify(msg & "続けて「集計実行」ボタンを押してください。", vbInformation, "読込完了")
+    MsgBox msg & "続けて「集計実行」ボタンを押してください。", vbInformation, "読込完了"
 End Sub
 
 ' ---- CSV形式から読込（Mac対応: Open For Input 使用）----
@@ -142,7 +134,7 @@ Private Sub ImportFromCSV(filePath As String, wsTake As Worksheet)
     On Error GoTo 0
 
     If Len(content) = 0 Then
-        Call Notify("CSVの内容を読み取れませんでした。", vbExclamation)
+        MsgBox "CSVの内容を読み取れませんでした。", vbExclamation
         Exit Sub
     End If
 
@@ -156,7 +148,7 @@ Private Sub ImportFromCSV(filePath As String, wsTake As Worksheet)
     End If
 
     If UBound(lines) < 1 Then
-        Call Notify("CSVのデータが1行以下です。", vbExclamation)
+        MsgBox "CSVのデータが1行以下です。", vbExclamation
         Exit Sub
     End If
 
@@ -332,11 +324,11 @@ Private Function MapColumns(headers() As String) As Boolean
     Next i
 
     If colSkuNo = 0 And colManageNo = 0 Then
-        Call Notify("CSVに「SKU管理番号」または「楽天商品管理番号」列が見つかりません。" & Chr(10) & "CSVファイルを確認してください。", vbExclamation, "列名エラー")
+        MsgBox "CSVに「SKU管理番号」または「楽天商品管理番号」列が見つかりません。" & Chr(10) & "CSVファイルを確認してください。", vbExclamation, "列名エラー"
         MapColumns = False: Exit Function
     End If
     If colStock = 0 Then
-        Call Notify("CSVに「在庫数」列が見つかりません。", vbExclamation, "列名エラー")
+        MsgBox "CSVに「在庫数」列が見つかりません。", vbExclamation, "列名エラー"
         MapColumns = False: Exit Function
     End If
     MapColumns = True
@@ -380,7 +372,7 @@ Sub RunAggregation()
     Set wsCheck = ThisWorkbook.Sheets("要確認一覧")
 
     If wsTake.Cells(3, TC_SKU_NO).Value = "" And wsTake.Cells(3, TC_MANAGE_NO).Value = "" Then
-        Call Notify("取込データがありません。先に「楽天CSV読込」ボタンを押してください。", vbExclamation, "データなし")
+        MsgBox "取込データがありません。先に「楽天CSV読込」ボタンを押してください。", vbExclamation, "データなし"
         Exit Sub
     End If
 
@@ -391,7 +383,7 @@ Sub RunAggregation()
     ' 10万行への一括操作(V-3 の "@"、以前からの Interior.ColorIndex=xlNone)は Excel が書式付きの
     ' 空セルを保存し、集計後のファイルが 300KB→7MB(V-3)・4.7MB(V-4 1回目)になった。
     ' 転記先の識別子は書き込むセルだけ代入の直前に "@" にする(PutIdText)。
-    ' 見出し行(集計 1～9行・要確認 1～2行)は触らない。金額列の #,##0 と行の色は FormatAggSheet が付け直す
+    ' 見出し行(集計 1〜9行・要確認 1〜2行)は触らない。金額列の #,##0 と行の色は FormatAggSheet が付け直す
     Call ClearDataArea(wsAgg, 10, 12)
     Call ClearDataArea(wsCheck, 3, 8)
 
@@ -589,12 +581,12 @@ NextRow:
     Application.ScreenUpdating = True
     wsAgg.Activate
 
-    Call Notify("集計完了。" & Chr(10) & Chr(10) & _
+    MsgBox "集計完了。" & Chr(10) & Chr(10) & _
            "■ 総在庫金額    : " & Format(totalAmount, "#,##0") & " 円" & Chr(10) & _
            "■ 総在庫数量    : " & Format(totalStock, "#,##0") & " 個" & Chr(10) & _
            "■ 原価未登録    : " & skuUnregistered & " SKU" & Chr(10) & Chr(10) & _
            IIf(skuUnregistered > 0, "「要確認一覧」シートを確認してください。", "要確認事項はありません。"), _
-           vbInformation, "集計完了")
+           vbInformation, "集計完了"
 End Sub
 
 ' ============================================================
@@ -830,48 +822,6 @@ Private Function IdText(v As Variant, label As String) As String
     End If
 End Function
 
-
-' ============================================================
-' 自動実行(V-4): 画面を出さずに読込・集計を行い、結果を文字列で返す
-'   AppleScript:  run VB macro "楽天在庫金額集計ツール_v1.0.xlsm!AutoImport"  (戻り値 "OK: ..." / "ERROR: ...")
-'   ・ボタン操作(CsvImport / RunAggregation)の処理はそのまま。MsgBox の代わりに Notify が文字列へ積む
-'   ・Import ファイルの場所・上書きの是非・バックアップ・保存は呼び出し側(excel_bridge)が管理する
-' ============================================================
-Private Sub Notify(msg As String, Optional style As VbMsgBoxStyle = vbInformation, Optional title As String = "")
-    If g_silent Then
-        If g_lastMsg <> "" Then g_lastMsg = g_lastMsg & " | "
-        g_lastMsg = g_lastMsg & IIf(title <> "", "[" & title & "] ", "") & Replace(Replace(msg, Chr(13), " "), Chr(10), " ")
-    Else
-        MsgBox msg, style, title
-    End If
-End Sub
-
-Public Function AutoImport() As String
-    On Error GoTo Fail
-    g_silent = True: g_lastMsg = ""
-    Call CsvImport
-    AutoImport = "OK: " & g_lastMsg
-    g_silent = False
-    Exit Function
-Fail:
-    AutoImport = "ERROR: " & Err.Number & " " & Err.Description & " | " & g_lastMsg
-    g_silent = False
-    Application.ScreenUpdating = True
-End Function
-
-Public Function AutoAggregate() As String
-    On Error GoTo Fail
-    g_silent = True: g_lastMsg = ""
-    Call RunAggregation
-    AutoAggregate = "OK: " & g_lastMsg
-    g_silent = False
-    Exit Function
-Fail:
-    AutoAggregate = "ERROR: " & Err.Number & " " & Err.Description & " | " & g_lastMsg
-    g_silent = False
-    Application.Calculation = xlCalculationAutomatic
-    Application.ScreenUpdating = True
-End Function
 
 ' ============================================================
 ' 書式適用

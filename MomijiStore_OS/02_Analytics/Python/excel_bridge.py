@@ -146,3 +146,20 @@ def open_workbooks():
     if not s or s == 'missing value':
         return []
     return [x.strip() for x in s.split(',')]
+
+
+def run_macros(path, macros, timeout=900):
+    """対象ブックを開き、VBA の Public Function を順に実行し(戻り値が "OK:" で始まらなければ保存せず閉じる)、
+    保存して閉じる。戻り値は各マクロの結果を " || " でつないだ文字列。
+
+    在庫ツール V-4 の AutoImport / AutoAggregate(MsgBox を出さず結果を返す)を AppleScript から呼ぶために追加(2026-09-17)。
+    マクロ側に画面(MsgBox/InputBox)が残っていると AppleScript が止まるので、呼ぶのは「自動実行用」の関数だけ。
+    安全装置(フルパス特定・自分が開いたブックだけ保存・閉じる・既に開かれていれば停止)は build_script のまま。
+    """
+    lines = []
+    for i, m in enumerate(macros, 1):
+        lines.append(f'set r{i} to (run VB macro ("\'" & wbName & "\'!" & {_lit(m)})) as text')
+        lines.append(f'if r{i} does not start with "OK:" then error {_lit(m + ": ")} & r{i}')
+    body = '\n        '.join(lines)
+    result = ' & " || " & '.join(f'r{i}' for i in range(1, len(macros) + 1))
+    return run_on_workbook(path, body, result_expr=result, timeout=timeout)
