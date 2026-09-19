@@ -36,7 +36,7 @@ def _lit(s):
     return '"' + str(s).replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
-def build_script(path, body, result_expr='"ok"', timeout=600):
+def build_script(path, body, result_expr='"ok"', timeout=600, close_on_error=True):
     """安全装置つきの AppleScript を組み立てる。body は tell ブロック内に挿入される。
 
     Excel は `full name of every workbook`(リスト)は返すが、`repeat with w in workbooks` の
@@ -93,10 +93,14 @@ tell application "Microsoft Excel"
         if not (targetPaths contains ((full name of wb) as string)) then error "target changed before save"
         save wb
         close wb saving no
-    on error errMsg
-        try
-            if targetPaths contains ((full name of wb) as string) then close wb saving no
-        end try
+    on error errMsg number errNum
+        -- close_on_error=False のときは閉じない(タイムアウト時は Excel がまだ実行中かもしれない。呼び出し側が状態を確認する)
+        if {str(close_on_error).lower()} then
+            try
+                if targetPaths contains ((full name of wb) as string) then close wb saving no
+            end try
+        end if
+        if errNum is -1712 then return "TIMEOUT:" & errMsg
         return "ERROR:" & errMsg
     end try
     if (count of workbooks) is not preCount then return "WARN:workbook-count-changed:" & (count of workbooks)
@@ -106,21 +110,31 @@ return {result_expr}
 '''
 
 
-def run_on_workbook(path, body, result_expr='"ok"', timeout=600):
-    """対象ブックを開き body を実行し、保存して閉じる。ABORT/ERROR は例外にする。"""
+class ExcelTimeout(RuntimeError):
+    """AppleScript の待ち時間を超えた。**処理が止まったとは限らない**(Excel がまだ実行中・ダイアログ表示中の可能性)。
+    呼び出し側は excel_state() で状態を確認するまで、再実行も手動操作への切替もしない(ChatGPT 2026-09-19 条件1)。"""
+
+
+def run_on_workbook(path, body, result_expr='"ok"', timeout=600, close_on_error=True):
+    """対象ブックを開き body を実行し、保存して閉じる。ABORT/ERROR は例外にする。
+    close_on_error=False: エラー時に対象ブックを閉じない(状態確認を呼び出し側に委ねる)。"""
     if not os.path.exists(path):
         raise FileNotFoundError(path)
-    script = build_script(path, body, result_expr, timeout)
+    script = build_script(path, body, result_expr, timeout, close_on_error)
     with tempfile.NamedTemporaryFile('w', suffix='.applescript', delete=False, encoding='utf-8') as f:
         f.write(script)
         sp = f.name
     try:
-        r = subprocess.run(['osascript', sp], capture_output=True, text=True, timeout=timeout + 60)
+        r = subprocess.run(['osascript', sp], capture_output=True, text=True, timeout=timeout + 120)
+    except subprocess.TimeoutExpired:
+        raise ExcelTimeout(f'osascript が {timeout + 120} 秒で返らなかった(Excel 側の状態は未確認)')
     finally:
         os.unlink(sp)
     if r.returncode != 0:
         raise RuntimeError(f'AppleScript failed: {r.stderr.strip()}')
     out = r.stdout.strip()
+    if out.startswith('TIMEOUT:'):
+        raise ExcelTimeout(out[8:])
     if out.startswith('ABORT:already-open:'):
         raise ExcelAbort(f'対象ブックが既に開かれています。閉じてから再実行してください: {out.split(":", 2)[2]}')
     if out.startswith('ABORT:same-name-open:'):
@@ -162,4 +176,60 @@ def run_macros(path, macros, timeout=900):
         lines.append(f'if r{i} does not start with "OK:" then error {_lit(m + ": ")} & r{i}')
     body = '\n        '.join(lines)
     result = ' & " || " & '.join(f'r{i}' for i in range(1, len(macros) + 1))
-    return run_on_workbook(path, body, result_expr=result, timeout=timeout)
+    # エラー・タイムアウト時に対象ブックを勝手に閉じない(閉じるのは excel_state で確認した後に close_without_saving で)
+    return run_on_workbook(path, body, result_expr=result, timeout=timeout, close_on_error=False)
+
+
+def excel_state(path, wait=20):
+    """Excel 側の実行状態(読み取り専用)。タイムアウト後の確認に使う。
+    戻り値: dict(responding, open_workbooks, target_open, dialogs, file_mtime, file_size)
+    responding=False は「Excel が Apple Event に応答しない」= マクロ実行中かダイアログ表示中の可能性。"""
+    import datetime
+    st = dict(responding=None, open_workbooks=[], target_open=None, dialogs=[], file_mtime=None, file_size=None)
+    if os.path.exists(path):
+        st['file_mtime'] = datetime.datetime.fromtimestamp(os.path.getmtime(path)).strftime('%Y-%m-%d %H:%M:%S')
+        st['file_size'] = os.path.getsize(path)
+    try:
+        r = subprocess.run(['osascript', '-e', f'with timeout of {int(wait)} seconds',
+                            '-e', 'tell application "Microsoft Excel" to if running then get full name of every workbook',
+                            '-e', 'end timeout'], capture_output=True, text=True, timeout=wait + 15)
+        st['responding'] = r.returncode == 0
+        v = r.stdout.strip()
+        st['open_workbooks'] = [] if (not v or v == 'missing value') else [x.strip() for x in v.split(',')]
+        variants = {os.path.abspath(path), os.path.realpath(path)}
+        st['target_open'] = any(w in variants for w in st['open_workbooks'])
+    except subprocess.TimeoutExpired:
+        st['responding'] = False
+    try:   # ダイアログ(モーダルウィンドウ)が出ていないか。System Events が使えなければ空
+        r = subprocess.run(['osascript', '-e', f'with timeout of {int(wait)} seconds',
+                            '-e', 'tell application "System Events" to tell process "Microsoft Excel" to get name of every window',
+                            '-e', 'end timeout'], capture_output=True, text=True, timeout=wait + 15)
+        if r.returncode == 0:
+            st['dialogs'] = [x.strip() for x in r.stdout.strip().split(',') if x.strip()]
+    except subprocess.TimeoutExpired:
+        pass
+    return st
+
+
+def close_without_saving(path, timeout=60):
+    """自分が開いたままになっている対象ブック(フルパス一致)だけを保存せずに閉じる。開いていなければ何もしない。"""
+    body = f'''
+set targetPaths to {{{_lit(os.path.abspath(path))}, {_lit(os.path.realpath(path))}}}
+with timeout of {int(timeout)} seconds
+tell application "Microsoft Excel"
+    set fns to full name of every workbook
+    set nms to name of every workbook
+    repeat with i from 1 to (count of nms)
+        if targetPaths contains ((item i of fns) as string) then
+            close workbook ((item i of nms) as string) saving no
+            return "closed"
+        end if
+    end repeat
+end tell
+end timeout
+return "not-open"
+'''
+    r = subprocess.run(['osascript', '-e', body], capture_output=True, text=True, timeout=timeout + 30)
+    if r.returncode != 0:
+        raise RuntimeError(f'close failed: {r.stderr.strip()}')
+    return r.stdout.strip()

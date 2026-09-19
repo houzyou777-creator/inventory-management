@@ -5,6 +5,7 @@
     python3 verify_v4_copy.py 1      1回目(Import = 8/3資料 864行)の後
     python3 verify_v4_copy.py 2      2回目(Import = 9/16資料 814行・行数が減る)の後
     python3 verify_v4_copy.py prod   本番へ V-4 を入れて保存しただけの状態(データ不変)を確認する
+    python3 verify_v4_copy.py prodrun 本番で 9/16資料 を自動実行した後(コピー2回目と同じ期待値・本番の Import と照合)
 
 確認すること(ChatGPT 2026-09-16 Q17 の条件):
     1. 保存・閉じる・再読込後のファイルサイズ(前後比。V-3 は 307KB → 6,985KB になった)
@@ -230,6 +231,9 @@ if __name__ == '__main__':
     arg = sys.argv[1] if len(sys.argv) > 1 else '1'
     if arg == 'prod':
         check_prod()
+    elif arg == 'prodrun':
+        COPY, IMPORT2 = PROD, SD + '/Import/楽天在庫リスト_import.xlsx'     # 本番の実行後を、コピー2回目と同じ条件で見る
+        check_run(2)
     else:
         check_run(int(arg))
     print('\n' + ('PASS' if not fails else f'FAIL ({len(fails)}件)'))
