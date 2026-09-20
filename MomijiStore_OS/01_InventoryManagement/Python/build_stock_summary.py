@@ -19,6 +19,11 @@
     ・Amazon 在庫基準日時 … 既定「未取得」(取得日時を基準日時として扱わない)。分かれば --amazon-basis
 在庫数の扱い(条件②): 0 = 在庫数0という値／空欄 = 未入力／非数値 = データ異常。空欄・非数値の行は金額・数量に入れず件数と行を表示。
 単価の扱い: 空欄 = 未入力(金額に入れない・件数表示)／0 = 単価0という値(金額0で計上・件数表示)／非数値 = データ異常(件数表示)。
+共有在庫の判定(ChatGPT 2026-09-21): 通常の「商品番号の末尾 -a」＋**承認済み共有在庫の例外一覧**(`SourceData/共有在庫_例外一覧.csv`)。
+    ・元データ(商品番号)は書き換えない。例外一覧に「誰が・いつ・なぜ」共有と判定したかを残す
+    ・除外されるのは 区分=共有 かつ 承認日 が入っている行だけ(候補・未承認・別在庫・無効化済みは除外しない)
+    ・キーは 楽天商品管理番号×SKU管理番号(照合ルールと同じ)。列: 楽天商品管理番号, SKU管理番号, 商品番号(判定時), 区分(共有/別在庫/不明),
+      判定者, 判定日, 根拠, 承認者, 承認日, 無効化日, 無効化理由
 「在庫金額」はリストの単価(G列)だけで計算する(在庫ツールの原価マスター参照とは別物。ツール値は参考として併記)。
 共有在庫込み・原価未登録ありの集計なので、シートに「全社の確定在庫数量・確定評価額ではない」と明記する。
 """
@@ -38,6 +43,8 @@ PROD = dict(rakuten=SD + '/Import/楽天在庫リスト_import.xlsx', amazon=SD 
 COPY_DIR = SD + '/Summary_test'
 COPY = dict(rakuten=COPY_DIR + '/Import/楽天在庫リスト_import.xlsx', amazon=COPY_DIR + '/Amazon在庫リスト_import.xlsx',
             summary=COPY_DIR + '/全体在庫サマリー_v1.0.xlsx', tool=PROD['tool'])       # ツールは読むだけなので本番を参照
+EXCEPTIONS = SD + '/共有在庫_例外一覧.csv'      # 承認済み共有在庫の例外(元データは書き換えない)
+EXC_HEAD = ['楽天商品管理番号', 'SKU管理番号', '商品番号(判定時)', '区分', '判定者', '判定日', '根拠', '承認者', '承認日', '無効化日', '無効化理由']
 COLS = 11   # JAN, 管理番号, 商品番号, SKU, 商品名, 販売価格, 単価, 在庫数, 合計金額, JAN検証結果, AmazonのJAN
 C_PRICE, C_STOCK = 6, 7   # 0始まり: 単価, 在庫数
 
@@ -72,12 +79,44 @@ def classify_cell(v):
     return 'bad'
 
 
-def rakuten_rows(path):
+def norm(v):
+    return str(v).strip().upper() if v not in (None, '') else ''
+
+
+def load_exceptions(path=EXCEPTIONS):
+    """承認済みの共有在庫例外を {(管理番号, SKU): 行dict} で返す。ファイルが無ければ空(それが正しい状態)。
+    有効 = 区分が「共有」 かつ 承認日あり かつ 無効化日なし。それ以外(候補・別在庫・不明・無効化)は除外に使わない。"""
+    import csv
+    approved, others = {}, []
+    if not os.path.exists(path):
+        return approved, others
+    with open(path, encoding='utf-8-sig', newline='') as f:
+        for d in csv.DictReader(f):
+            if not d.get('楽天商品管理番号'):
+                continue
+            key = (norm(d['楽天商品管理番号']), norm(d.get('SKU管理番号')))
+            ok = (str(d.get('区分') or '').strip() == '共有' and str(d.get('承認日') or '').strip() != ''
+                  and str(d.get('無効化日') or '').strip() == '')
+            (approved.__setitem__(key, d) if ok else others.append(d))
+    return approved, others
+
+
+def rakuten_rows(path, exceptions=None):
+    """(全行, 単独在庫行, 通常-a除外数, 例外で除外した行) を返す。"""
     ws = load_workbook(path, read_only=True, data_only=True)['在庫']
     rows = [tuple(r[:COLS]) + (None,) * (COLS - len(r[:COLS])) for r in ws.iter_rows(min_row=2, values_only=True)
             if r and (r[1] not in (None, '') or r[3] not in (None, ''))]
-    solo = [r for r in rows if not (isinstance(r[2], str) and r[2].strip().lower().endswith('-a'))]
-    return rows, solo
+    exceptions = exceptions or {}
+    solo, by_exc, n_a = [], [], 0
+    for r in rows:
+        if isinstance(r[2], str) and r[2].strip().lower().endswith('-a'):
+            n_a += 1
+            continue
+        if (norm(r[1]), norm(r[3])) in exceptions:
+            by_exc.append(r)
+            continue
+        solo.append(r)
+    return rows, solo, n_a, by_exc
 
 
 def stats(rows, label, id_cols=(1, 3)):
@@ -158,12 +197,12 @@ def write_solo_sheet(wb, solo):
     return last
 
 
-def update_summary(path, rk, fba, own, tool, n_shared, stamps):
+def update_summary(path, rk, fba, own, tool, n_shared, stamps, n_exc=0):
     wb = load_workbook(path)
     ws = wb['全体サマリー']
     ws['A2'].value = (f'集計日時: {datetime.now():%Y/%m/%d %H:%M}　（データ元: 楽天在庫リスト_import.xlsx「楽天単独在庫」シート / Amazon在庫リスト_import.xlsx）')
     for row, (label, st, note) in zip((5, 6, 7), (
-            ('楽天 単独在庫', rk, f'Amazon共有(-a){n_shared}行は除外済み。在庫金額はリストの単価×在庫数。単価0(在庫>0) {rk["price_zero"]}行'
+            ('楽天 単独在庫', rk, f'Amazon共有(-a {n_shared - n_exc}行＋承認済み例外 {n_exc}行)は除外済み。在庫金額はリストの単価×在庫数。単価0(在庫>0) {rk["price_zero"]}行'
                                   + (f'／在庫数 空欄{rk["stock_blank"]}・非数値{rk["stock_bad"]} は除外' if rk['stock_blank'] or rk['stock_bad'] else '')),
             ('Amazon FBA', fba, (f'在庫数 空欄{fba["stock_blank"]}・非数値{fba["stock_bad"]} は除外' if fba['stock_blank'] or fba['stock_bad'] else None)),
             ('Amazon 自己発送', own, '楽天との共有在庫の正式値を含む' + (f'／在庫数 空欄{own["stock_blank"]}・非数値{own["stock_bad"]} は除外' if own['stock_blank'] or own['stock_bad'] else '')))):
@@ -196,10 +235,13 @@ def update_summary(path, rk, fba, own, tool, n_shared, stamps):
     wb.save(path)
 
 
-def report(rows, solo, rk, fba, own, tool, stamps):
-    n_shared = len(rows) - len(solo)
+def report(rows, solo, rk, fba, own, tool, stamps, n_a=0, by_exc=(), others=()):
     tot = dict(sku=rk['sku'] + fba['sku'] + own['sku'], qty=rk['qty'] + fba['qty'] + own['qty'], amt=rk['amt'] + fba['amt'] + own['amt'])
-    print(f'■ 楽天 在庫 {len(rows)} 行 → 単独在庫 {len(solo)} 行(共有 -a {n_shared} 行を除外)')
+    print(f'■ 楽天 在庫 {len(rows)} 行 → 単独在庫 {len(solo)} 行(共有 -a {n_a} 行 ＋ 承認済み例外 {len(by_exc)} 行を除外)')
+    for r in by_exc:
+        print(f'      例外除外: {r[1]} / {r[3]} / {r[2]} / {str(r[4])[:24]} / 在庫 {r[7]} / 単価 {r[6]}')
+    if others:
+        print(f'   例外一覧の未承認・別在庫・無効化行 {len(others)} 件は除外に使っていない: ' + ', '.join(f"{d['楽天商品管理番号']}({d.get('区分')}/{'承認あり' if d.get('承認日') else '未承認'})" for d in others))
     for label, st in (('楽天 単独在庫', rk), ('Amazon FBA', fba), ('Amazon 自己発送', own)):
         print(f'   {label}: SKU {st["sku"]} / 在庫数 {st["qty"]:,} / 在庫金額 {st["amt"]:,} / 単価未入力 {st["price_blank"]} / 単価0 {st["price_zero"]} / 単価非数値 {st["price_bad"]}'
               f' / 在庫数 空欄 {st["stock_blank"]} / 在庫数 非数値 {st["stock_bad"]}')
@@ -221,6 +263,7 @@ def main():
     ap.add_argument('--rakuten-run', default=None, help='楽天 取込実行日時(省略時は在庫ツールの読込日時から)')
     ap.add_argument('--amazon-fetch', default='未取得', help='Amazon 取得日時(ファイル時刻)')
     ap.add_argument('--amazon-basis', default='未取得', help='Amazon 在庫基準日時(分からなければ未取得のまま)')
+    ap.add_argument('--exceptions', default=EXCEPTIONS, help='承認済み共有在庫の例外一覧CSV(既定 SourceData/共有在庫_例外一覧.csv)')
     a = ap.parse_args()
 
     if a.mode == 'make-copy':
@@ -239,14 +282,16 @@ def main():
         if not os.path.exists(P[k]):
             sys.exit(f'❌ ありません: {P[k]}' + ('(先に make-copy)' if a.target == 'copy' else ''))
     print(f'■ 対象: {a.target} / {P["rakuten"]} / {P["amazon"]} / {P["summary"]}')
-    rows, solo = rakuten_rows(P['rakuten'])
-    n_shared = len(rows) - len(solo)
+    exc, exc_others = load_exceptions(a.exceptions)
+    print(f'   共有在庫の例外一覧: {a.exceptions} → 承認済み {len(exc)} 件・その他 {len(exc_others)} 件' if os.path.exists(a.exceptions) else '   共有在庫の例外一覧: なし(通常の -a 判定のみ)')
+    rows, solo, n_a, by_exc = rakuten_rows(P['rakuten'], exc)
+    n_shared = len(rows) - len(solo)                      # -a ＋ 承認済み例外
     rk = stats(solo, '楽天単独')
     secs = amazon_sections(P['amazon'])
     fba, own = stats(secs.get('FBA', []), 'Amazon FBA', (1, 3)), stats(secs.get('自己発送', []), 'Amazon 自己発送', (1, 3))
     tool = tool_figures(P['tool'])
     stamps = dict(rakuten_source=a.rakuten_source, rakuten_run=a.rakuten_run or tool['run_dt'], amazon_fetch=a.amazon_fetch, amazon_basis=a.amazon_basis)
-    tot = report(rows, solo, rk, fba, own, tool, stamps)
+    tot = report(rows, solo, rk, fba, own, tool, stamps, n_a, by_exc, exc_others)
     if a.mode == 'plan':
         print('(plan: 書いていません)')
         return
@@ -256,7 +301,7 @@ def main():
     wb = load_workbook(P['rakuten'])
     last = write_solo_sheet(wb, solo)
     wb.save(P['rakuten'])
-    update_summary(P['summary'], rk, fba, own, tool, n_shared, stamps)
+    update_summary(P['summary'], rk, fba, own, tool, n_shared, stamps, len(by_exc))
 
     # ── 再読込で検証 ──
     fails = []
@@ -272,7 +317,9 @@ def main():
     chk(len(got) == len(solo) == rk['sku'], f'楽天単独 SKU数 {len(got)} = 除外後 {len(solo)}')
     chk(all(g[:8] == s[:8] for g, s in zip(got, solo)), '楽天単独 全行の値(8列)が元と一致')
     chk(sum(1 for r in got for c in (0, 1, 2, 3) if isinstance(r[c], (int, float))) == 0, '識別子は文字列(数値型0)')
-    chk(not any(isinstance(r[2], str) and r[2].strip().lower().endswith('-a') for r in got), f'-a 行が単独在庫に無い(除外 {n_shared} 行)')
+    chk(not any(isinstance(r[2], str) and r[2].strip().lower().endswith('-a') for r in got), f'-a 行が単独在庫に無い(-a 除外 {n_a} 行)')
+    chk(not any((norm(r[1]), norm(r[3])) in exc for r in got), f'承認済み例外 {len(by_exc)} 行が単独在庫に無い')
+    chk(all((norm(r[1]), norm(r[3])) not in exc for r in got) and len(got) + n_a + len(by_exc) == len(rows), f'楽天 {len(rows)} = 単独 {len(got)} + -a {n_a} + 例外 {len(by_exc)}')
     chk(s2.cell(last + 1, 8).value == f'=SUM(H2:H{last})' and s2.cell(last + 1, 9).value == f'=SUM(I2:I{last})' and s2.cell(2, 9).value == '=SUM(G2*H2)',
         '合計行と I列の数式')
     a2 = [tuple(r[:COLS]) for r in w2['在庫'].iter_rows(min_row=2, values_only=True) if r and (r[1] or r[3])]
@@ -287,7 +334,7 @@ def main():
     amz_asins = {str(r[1]).strip().upper() for sec in secs.values() for r in sec if r[1]}
     overlap = [r[1] for r in solo if str(r[1]).strip().upper() in amz_asins]
     chk(not any(isinstance(r[2], str) and r[2].strip().lower().endswith('-a') for r in got) and rk['sku'] + n_shared == len(rows),
-        f'二重計上なし: 共有(-a){n_shared}行は楽天単独に含めず Amazon 側だけで計上(楽天 {len(rows)} = 単独 {rk["sku"]} + 共有 {n_shared})')
+        f'二重計上なし: 共有(-a {n_a}＋例外 {len(by_exc)})は楽天単独に含めず Amazon 側だけで計上(楽天 {len(rows)} = 単独 {rk["sku"]} + 共有 {n_shared})')
     print(f'   参考: 共有印(-a)が無いのに Amazon と同じ管理番号の楽天単独行 {len(overlap)} 件(共有印の漏れか、楽天専用在庫か。人が確認する材料)')
     chk(tot['amt'] == rk['amt'] + fba['amt'] + own['amt'], f'全体在庫金額 {tot["amt"]:,} = 楽天単独 + FBA + 自己発送')
     print('■ 結果:', 'PASS' if not fails else f'FAIL {len(fails)}件')

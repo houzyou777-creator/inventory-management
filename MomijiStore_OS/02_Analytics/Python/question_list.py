@@ -66,10 +66,12 @@ TASKS = [
     # Q14 は ChatGPT が「最新CSVに未掲載・現在在庫未確認として別枠管理」と判断(2026-09-16)。コピーはその方式で作成済み
     # ChatGPT 2026-09-16: Q17 V-4 承認(本番反映より先)。Q16 本番反映は V-4 検証PASS＋本番VBA差し替え後のデータ不変確認の後(再承認不要)。
     # 本番の操作(V4P・本番反映)は V-4 コピー検証が終わってから、まとめて1度に提示する
-    ('T-8', '8月の仕入値を入れる(楽天25行・Amazon85行)', LIST_NAME, 'シート「仕入値入力」',
-     '1行=1商品(110行=8月KPIのL列が黄色の行。楽天25は値あり・Amazon85は 値あり30/空欄55)。黄色3列だけ埋める: ①1販売分の仕入値(円) ②その金額は「1販売分／単品1個分／現在の値で正しい／不明」 ③根拠(納品書の日付・仕入先)。'
-     '「現在のL列の値」がある行は、その値で正しければ ②で「現在の値で正しい」を選ぶだけでよい。売上の大きい順なので上から。分からない行は「不明」(推測で入れない)。KPIシートは直接触らない(反映は Claude Code がバックアップつきで行う)',
-     '埋めた行数が増える → 途中でも保存して閉じ、チャットで「S-xxx まで入れた」', ''),
+    # ChatGPT 2026-09-21: 英樹の確認は1か所(シート「8月最終確認」)。原価12商品(Tier1のB/C)・経費2・共有在庫2。110行の入力はしない
+    ('T-9', '8月の最終確認(16行だけ)', LIST_NAME, 'シート「8月最終確認」',
+     '1行=1件。黄色の【回答】をプルダウンで選ぶだけ(金額を入れる場合だけ隣の黄色に数字)。上から順に。'
+     '原価12件=「現在値で正しい／正しい原価を入力／納品書確認必要」、経費2件=「0円で正しい／金額を入力／不明」、共有在庫2件=「共有／別在庫／不明」。'
+     '一番上の IROKA 6個セットが最優先。元データや他のシートを探す必要はない(必要な数字は行に出してある)',
+     '16行の【回答】が埋まる → 保存して閉じ、チャットで「最終確認した」', ''),
 ]
 DONE = [
     ('V2', 'V-2 取込4列の文字列書式', 'コピー検証PASS → 本番差し替え 2026-09-12 22:37 検証PASS'),
@@ -86,6 +88,7 @@ DONE = [
     ('V4 コピー検証', 'V-4 コピー検証 2回(自動実行・2026-09-20)', '1回目 8/3資料 864行: 15,077,081/6,801/20・325,552B PASS ／ 2回目 9/16資料 814行: 12,621,422/5,911/59・317,260B・旧データ残りなし PASS(verify_v4_copy.py 1/2・保存後再読込)。**本番は英樹が V4-1〜4 で(コピーではなく)本番ファイルに V-4 を入れて保存していた**(9/20 21:18)→ データ不変・VBA=V-4 を確認(prod PASS)。順序違反として記録、本番の実行はコピーPASS後に実施'),
     ('本番反映 9/16資料', '本番の 読込→集計→保存(自動実行 2026-09-20 21:23:09)', 'Import を 9/16資料(消す版・814行)に差し替え → 12,621,422 / 5,911 / 未登録59 = コピー実測と一致。再読込検証・verify prodrun PASS。316,614B。バックアップ: 本番ツール(本番反映前_8月3日資料)・楽天Import(Import/Backup)・Amazonリスト(本番反映前)。Amazon本番リストを別枠版(未掲載40件はシート)に差し替え。楽天94件は削除記録CSVに保持'),
     ('T-7', '本番の集計結果を見る(読むだけ)', '英樹 2026-09-20「みた」'),
+    ('T-8', '8月の仕入値入力(110行)', '取り下げ(ChatGPT 2026-09-21)。空欄55行は8月売上0で影響なし、値あり55行のうち英樹確認は Tier1 の B/C 12件だけ → T-9「8月最終確認」へ'),
     ('自動実行', '本番の読込→集計→保存を Claude Code の自動実行で行う運用', 'ChatGPT 承認(2026-09-19)。条件: タイムアウトは停止とみなさず状態確認まで再実行・手動切替しない／OK応答に加え保存後の再読込で集計値・識別子・未登録件数・サイズを検証し不一致は後続停止。今後の通常更新も自動実行が基本、新しい判断だけ英樹へ'),
     ('T-5/Q12・Q13', 'ファイル整理', 'Q12 移動52件を実行。Q13 削除候補31件は ChatGPT の推奨で**削除せず** Archive/削除候補_20260916/ へ退避(対応表あり)'),
 ]
@@ -534,6 +537,169 @@ def write_cost_input_sheet(wb, prev):
     wc.freeze_panes = 'F2'
     return len(rows), n_prev
 
+# ──────────────────────────────────────────────────────────────
+# 8月最終確認(ChatGPT 2026-09-21): 英樹の確認を1か所にまとめる
+#   A 原価12商品(Tier1 25件のうち B/C。A2=既存入力値・他データとの整合あり・一次根拠未記録 は確認不要)
+#   B Amazon 梱包資材 0円 / C 楽天 クーポン利用手数料 0円(黄色のまま=未確認)
+#   D PCA所得税 / E パナソニック ドルツ(楽天在庫数=Amazon自己発送在庫数・同PID・同JAN・単価一致。共有印なし)
+# ──────────────────────────────────────────────────────────────
+FINAL_HEAD = ['番号', '種別', 'チャネル', '商品ID', '商品名／費目', '管理番号/ASIN', 'SKU', '販売数', '8月売上', '現在の値',
+              '比較できる既存の値', 'セット数/入数', '確認が必要な理由', '【回答】', '【回答】金額(円)', '補足(自由に)', '前回の回答']
+FINAL_OPTS = {'原価': '現在値で正しい,正しい原価を入力,納品書確認必要',
+              '経費': '0円で正しい,金額を入力,不明',
+              '共有在庫': '共有,別在庫,不明'}
+F_ANS, F_AMT, F_MEMO, F_PREV = 14, 15, 16, 17
+
+
+def _pack_of(comp):
+    """商品番号／Amazon SKU の形から入数・構成を読む(表示用。確定ではない)"""
+    import re as _re
+    c = str(comp or '').strip()
+    m = _re.fullmatch(r'\d{13}-(\d+)(?:[@＠/].*)?', c)
+    if m:
+        return f'{m.group(1)}個(JAN-{m.group(1)})'
+    if _re.fullmatch(r'\d{13}(?:[@＠/].*)?', c):
+        return '1個(JAN単独)'
+    if c.upper().startswith('SET') or c.upper().startswith('AST') or ',' in c:
+        return f'構成型({c})'
+    return c or '不明'
+
+
+def build_final_cost_rows():
+    """Tier1(値あり55行の売上上位25)を既存データで照合し、B/C だけ返す。"""
+    import re as _re
+    from openpyxl import load_workbook as _lw
+    rows = [d for d in build_cost_input_rows() if d['current'] not in (None, '')]
+    rows.sort(key=lambda d: -(d['sales'] or 0))
+    tier1 = rows[:25]
+    SDI = S.BASE + '/01_InventoryManagement/SourceData'
+    rk = _lw(SDI + '/Import/楽天在庫リスト_import.xlsx', read_only=True, data_only=True)['在庫']
+    rlist = {(S.norm(r[1]), S.norm(r[3])): r[6] for r in rk.iter_rows(min_row=2, values_only=True) if r and r[1]}
+    am = _lw(SDI + '/Amazon在庫リスト_import.xlsx', read_only=True, data_only=True)['在庫']
+    alist = {}
+    for r in am.iter_rows(min_row=2, values_only=True):
+        if r and r[1] and r[3]:
+            alist.setdefault(S.norm(r[1]), []).append((str(r[3]).strip(), r[6]))
+    rkpi = {}
+    for r in S.load_kpi_month('8月'):
+        if isinstance(r['cost'], (int, float)):
+            rkpi.setdefault(_re.sub(r'-a$', '', r['pn']).strip(), []).append((r['ctrl'], r['cost']))
+    num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    out = []
+    for d in tier1:
+        cur, ch = d['current'], d['ch']
+        src, comp = [], ''
+        if ch == '楽天':
+            comp = _re.sub(r'-a$', '', str(d['ident3']).strip())
+            lv = rlist.get((S.norm(d['ident1']), S.norm(d['sku'])))
+            if num(lv):
+                src.append(f'楽天在庫リスト単価 {lv:,}' + ('' if lv == cur else '(不一致)'))
+            for asin, items in alist.items():
+                for sku, c in items:
+                    if sku == comp and num(c):
+                        src.append(f'Amazon在庫リスト {sku} 単価 {c:,}' + ('' if c == cur else '(不一致)'))
+        else:
+            for sku, c in alist.get(S.norm(d['ident1']), []):
+                comp = sku
+                if num(c):
+                    src.append(f'Amazon在庫リスト {sku} 単価 {c:,}' + ('' if c == cur else '(不一致)'))
+            base = _re.sub(r'[@＠/].*$', '', comp).strip()
+            for ctrl, c in rkpi.get(base, []):
+                src.append(f'楽天8月KPI {ctrl} 原価 {c:,}' + ('' if c == cur else '(不一致)'))
+        multi = bool(_re.search(r'-\d+$|^SET|,|/', comp)) or any(k in str(d['name']) for k in ('セット', 'まとめ買い'))
+        unit_price = (d['sales'] or 0) / (d['units'] or 1)
+        loss = unit_price * 0.85 < cur
+        agree = [x for x in src if '不一致' not in x]
+        disagree = [x for x in src if '不一致' in x]
+        if loss:
+            cls, why = 'B', f'赤字: 売価 {unit_price:,.0f} の85%より原価 {cur:,} が大きい。原価の単位(セット分か)と販売価格の両方を確認'
+        elif agree and not disagree:
+            cls, why = 'A2', ''
+        elif disagree:
+            cls, why = 'B', '既存の単価と一致しない: ' + ' / '.join(disagree)
+        elif multi:
+            cls, why = 'B', 'セット・入数構成なのに裏付けとなる単価が無い(単位が単品か1販売分か未確認)'
+        else:
+            cls, why = 'C', '既存データに裏付けなし(納品書・仕入履歴で確認)'
+        if cls == 'A2':
+            continue
+        out.append(dict(kind='原価', ch=ch, pid=d['pid'], name=d['name'], ident=d['ident1'], sku=d['sku'] or '', units=d['units'], sales=d['sales'],
+                        current=cur, compare=' / '.join(src) or 'なし', pack=_pack_of(comp), why=why, prio=(0 if loss else 1)))
+    out.sort(key=lambda x: (x['prio'], -(x['sales'] or 0)))
+    return out
+
+
+def build_final_rows():
+    rows = build_final_cost_rows()
+    rows.append(dict(kind='経費', ch='Amazon', pid='', name='梱包資材(8月・Amazon KPI N678)', ident='', sku='', units=None, sales=None, current=0,
+                     compare='楽天8月の梱包資材は 23,936円(入力済)', pack='', why='セルが黄色のまま(ツールで入力した記録なし)。確認済みの0円か未入力か分からない', prio=2))
+    rows.append(dict(kind='経費', ch='楽天', pid='', name='クーポン利用手数料(8月・楽天 KPI N275)', ident='', sku='', units=None, sales=None, current=0,
+                     compare='クーポン利用額 9,000円は入力済', pack='', why='セルが黄色のまま。確認済みの0円か未入力か分からない', prio=2))
+    rows.append(dict(kind='共有在庫', ch='楽天/Amazon', pid='P000076', name='PCA所得税(PSHOTOKUZEI)', ident='b0842r98vl', sku='b0842r98vl', units=None, sales=None, current='楽天在庫1 / Amazon自己発送在庫1',
+                     compare='単価 10,679 で一致・同JAN 4988659446157', pack='', why='商品番号に -a が無いが在庫数・単価・JANが一致。同じ現物を共有していれば楽天単独在庫から外す(元データは直さない)', prio=3))
+    rows.append(dict(kind='共有在庫', ch='楽天/Amazon', pid='P000326', name='パナソニック 電動歯ブラシ ドルツ', ident='b0dffzzxqw', sku='b0dffzzxqw', units=None, sales=None, current='楽天在庫3 / Amazon自己発送在庫3',
+                     compare='単価 17,800 で一致・同JAN 4549980880715', pack='', why='同上', prio=3))
+    for i, r in enumerate(rows, 1):
+        r['no'] = f'F-{i:02d}'
+    return rows
+
+
+def previous_final_answers():
+    out = {}
+    for f in sorted(glob.glob(f'{OUT_DIR}/英樹への確認リスト_*.xlsx')):
+        try:
+            wb = load_workbook(f, read_only=True, data_only=True)
+        except Exception:
+            continue
+        if '8月最終確認' not in wb.sheetnames:
+            wb.close(); continue
+        ws = wb['8月最終確認']
+        hdr = [str(c or '') for c in next(ws.iter_rows(min_row=1, max_row=1, values_only=True))]
+        col = {h: i for i, h in enumerate(hdr)}
+        if any(k not in col for k in ('種別', '商品名／費目', '管理番号/ASIN', '【回答】', '【回答】金額(円)', '補足(自由に)')):
+            wb.close(); continue
+        for r in ws.iter_rows(min_row=2, values_only=True):
+            if not r or not r[col['種別']]:
+                continue
+            k = (str(r[col['種別']]), S.norm(r[col['管理番号/ASIN']]), str(r[col['商品名／費目']] or ''))
+            vals = (r[col['【回答】']], r[col['【回答】金額(円)']], r[col['補足(自由に)']])
+            if any(v not in (None, '') for v in vals):
+                out[k] = vals
+        wb.close()
+    return out
+
+
+def write_final_sheet(wb, prev):
+    rows = build_final_rows()
+    wc = wb.create_sheet('8月最終確認', 2)
+    for c, h in enumerate(FINAL_HEAD, 1):
+        wc.cell(1, c).value = h; wc.cell(1, c).font = BOLD; wc.cell(1, c).fill = HEAD
+    dvs = {k: DataValidation(type='list', formula1=f'"{v}"', allow_blank=True) for k, v in FINAL_OPTS.items()}
+    n_prev = 0
+    for i, d in enumerate(rows, 2):
+        vals = [d['no'], d['kind'], d['ch'], d['pid'], d['name'], d['ident'], d['sku'], d['units'], d['sales'], d['current'],
+                d['compare'], d['pack'], d['why']]
+        for c, v in enumerate(vals, 1):
+            wc.cell(i, c).value = v
+        for c in (6, 7):
+            wc.cell(i, c).number_format = '@'
+        for c in (F_ANS, F_AMT):
+            wc.cell(i, c).fill = YELLOW
+        wc.cell(i, 5).alignment = WRAP; wc.cell(i, 11).alignment = WRAP; wc.cell(i, 13).alignment = WRAP
+        pv = prev.get((d['kind'], S.norm(d['ident']), str(d['name'] or '')))
+        if pv:
+            wc.cell(i, F_ANS).value, wc.cell(i, F_AMT).value, wc.cell(i, F_MEMO).value = pv
+            n_prev += 1
+        dvs[d['kind']].add(wc.cell(i, F_ANS))
+    for k, dv in dvs.items():
+        if dv.sqref:
+            wc.add_data_validation(dv)
+    for col, w in zip('ABCDEFGHIJKLMNOPQ', (6, 8, 10, 9, 40, 14, 14, 7, 9, 16, 34, 16, 44, 18, 12, 24, 18)):
+        wc.column_dimensions[col].width = w
+    wc.freeze_panes = 'F2'
+    return len(rows), n_prev
+
+
 def previous_answers(exclude):
     """前回の確認リストから 質問ID＋対象＋質問キー → (回答, 補足) を読む。やることは 番号＋操作 → 済。"""
     files = sorted(f for f in glob.glob(f'{OUT_DIR}/英樹への確認リスト_*.xlsx') if os.path.abspath(f) != os.path.abspath(exclude))
@@ -838,7 +1004,8 @@ def build():
 
     # ── 既知の回答 ──
     # ── 仕入値入力(8月 L列が未入力の行) ──
-    n_cost, n_cost_prev = write_cost_input_sheet(wb, previous_cost_answers())
+    # 仕入値入力(110行)は取り下げ(ChatGPT 2026-09-21)。英樹の確認は「8月最終確認」16行だけ
+    n_cost, n_cost_prev = write_final_sheet(wb, previous_final_answers())
 
     wk = wb.create_sheet('既知の回答')
     for c, h in enumerate(['回答日(チャット)', '内容'], 1):
@@ -850,7 +1017,7 @@ def build():
     os.makedirs(OUT_DIR, exist_ok=True)
     wb.save(path)
     print(f'→ {path}')
-    print(f'   やること {len(TASKS)}行 / 質問 {len(Q)}件(前回から引き継ぎ {carried}・再確認 {reask}) / Q3対応表 {n_map}行 / 原価記録の承認 {len(props)}件 / 仕入値入力 {n_cost}行(引き継ぎ {n_cost_prev}) / 既知の回答 {len(KNOWN)}件')
+    print(f'   やること {len(TASKS)}行 / 質問 {len(Q)}件(前回から引き継ぎ {carried}・再確認 {reask}) / Q3対応表 {n_map}行 / 原価記録の承認 {len(props)}件 / 8月最終確認 {n_cost}行(引き継ぎ {n_cost_prev}) / 既知の回答 {len(KNOWN)}件')
     return path
 
 
