@@ -66,9 +66,10 @@ TASKS = [
     # Q14 は ChatGPT が「最新CSVに未掲載・現在在庫未確認として別枠管理」と判断(2026-09-16)。コピーはその方式で作成済み
     # ChatGPT 2026-09-16: Q17 V-4 承認(本番反映より先)。Q16 本番反映は V-4 検証PASS＋本番VBA差し替え後のデータ不変確認の後(再承認不要)。
     # 本番の操作(V4P・本番反映)は V-4 コピー検証が終わってから、まとめて1度に提示する
-    ('T-7', '本番の集計結果を見る(読むだけ)', 'MomijiStore_OS/01_InventoryManagement/SourceData/楽天在庫金額集計ツール_v1.0.xlsm(**本番**)', 'シート「在庫金額集計」「要確認一覧」',
-     '開いて見るだけ(ボタンは押さない・保存しない・閉じるときに保存しない)。総在庫金額 12,621,422 / 数量 5,911 / 未登録 59 になっている。要確認一覧の59件は原価未登録(単価が要る)',
-     '見終わったら閉じる → チャットで「見た」(気づいたことがあれば書く)', ''),
+    ('T-8', '8月の仕入値を入れる(楽天25行・Amazon85行)', LIST_NAME, 'シート「仕入値入力」',
+     '1行=1商品(110行=8月KPIのL列が黄色の行。楽天25は値あり・Amazon85は 値あり30/空欄55)。黄色3列だけ埋める: ①1販売分の仕入値(円) ②その金額は「1販売分／単品1個分／現在の値で正しい／不明」 ③根拠(納品書の日付・仕入先)。'
+     '「現在のL列の値」がある行は、その値で正しければ ②で「現在の値で正しい」を選ぶだけでよい。売上の大きい順なので上から。分からない行は「不明」(推測で入れない)。KPIシートは直接触らない(反映は Claude Code がバックアップつきで行う)',
+     '埋めた行数が増える → 途中でも保存して閉じ、チャットで「S-xxx まで入れた」', ''),
 ]
 DONE = [
     ('V2', 'V-2 取込4列の文字列書式', 'コピー検証PASS → 本番差し替え 2026-09-12 22:37 検証PASS'),
@@ -84,6 +85,7 @@ DONE = [
     ('V4 1回目(9/16 17:52)', 'V-4 コピー検証 1回目', '集計値 15,077,081/6,801/20・識別子一致・空欄保持・数式/見出し/ボタン/VBA OK。**ファイルは 4,714,370B で FAIL**: 原因は V-3 以前からある `Interior.ColorIndex = xlNone` の10万行操作(D〜K列に「塗りつぶしなし」の空セルが10万行保存される)。V-4 を修正(データ領域を使用範囲まで値・書式とも消す ClearDataArea)→ やり直し'),
     ('V4 コピー検証', 'V-4 コピー検証 2回(自動実行・2026-09-20)', '1回目 8/3資料 864行: 15,077,081/6,801/20・325,552B PASS ／ 2回目 9/16資料 814行: 12,621,422/5,911/59・317,260B・旧データ残りなし PASS(verify_v4_copy.py 1/2・保存後再読込)。**本番は英樹が V4-1〜4 で(コピーではなく)本番ファイルに V-4 を入れて保存していた**(9/20 21:18)→ データ不変・VBA=V-4 を確認(prod PASS)。順序違反として記録、本番の実行はコピーPASS後に実施'),
     ('本番反映 9/16資料', '本番の 読込→集計→保存(自動実行 2026-09-20 21:23:09)', 'Import を 9/16資料(消す版・814行)に差し替え → 12,621,422 / 5,911 / 未登録59 = コピー実測と一致。再読込検証・verify prodrun PASS。316,614B。バックアップ: 本番ツール(本番反映前_8月3日資料)・楽天Import(Import/Backup)・Amazonリスト(本番反映前)。Amazon本番リストを別枠版(未掲載40件はシート)に差し替え。楽天94件は削除記録CSVに保持'),
+    ('T-7', '本番の集計結果を見る(読むだけ)', '英樹 2026-09-20「みた」'),
     ('自動実行', '本番の読込→集計→保存を Claude Code の自動実行で行う運用', 'ChatGPT 承認(2026-09-19)。条件: タイムアウトは停止とみなさず状態確認まで再実行・手動切替しない／OK応答に加え保存後の再読込で集計値・識別子・未登録件数・サイズを検証し不一致は後続停止。今後の通常更新も自動実行が基本、新しい判断だけ英樹へ'),
     ('T-5/Q12・Q13', 'ファイル整理', 'Q12 移動52件を実行。Q13 削除候補31件は ChatGPT の推奨で**削除せず** Archive/削除候補_20260916/ へ退避(対応表あり)'),
 ]
@@ -417,6 +419,121 @@ PROPOSAL_HEAD = ['案No', 'チャネル', 'SKU/ASIN', '内部管理ID', '商品�
                  '区分', '例外理由', '登録できない理由', '承認', '修正・コメント', '状態']
 
 
+
+# ──────────────────────────────────────────────────────────────
+# 仕入値入力(2026-09-20 英樹「仕入れ値入力はどこですればいいの？」→ 確認リストに110行を用意する)
+#   8月KPIシートの L列(仕入値)が黄色=未入力の行を、1行1商品で並べる。英樹は黄色3列(金額・単位・根拠)だけ埋める。
+#   KPI L列への反映は Claude Code がバックアップ・記録つきで行う(英樹は KPI シートを直接触らない)
+# ──────────────────────────────────────────────────────────────
+COST_HEAD = ['番号', 'チャネル', 'KPI行', '内部管理ID', '商品名', '管理番号/ASIN', 'SKU', '商品番号/親ASIN',
+             '8月 売上個数', '8月 売上', '平均単価', 'マスター標準原価(参考)', '出品テーブル 入数/原価単位(参考)',
+             '現在のL列の値(黄色=未確認)',
+             '【回答】1販売分の仕入値(円)', '【回答】その金額は', '【回答】根拠(納品書の日付・仕入先など)', '補足(自由に)', '前回の回答']
+# 「現在の値で正しい」= L列に既にある黄色の値(出所の記録なし)を英樹が確認した、という回答
+COST_UNIT_OPTS = '1販売分(このSKUを1つ売った分)／単品1個分(入数を掛ける必要あり)／現在の値で正しい(1販売分)／不明'
+C_ANS, C_UNIT, C_PROOF, C_MEMO, C_PREV = 15, 16, 17, 18, 19
+
+
+def build_cost_input_rows(month='8月'):
+    import apply_monthly_expenses as AME
+    cost_by_pid, pair2pid, ctrl2pid = S.load_master()
+    _, asin2pid, asku2pid = S.load_master_amazon()
+    pack, _ = S.load_pack_info()
+    rows = []
+    for ch, path in AME.FILES.items():
+        wb = load_workbook(path)                     # 塗り(黄色)を見るので data_only にしない。H/I/L は値
+        if month not in wb.sheetnames:
+            continue
+        ws = wb[month]
+        total_row, _ = AME.find_block(ws)
+        for r in range(8, total_row):
+            c = ws.cell(r, 12)
+            if not AME.is_yellow(c):                 # 黄色=未確認。値が入っていても出所の記録が無いので確認対象に含める
+                continue
+            name = ws.cell(r, 1).value
+            if ch == '楽天':
+                ident1, sku, ident3 = ws.cell(r, 3).value, ws.cell(r, 5).value, ws.cell(r, 4).value
+                pid = pair2pid.get((S.norm(ident1), S.norm(sku))) or ctrl2pid.get(S.norm(ident1))
+                key = S.norm(ident1)
+            else:
+                sku, ident1, ident3 = ws.cell(r, 2).value, ws.cell(r, 3).value, ws.cell(r, 4).value
+                pid = asku2pid.get(S.norm(sku)) or asin2pid.get(S.norm(ident1))
+                key = S.norm(ident1)
+            info, amb = S.lookup_pack(pack, ch, key, S.norm(sku) if ch == '楽天' else '')
+            pk = ''
+            if info and (info.get('pack') or info.get('unit')):
+                pk = f"入数 {info.get('pack') or '?'} / {info.get('unit') or '単位未確認'}"
+            elif amb:
+                pk = amb
+            rows.append({'ch': ch, 'row': r, 'pid': pid or '', 'name': name or '', 'ident1': ident1 or '', 'sku': sku or '',
+                         'ident3': ident3 or '', 'units': ws.cell(r, 8).value, 'sales': ws.cell(r, 9).value,
+                         'price': (round(ws.cell(r, 9).value / ws.cell(r, 8).value) if isinstance(ws.cell(r, 8).value, (int, float)) and ws.cell(r, 8).value
+                                   and isinstance(ws.cell(r, 9).value, (int, float)) else None),   # G列は数式なので値から計算
+                         'master': cost_by_pid.get(pid) if pid else None, 'pack': pk,
+                         'current': c.value})
+    rows.sort(key=lambda d: (0 if d['ch'] == '楽天' else 1, -(d['sales'] or 0)))
+    for i, d in enumerate(rows, 1):
+        d['no'] = f'S-{i:03d}'
+    return rows
+
+
+def previous_cost_answers():
+    """直近の確認リストの「仕入値入力」から (チャネル, 管理番号/ASIN, SKU) → 回答3列＋補足 を読む。"""
+    out = {}
+    for f in sorted(glob.glob(f'{OUT_DIR}/英樹への確認リスト_*.xlsx')):
+        try:
+            wb = load_workbook(f, read_only=True, data_only=True)
+        except Exception:
+            continue
+        if '仕入値入力' not in wb.sheetnames:
+            wb.close(); continue
+        ws = wb['仕入値入力']
+        hdr = [str(c or '') for c in next(ws.iter_rows(min_row=1, max_row=1, values_only=True))]
+        col = {h: i for i, h in enumerate(hdr)}
+        need = ('チャネル', '管理番号/ASIN', 'SKU', COST_HEAD[C_ANS - 1], COST_HEAD[C_UNIT - 1], COST_HEAD[C_PROOF - 1], '補足(自由に)')
+        if any(k not in col for k in need):
+            wb.close(); continue
+        for r in ws.iter_rows(min_row=2, values_only=True):
+            if not r or not r[col['チャネル']]:
+                continue
+            k = (str(r[col['チャネル']]), S.norm(r[col['管理番号/ASIN']]), S.norm(r[col['SKU']]))
+            vals = tuple(r[col[x]] for x in need[3:])
+            if any(v not in (None, '') for v in vals):
+                out[k] = vals                                  # 新しいファイルほど後に読むので上書き=最新
+        wb.close()
+    return out
+
+
+def write_cost_input_sheet(wb, prev):
+    rows = build_cost_input_rows()
+    wc = wb.create_sheet('仕入値入力', 2)
+    for c, h in enumerate(COST_HEAD, 1):
+        wc.cell(1, c).value = h; wc.cell(1, c).font = BOLD; wc.cell(1, c).fill = HEAD
+    dv = DataValidation(type='list', formula1='"' + COST_UNIT_OPTS.replace('／', ',') + '"', allow_blank=True)
+    n_prev = 0
+    for i, d in enumerate(rows, 2):
+        vals = [d['no'], d['ch'], d['row'], d['pid'], d['name'], d['ident1'], d['sku'], d['ident3'], d['units'], d['sales'], d['price'],
+                d['master'], d['pack'], d['current']]
+        for c, v in enumerate(vals, 1):
+            wc.cell(i, c).value = v
+        for c in (6, 7, 8):
+            wc.cell(i, c).number_format = '@'
+        k = (d['ch'], S.norm(d['ident1']), S.norm(d['sku']))
+        pv = prev.get(k)
+        for c in (C_ANS, C_UNIT, C_PROOF):
+            wc.cell(i, c).fill = YELLOW
+        if pv:
+            wc.cell(i, C_ANS).value, wc.cell(i, C_UNIT).value, wc.cell(i, C_PROOF).value, wc.cell(i, C_MEMO).value = pv
+            n_prev += 1
+        dv.add(wc.cell(i, C_UNIT))
+        wc.cell(i, 5).alignment = WRAP
+    if rows:
+        wc.add_data_validation(dv)
+    for col, w in zip('ABCDEFGHIJKLMNOPQRS', (7, 8, 6, 10, 50, 16, 16, 16, 9, 10, 9, 12, 22, 14, 16, 30, 30, 24, 20)):
+        wc.column_dimensions[col].width = w
+    wc.freeze_panes = 'F2'
+    return len(rows), n_prev
+
 def previous_answers(exclude):
     """前回の確認リストから 質問ID＋対象＋質問キー → (回答, 補足) を読む。やることは 番号＋操作 → 済。"""
     files = sorted(f for f in glob.glob(f'{OUT_DIR}/英樹への確認リスト_*.xlsx') if os.path.abspath(f) != os.path.abspath(exclude))
@@ -720,6 +837,9 @@ def build():
         wd.column_dimensions[col].width = w
 
     # ── 既知の回答 ──
+    # ── 仕入値入力(8月 L列が未入力の行) ──
+    n_cost, n_cost_prev = write_cost_input_sheet(wb, previous_cost_answers())
+
     wk = wb.create_sheet('既知の回答')
     for c, h in enumerate(['回答日(チャット)', '内容'], 1):
         wk.cell(1, c).value = h; wk.cell(1, c).font = BOLD; wk.cell(1, c).fill = HEAD
@@ -730,7 +850,7 @@ def build():
     os.makedirs(OUT_DIR, exist_ok=True)
     wb.save(path)
     print(f'→ {path}')
-    print(f'   やること {len(TASKS)}行 / 質問 {len(Q)}件(前回から引き継ぎ {carried}・再確認 {reask}) / Q3対応表 {n_map}行 / 原価記録の承認 {len(props)}件 / 既知の回答 {len(KNOWN)}件')
+    print(f'   やること {len(TASKS)}行 / 質問 {len(Q)}件(前回から引き継ぎ {carried}・再確認 {reask}) / Q3対応表 {n_map}行 / 原価記録の承認 {len(props)}件 / 仕入値入力 {n_cost}行(引き継ぎ {n_cost_prev}) / 既知の回答 {len(KNOWN)}件')
     return path
 
 
