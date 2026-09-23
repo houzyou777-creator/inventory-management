@@ -16,7 +16,7 @@ EC運営の自動化・在庫管理・楽天/Amazon/メルカリ連携・AIエ�
 **ワークスペース外は変更禁止。**
 外部ファイル（~/Desktop、~/Documents、~/Downloads、外付けSSD、NAS、iCloud Drive 等）への読み書きは一切行わない。
 
-**旧環境:** `/Users/hide0726/Desktop/Claude Code` は移行元の旧環境（参照専用・変更禁止）。2026-09-23 に正本を `~/MomijiStore` へ切り替え済み。
+**旧環境（退役済み）:** 2026-09-23 に正本を `/Users/hide0726/MomijiStore` へ切り替え、旧 `Desktop/Claude Code` は `/Users/hide0726/Desktop/Claude Code_MIGRATED_DO_NOT_USE` へ改名して退役。参照専用・変更禁止・通常業務では使用しない（削除は別承認）。
 
 ---
 
