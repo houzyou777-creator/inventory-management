@@ -36,3 +36,36 @@ MomijiStore_OS/05_Infrastructure/deploy/logs/
 #  Output/ は毎月スクリプトが作り直す成果物であり、
 #  Python・設計書・手順書とは性質が異なる。実体はローカルとNASに残す
 MomijiStore_OS/01_InventoryManagement/SourceData/Output/
+
+# =============================================================
+#  業務データ(Git管理外)— 2026-09 方針
+#  Git = コード・設定・仕様書・構成の履歴。業務データはローカル正本+NASで保全する。
+#  ※ ignore は「未追跡ファイル」にだけ効く。既にGit管理中のExcel/CSVは履歴を維持したまま
+#    管理が続く(管理対象の整理はローカル移行後に別途行う)。
+# =============================================================
+
+# 自動生成バックアップ(作業前バックアップ・実行記録)
+#  VBA/Backup/ の .bas はコード履歴としてGit管理するため、SourceData 配下だけに限定する
+MomijiStore_OS/01_InventoryManagement/SourceData/Backup/
+MomijiStore_OS/01_InventoryManagement/SourceData/Import/Backup/
+MomijiStore_OS/02_Analytics/SourceData/Backup/
+MomijiStore_OS/**/SourceData/**/*_backup_*
+
+# ECモールから再取得できるダウンロード生データ
+MomijiStore_OS/01_InventoryManagement/import/
+MomijiStore_OS/02_Analytics/SourceData/rpp_*reports_*.csv
+MomijiStore_OS/02_Analytics/SourceData/スポンサープロダクト広告_*.xlsx
+MomijiStore_OS/02_Analytics/SourceData/*_SKU_SalesList.csv
+MomijiStore_OS/02_Analytics/SourceData/*MonthlyTransaction.csv
+MomijiStore_OS/02_Analytics/SourceData/BusinessReport-*.csv
+MomijiStore_OS/02_Analytics/SourceData/AmazonAds_monthly_statement_*.pdf
+
+# 保管用の業務データ(意図的なGit管理外。ローカル正本+NASで保全する)
+MomijiStore_OS/01_InventoryManagement/SourceData/Reference/
+MomijiStore_OS/02_Analytics/SourceData/Archive/
+
+# 実行ログ・一時ファイル
+*.log
+*.tmp
+~$*
+.~lock.*#
