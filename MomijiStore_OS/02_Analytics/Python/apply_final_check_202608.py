@@ -30,12 +30,14 @@ from openpyxl.styles import PatternFill
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import excel_bridge as XB
 import sync_cost_master as S
+import momiji_paths as MP   # 保存場所は momiji_paths が __file__ から決める(直書きしない)
 
-BASE = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS'
+BASE = MP.OS_ROOT_STR
 SD = BASE + '/02_Analytics/SourceData'
 PROD = {'楽天': SD + '/楽天運営 KPI管理シート.xlsx', 'Amazon': SD + '/Amazon運営 KPI管理シート.xlsx',
         'exc': BASE + '/01_InventoryManagement/SourceData/共有在庫_例外一覧.csv'}
-COPY_DIR = '/private/tmp/claude-502/-Users-hide0726-Desktop-Claude-Code/c6dbcd1e-f559-44f8-8c0a-cae8afcb1973/scratchpad/final_check_copy'
+# 検証用コピーの置き場。旧版はセッション固有の scratchpad を直書きしていた
+COPY_DIR = MP.work_dir('final_check_copy')
 COPY = {'楽天': COPY_DIR + '/楽天運営 KPI管理シート.xlsx', 'Amazon': COPY_DIR + '/Amazon運営 KPI管理シート.xlsx', 'exc': COPY_DIR + '/共有在庫_例外一覧.csv'}
 OUT = BASE + '/01_InventoryManagement/SourceData/Output'
 MONTH = '8月'

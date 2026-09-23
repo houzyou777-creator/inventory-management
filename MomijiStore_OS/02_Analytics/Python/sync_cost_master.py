@@ -34,7 +34,8 @@ from datetime import date
 
 from openpyxl import Workbook, load_workbook
 
-BASE = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS'
+import momiji_paths as MP   # 保存場所は momiji_paths が __file__ から決める(直書きしない)
+BASE = MP.OS_ROOT_STR
 MASTER_FILE = BASE + '/01_InventoryManagement/SourceData/商品マスター_単品_v1.0.xlsx'
 KPI_FILE = BASE + '/02_Analytics/SourceData/楽天運営 KPI管理シート.xlsx'
 

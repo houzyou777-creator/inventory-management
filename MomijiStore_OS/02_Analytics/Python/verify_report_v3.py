@@ -11,7 +11,8 @@ import warnings
 warnings.filterwarnings('ignore')
 from openpyxl import load_workbook
 
-BASE = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS'
+import momiji_paths as MP   # 保存場所は momiji_paths が __file__ から決める(直書きしない)
+BASE = MP.OS_ROOT_STR
 SD = BASE + '/02_Analytics/SourceData'
 INV = BASE + '/01_InventoryManagement/SourceData'
 REPORT = INV + '/Output/2026-08_経営レポート_Ver3.md'

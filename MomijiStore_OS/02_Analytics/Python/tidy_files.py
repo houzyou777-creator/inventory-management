@@ -21,7 +21,8 @@ import re
 import shutil
 import sys
 
-BASE = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS'
+import momiji_paths as MP   # 保存場所は momiji_paths が __file__ から決める(直書きしない)
+BASE = MP.OS_ROOT_STR
 OUT = BASE + '/01_InventoryManagement/SourceData/Output'
 BK = BASE + '/01_InventoryManagement/SourceData/Backup'
 BK2 = BASE + '/02_Analytics/SourceData/Backup'

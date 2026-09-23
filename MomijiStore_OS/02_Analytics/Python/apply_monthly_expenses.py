@@ -32,7 +32,8 @@ from datetime import date
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 
-BASE = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS'
+import momiji_paths as MP   # 保存場所は momiji_paths が __file__ から決める(直書きしない)
+BASE = MP.OS_ROOT_STR
 SD = BASE + '/02_Analytics/SourceData'
 FILES = {'楽天': SD + '/楽天運営 KPI管理シート.xlsx',
          'Amazon': SD + '/Amazon運営 KPI管理シート.xlsx'}

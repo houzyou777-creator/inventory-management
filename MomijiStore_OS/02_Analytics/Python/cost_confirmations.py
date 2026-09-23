@@ -30,7 +30,8 @@ from datetime import date
 
 from openpyxl import Workbook, load_workbook
 
-BASE = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS'
+import momiji_paths as MP   # 保存場所は momiji_paths が __file__ から決める(直書きしない)
+BASE = MP.OS_ROOT_STR
 FILE = os.environ.get('COST_CONFIRM_FILE', BASE + '/02_Analytics/SourceData/原価確認記録.xlsx')
 SHEET = '記録'
 HEAD = ['記録ID', '確認日', '確認者', 'チャネル', '楽天商品管理番号', 'SKU/ASIN', '適用開始月', '適用終了月',

@@ -29,7 +29,11 @@ warnings.filterwarnings('ignore')
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 
-BASE = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS'
+# 共通モジュール(02_Analytics/Python/momiji_paths.py)の場所は __file__ からの相対位置で求める
+sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '02_Analytics', 'Python')))
+import momiji_paths as MP  # noqa: E402
+
+BASE = MP.OS_ROOT_STR
 CUR_LIST = BASE + '/01_InventoryManagement/SourceData/Amazon在庫リスト_import.xlsx'
 PINK = PatternFill('solid', fgColor='FFC7CE')
 YELLOW = PatternFill('solid', fgColor='FFFF00')

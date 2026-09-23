@@ -35,11 +35,13 @@ import zipfile
 from datetime import datetime
 
 warnings.filterwarnings('ignore')
-sys.path.insert(0, '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS/02_Analytics/Python')
+# 共通モジュール(02_Analytics/Python)の場所は __file__ からの相対位置で求める
+sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '02_Analytics', 'Python')))
 import excel_bridge as eb                                   # noqa: E402
+import momiji_paths as MP                                   # noqa: E402
 from openpyxl import load_workbook                          # noqa: E402
 
-SD = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS/01_InventoryManagement/SourceData'
+SD = MP.INV_SD
 TARGETS = {
     'copy': SD + '/V4_test/楽天在庫金額集計ツール_v1.0.xlsm',
     'production': SD + '/楽天在庫金額集計ツール_v1.0.xlsm',

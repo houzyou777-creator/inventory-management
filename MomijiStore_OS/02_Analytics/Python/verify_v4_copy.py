@@ -25,7 +25,8 @@ import zipfile
 warnings.filterwarnings('ignore')
 from openpyxl import load_workbook
 
-SD = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS/01_InventoryManagement/SourceData'
+import momiji_paths as MP   # 保存場所は momiji_paths が __file__ から決める(直書きしない)
+SD = MP.INV_SD
 PROD = SD + '/楽天在庫金額集計ツール_v1.0.xlsm'
 BASELINE = SD + '/Backup/楽天在庫金額集計ツール_v1.0_backup_20260916_0612時点(既にV3差し替え済み).xlsm'   # V-3 本番・集計前(307KB)
 COPY = SD + '/V4_test/楽天在庫金額集計ツール_v1.0.xlsm'

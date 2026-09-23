@@ -31,7 +31,8 @@ from datetime import date
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 
-BASE = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS'
+import momiji_paths as MP   # 保存場所は momiji_paths が __file__ から決める(直書きしない)
+BASE = MP.OS_ROOT_STR
 OUT_FILE = os.environ.get(
     'AMZ_KPI_FILE_OVERRIDE',
     BASE + '/02_Analytics/SourceData/Amazon運営 KPI管理シート.xlsx')

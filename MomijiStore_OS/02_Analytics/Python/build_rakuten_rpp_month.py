@@ -29,7 +29,8 @@ from openpyxl.styles import Font
 
 import report_columns as C   # レポートは位置ではなく見出し名で読む
 
-BASE = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS'
+import momiji_paths as MP   # 保存場所は momiji_paths が __file__ から決める(直書きしない)
+BASE = MP.OS_ROOT_STR
 OUT_FILE = os.environ.get(
     'RPP_FILE_OVERRIDE',
     BASE + '/02_Analytics/SourceData/楽天RPP広告分析.xlsx')

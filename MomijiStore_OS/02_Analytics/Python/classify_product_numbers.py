@@ -37,11 +37,12 @@
 ⚠️ 訳あり品(w)があっても 原価が違う・同じ とは解釈しない。区別して持つだけ。
 ⚠️ 末尾aが無いことは「楽天のみ販売」の意味であり、入数1や在庫単位までは推定しない。
 """
-import re, sys, csv, warnings
+import os, re, sys, csv, warnings
 warnings.filterwarnings('ignore')
-sys.path.insert(0, '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS/02_Analytics/Python')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # 同じフォルダーの共通モジュール(__file__ 基準)
 from openpyxl import load_workbook
 import sync_cost_master as S, build_todo_lists as T
+import momiji_paths as MP
 
 # 確認済みのSET形式の対応表。**桁数や大小で自動判定しない**(承認 判定方法2)
 SET_KNOWN = {
@@ -338,7 +339,7 @@ def main():
     print(f"   Amazon共有(-a)      : {sum(1 for x in out if x[I['在庫区分']]=='Amazon共有'):>4}件")
 
     from datetime import date
-    OUT='/Users/hide0726/Desktop/Claude Code/MomijiStore_OS/01_InventoryManagement/SourceData/Output'
+    OUT=MP.INV_OUTPUT
     path = f'{OUT}/RMS商品番号_分類_{date.today():%Y%m%d}.csv'
     with open(path,'w',encoding='utf-8-sig',newline='') as f:
         w = csv.writer(f)

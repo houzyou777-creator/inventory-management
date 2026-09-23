@@ -37,7 +37,11 @@ from datetime import datetime
 warnings.filterwarnings('ignore')
 from openpyxl import load_workbook
 
-SD = '/Users/hide0726/Desktop/Claude Code/MomijiStore_OS/01_InventoryManagement/SourceData'
+# 共通モジュール(02_Analytics/Python/momiji_paths.py)の場所は __file__ からの相対位置で求める
+sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '02_Analytics', 'Python')))
+import momiji_paths as MP  # noqa: E402
+
+SD = MP.INV_SD
 PROD = dict(rakuten=SD + '/Import/楽天在庫リスト_import.xlsx', amazon=SD + '/Amazon在庫リスト_import.xlsx',
             summary=SD + '/全体在庫サマリー_v1.0.xlsx', tool=SD + '/楽天在庫金額集計ツール_v1.0.xlsm')
 COPY_DIR = SD + '/Summary_test'
