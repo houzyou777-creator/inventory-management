@@ -11,10 +11,12 @@ EC運営の自動化・在庫管理・楽天/Amazon/メルカリ連携・AIエ�
 
 ## 作業範囲
 
-**作業対象:** `Desktop/Claude Code` 配下のみ
+**作業対象:** `/Users/hide0726/MomijiStore`（`~/MomijiStore`）配下のみ。正本は `MomijiStore_OS/`
 
 **ワークスペース外は変更禁止。**
-外部ファイル（~/Documents、~/Downloads、外付けSSD、NAS、iCloud Drive 等）への読み書きは一切行わない。
+外部ファイル（~/Desktop、~/Documents、~/Downloads、外付けSSD、NAS、iCloud Drive 等）への読み書きは一切行わない。
+
+**旧環境:** `/Users/hide0726/Desktop/Claude Code` は移行元の旧環境（参照専用・変更禁止）。2026-09-23 に正本を `~/MomijiStore` へ切り替え済み。
 
 ---
 
