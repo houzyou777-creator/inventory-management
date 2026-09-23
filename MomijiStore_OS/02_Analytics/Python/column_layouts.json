@@ -33,7 +33,11 @@
         "columns": 21,
         "note": "初回登録"
       }
-    ]
+    ],
+    "last_seen": {
+      "date": "2026-09-16",
+      "month": "8月"
+    }
   },
   "楽天 SKU別売上CSV": {
     "header": [
@@ -58,7 +62,11 @@
         "columns": 10,
         "note": "初回登録"
       }
-    ]
+    ],
+    "last_seen": {
+      "date": "2026-09-20",
+      "month": "8月"
+    }
   },
   "楽天RPP 商品別レポート": {
     "header": [
