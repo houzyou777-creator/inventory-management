@@ -1,0 +1,26 @@
+{
+  "_comment": "AIKOS Document Intelligence Ver.1 設定。パスはここだけに置き、コードに直書きしない",
+  "schema_version": 1,
+  "nas": {
+    "mount_point": "/Volumes/MomijiStore",
+    "fs_type": "smbfs",
+    "allowed_sources": [
+      "//momiji-admin@MomijiStore-NAS/MomijiStore",
+      "//momiji-admin@192.168.0.8/MomijiStore"
+    ]
+  },
+  "targets": {
+    "production": {
+      "doc_root_rel": "35_Documents",
+      "marker_id": "AIKOS-DOCROOT-PRODUCTION-8f3c2a1e"
+    },
+    "sandbox": {
+      "doc_root_rel": "35_Documents/99_Sandbox",
+      "marker_id": "AIKOS-DOCROOT-SANDBOX-5b7d9e04"
+    }
+  },
+  "intake": {
+    "min_age_seconds": 30,
+    "move_retry_delays_seconds": [1, 2, 4]
+  }
+}

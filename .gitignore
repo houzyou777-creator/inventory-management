@@ -64,6 +64,29 @@ MomijiStore_OS/02_Analytics/SourceData/AmazonAds_monthly_statement_*.pdf
 MomijiStore_OS/01_InventoryManagement/SourceData/Reference/
 MomijiStore_OS/02_Analytics/SourceData/Archive/
 
+# =============================================================
+#  AIKOS Document Intelligence — 証憑・資料は Git へ入れない
+#  正本は NAS 35_Documents。Git にはコード・設定・仕様・テストだけを置く。
+#  (04_Manual の PDF マニュアルに影響しないよう、対象は 06 配下と NAS 構成名に限定)
+# =============================================================
+MomijiStore_OS/06_DocumentIntelligence/logs/
+MomijiStore_OS/06_DocumentIntelligence/**/*.[pP][dD][fF]
+MomijiStore_OS/06_DocumentIntelligence/**/*.[jJ][pP][gG]
+MomijiStore_OS/06_DocumentIntelligence/**/*.[jJ][pP][eE][gG]
+MomijiStore_OS/06_DocumentIntelligence/**/*.[pP][nN][gG]
+MomijiStore_OS/06_DocumentIntelligence/**/*.[hH][eE][iI][cC]
+MomijiStore_OS/06_DocumentIntelligence/**/*.[tT][iI][fF]
+MomijiStore_OS/06_DocumentIntelligence/**/*.[tT][iI][fF][fF]
+MomijiStore_OS/06_DocumentIntelligence/**/*.csv
+MomijiStore_OS/06_DocumentIntelligence/**/*.xls*
+MomijiStore_OS/06_DocumentIntelligence/**/*.zip
+MomijiStore_OS/06_DocumentIntelligence/**/*.eml
+MomijiStore_OS/06_DocumentIntelligence/**/*.jsonl
+**/35_Documents/
+**/00_Inbox/
+**/10_Archive/
+**/.aikos_mount_marker
+
 # 実行ログ・一時ファイル
 *.log
 *.tmp

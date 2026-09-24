@@ -16,6 +16,13 @@ EC運営の自動化・在庫管理・楽天/Amazon/メルカリ連携・AIエ�
 **ワークスペース外は変更禁止。**
 外部ファイル（~/Desktop、~/Documents、~/Downloads、外付けSSD、NAS、iCloud Drive 等）への読み書きは一切行わない。
 
+**例外（AIKOS Document Intelligence・2026-09-24 承認）:** NAS `/Volumes/MomijiStore/35_Documents/` 配下に限り、
+`MomijiStore_OS/06_DocumentIntelligence/` のコード（`aikos_intake.py`・Sandbox 検証スクリプト）経由での読み書きを許可する。
+- 書き込み前に SMB マウント（mount 表）と `.aikos_mount_marker` を確認し、失敗時は停止する（Mac ローカルへの代替保存禁止）
+- `10_Archive/` の原本は上書き・編集・削除しない
+- 実 NAS でのテストは `35_Documents/99_Sandbox/` のみで行い、本番 Archive・本番台帳をテストデータで汚さない
+- 35_Documents 以外の NAS 領域（data/products・mcp-server・Docker 関連・.env・20_Backup 等）は従来どおり変更禁止
+
 **旧環境（退役済み）:** 2026-09-23 に正本を `/Users/hide0726/MomijiStore` へ切り替え、旧 `Desktop/Claude Code` は `/Users/hide0726/Desktop/Claude Code_MIGRATED_DO_NOT_USE` へ改名して退役。参照専用・変更禁止・通常業務では使用しない（削除は別承認）。
 
 ---
