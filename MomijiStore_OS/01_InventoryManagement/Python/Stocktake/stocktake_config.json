@@ -1,0 +1,23 @@
+{
+  "_説明": "JANスキャン棚卸しの運用値。コードに直書きせずここで変える。ファイル名・保存場所は各スクリプト(momiji_paths 基準)で決める",
+  "server": {
+    "port": 8765,
+    "default_host": "127.0.0.1"
+  },
+  "quantity": {
+    "confirm_threshold": 300,
+    "hard_max": 9999,
+    "code_like_min_digits": 8
+  },
+  "duplicate_guard_seconds": 15,
+  "location_pattern": "^[A-Z]{1,2}-\\d{2}-\\d{2}$",
+  "temp_id_prefix": "T-",
+  "temp_id_digits": 6,
+  "commands": {
+    "CMD-UNDO": "直前の登録を取消",
+    "CMD-TEMP": "JANなし商品(仮ID)",
+    "CMD-CANCEL": "この商品をやめる",
+    "CMD-LOCCLEAR": "ロケーションを未指定に戻す"
+  },
+  "show_cost": true
+}

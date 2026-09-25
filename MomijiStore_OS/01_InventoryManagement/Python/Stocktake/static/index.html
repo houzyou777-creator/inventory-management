@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JANスキャン棚卸し</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #ffffff; --text: #1d2330; --muted: #5f6878; --line: #d9dde4;
+    --ok: #1f8a4c; --ok-bg: #e3f5ea; --warn: #9a6400; --warn-bg: #fff3d6;
+    --err: #b3261e; --err-bg: #fde7e6; --info: #1f5fbf; --info-bg: #e5eefc; --set: #6b3fa0; --set-bg: #f0e8fa;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: -apple-system, "Hiragino Sans", "Hiragino Kaku Gothic ProN", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; padding: 10px 16px;
+           background: #243044; color: #fff; font-size: 15px; }
+  header b { font-size: 17px; }
+  header .loc { background: #fff; color: #243044; padding: 2px 10px; border-radius: 6px; font-weight: 700; }
+  header .spacer { flex: 1; }
+  main { max-width: 980px; margin: 0 auto; padding: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+  label { display: block; font-size: 14px; color: var(--muted); margin-bottom: 4px; }
+  input { width: 100%; font-size: 26px; padding: 10px 12px; border: 2px solid var(--line); border-radius: 8px; }
+  input:focus { outline: none; border-color: var(--info); box-shadow: 0 0 0 3px var(--info-bg); }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 640px) { .row { grid-template-columns: 1fr; } input { font-size: 22px; } }
+  button { font-size: 16px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line);
+           background: #fff; cursor: pointer; }
+  button.primary { background: var(--info); color: #fff; border-color: var(--info); }
+  #status { border-radius: 10px; padding: 14px 16px; min-height: 120px; border: 2px solid var(--line); background: #fff; }
+  #status .badge { display: inline-block; font-weight: 700; padding: 2px 10px; border-radius: 6px; font-size: 15px; }
+  #status .name { font-size: 28px; font-weight: 700; margin: 8px 0 4px; line-height: 1.3; word-break: break-all; }
+  #status .meta { font-size: 17px; color: var(--muted); }
+  #status .msg { font-size: 18px; margin-top: 6px; }
+  .st-ok { background: var(--ok-bg) !important; border-color: var(--ok) !important; } .st-ok .badge { background: var(--ok); color: #fff; }
+  .st-warn { background: var(--warn-bg) !important; border-color: var(--warn) !important; } .st-warn .badge { background: var(--warn); color: #fff; }
+  .st-err { background: var(--err-bg) !important; border-color: var(--err) !important; } .st-err .badge { background: var(--err); color: #fff; }
+  .st-info { background: var(--info-bg) !important; border-color: var(--info) !important; } .st-info .badge { background: var(--info); color: #fff; }
+  .st-set { background: var(--set-bg) !important; border-color: var(--set) !important; } .st-set .badge { background: var(--set); color: #fff; }
+  #cands { margin-top: 8px; font-size: 18px; }
+  #cands div { padding: 6px 0; border-top: 1px dashed var(--line); }
+  #cands kbd { display: inline-block; min-width: 28px; text-align: center; font-weight: 700; background: #243044;
+               color: #fff; border-radius: 5px; margin-right: 8px; }
+  .hint { font-size: 14px; color: var(--muted); margin-top: 8px; line-height: 1.8; }
+  .hint kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 6px; background: #fff; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th, td { text-align: left; padding: 6px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td { white-space: nowrap; }
+  td.pname { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; }
+  tr.cancelled td { text-decoration: line-through; color: #9aa1ad; }
+  tr.cancel-ev td { color: var(--err); }
+  .hidden { display: none !important; }
+  #banner { position: sticky; top: 0; z-index: 5; }
+  #banner div { background: var(--err); color: #fff; padding: 10px 16px; font-weight: 700; }
+</style>
+</head>
+<body>
+<div id="banner"></div>
+<header>
+  <b>JANスキャン棚卸し</b>
+  <span id="h-session">セッション未選択</span>
+  <span id="h-staff"></span>
+  <span>ロケーション <span class="loc" id="h-loc">未指定</span></span>
+  <span class="spacer"></span>
+  <span id="h-count"></span>
+  <span id="h-master"></span>
+</header>
+
+<main>
+  <!-- 開始画面(1回だけ) -->
+  <section id="setup" class="panel">
+    <div class="row">
+      <div><label for="staff">担当者</label><input id="staff" autocomplete="off"></div>
+      <div><label for="device">端末ID(例: MAC-1 / IPAD-1)</label><input id="device" autocomplete="off"></div>
+    </div>
+    <div style="margin-top:12px">
+      <label>続きから入力するセッション(複数端末で同じセッションに入れます)</label>
+      <div id="open-sessions" class="buttons"></div>
+    </div>
+    <div class="buttons">
+      <button class="primary" id="btn-new">新しい棚卸しセッションを開始</button>
+    </div>
+    <p class="hint">商品マスターは読み取りのみです。この画面は数えた数量を記録するだけで、在庫表・Amazon・楽天・プライスターは変更しません。</p>
+  </section>
+
+  <!-- 作業画面 -->
+  <section id="work" class="hidden">
+    <div id="status" class="panel"></div>
+    <div class="panel">
+      <label for="entry" id="entry-label">JANをスキャン</label>
+      <input id="entry" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <div class="hint">
+        <kbd>Enter</kbd> 決定 ／ <kbd>Esc</kbd> この商品をやめる ／
+        <kbd>/</kbd> または <kbd>F2</kbd> 直前の登録を取消 ／
+        <kbd>*</kbd> または <kbd>F4</kbd> JANなし商品(仮ID) ／ ロケーションは棚のコードをスキャン
+      </div>
+      <div class="buttons">
+        <button id="btn-undo">直前を取消</button>
+        <button id="btn-temp">JANなし商品</button>
+        <button id="btn-locclear">ロケーション解除</button>
+        <span class="spacer" style="flex:1"></span>
+        <button id="btn-agg">途中集計</button>
+        <button id="btn-close">セッション終了</button>
+      </div>
+    </div>
+    <div class="panel">
+      <label>この端末の最近の登録(取消は線で消しています。生データは残ります)</label>
+      <table><thead><tr><th>時刻</th><th>場所</th><th>P番号</th><th>商品</th><th>数量</th><th>結果</th></tr></thead>
+        <tbody id="recent"></tbody></table>
+    </div>
+  </section>
+</main>
+
+<script>
+'use strict';
+// ---- 状態 ----
+// mode: scan(コード待ち) / choose(候補番号) / qty(数量) / confirm_qty / confirm_dup / confirm_undo / temp_memo
+const st = { session: '', staff: '', device: '', location: '', mode: 'scan', cur: null, info: null };
+const $ = id => document.getElementById(id);
+const entry = $('entry');
+
+function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } }
+function token() {
+  try {
+    const t = new URLSearchParams(location.search).get('t');
+    if (t) sessionStorage.setItem('stocktake_token', t);
+    return sessionStorage.getItem('stocktake_token') || '';
+  } catch (e) { return new URLSearchParams(location.search).get('t') || ''; }
+}
+
+// ---- 通信: 応答が返って初めて「保存済み」。失敗は必ず赤で知らせる ----
+async function api(path, body) {
+  const opt = { method: body ? 'POST' : 'GET', headers: { 'X-Stocktake-Token': token() } };
+  if (body) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+  let res;
+  try { res = await fetch(path, opt); }
+  catch (e) { banner('サーバーに届きませんでした。この操作は登録されていません。サーバーの起動を確認してください'); beep('err'); throw e; }
+  const data = await res.json().catch(() => ({ error: '応答を読めませんでした', code: 'server' }));
+  banner('');
+  if (!res.ok) { const err = new Error(data.error); err.code = data.code; err.detail = data.detail || {}; throw err; }
+  return data;
+}
+function banner(msg) { $('banner').innerHTML = ''; if (msg) { const d = document.createElement('div'); d.textContent = msg; $('banner').appendChild(d); } }
+
+// ---- 音: 画面を見なくても結果が分かるように ----
+let actx = null;
+function beep(kind) {
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const seq = { ok: [[1320, .08]], warn: [[880, .12], [660, .12]], err: [[220, .35]], done: [[990, .07], [1320, .09]] }[kind];
+    let t = actx.currentTime;
+    for (const [f, d] of seq) {
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.frequency.value = f; o.type = 'square'; g.gain.value = .06;
+      o.connect(g); g.connect(actx.destination); o.start(t); o.stop(t + d); t += d + .04;
+    }
+  } catch (e) { /* 音が出せない環境でも作業は続ける */ }
+}
+
+// ---- 表示 ----
+function show(cls, badge, name, meta, msg, cands) {
+  const s = $('status'); s.className = 'panel ' + (cls ? 'st-' + cls : ''); s.innerHTML = '';
+  const add = (tag, c, txt) => { if (!txt) return null; const e = document.createElement(tag); e.className = c; e.textContent = txt; s.appendChild(e); return e; };
+  add('span', 'badge', badge); add('div', 'name', name); add('div', 'meta', meta); add('div', 'msg', msg);
+  if (cands && cands.length) {
+    const box = document.createElement('div'); box.id = 'cands';
+    cands.forEach((p, i) => {
+      const d = document.createElement('div'); const k = document.createElement('kbd'); k.textContent = i + 1;
+      d.appendChild(k); d.appendChild(document.createTextNode(`${p.pid}  ${p.name}`)); box.appendChild(d);
+    });
+    s.appendChild(box);
+  }
+}
+function prodMeta(p) {
+  if (!p) return '';
+  const cost = (st.info && st.info.show_cost && p.cost !== null && p.cost !== undefined) ? `  ／ 標準原価 ${Number(p.cost).toLocaleString()}円` : '';
+  return `${p.pid}  ／ JAN ${p.jan || '-'}  ／ ${p.kind}${cost}`;
+}
+function setMode(mode, label) {
+  st.mode = mode; $('entry-label').textContent = label;
+  entry.value = ''; entry.setAttribute('inputmode', ['qty', 'confirm_qty', 'choose'].includes(mode) ? 'numeric' : 'text');
+  entry.focus();
+}
+// ロケーションは端末ごとの状態。再読み込みしても棚の途中で「未指定」に戻らないよう記憶する
+function locKey() { return `stocktake_loc_${st.session}_${st.device}`; }
+function setLocation(v) { st.location = v; store(locKey(), v); header(); }
+function header() {
+  $('h-session').textContent = st.session ? `セッション ${st.session}` : 'セッション未選択';
+  $('h-staff').textContent = st.staff ? `${st.staff} ／ ${st.device}` : '';
+  $('h-loc').textContent = st.location || '未指定';
+}
+function idle(msg) {
+  st.cur = null;
+  show('', '待機中', 'JANをスキャンしてください', st.location ? `ロケーション ${st.location}` : 'ロケーション未指定(任意)', msg || '');
+  setMode('scan', 'JANをスキャン');
+}
+
+async function refreshRecent() {
+  if (!st.session) return;
+  const d = await api(`/api/recent?session=${encodeURIComponent(st.session)}&device=${encodeURIComponent(st.device)}`);
+  const tb = $('recent'); tb.innerHTML = '';
+  let n = 0;
+  for (const e of d.events) {
+    const tr = document.createElement('tr');
+    if (e['取消済']) tr.className = 'cancelled';
+    if (e['イベント種別'] === '取消') tr.className = 'cancel-ev';
+    if (e['イベント種別'] === '登録' && !e['取消済']) n++;
+    const cells = [e['記録日時'].slice(11), e['ロケーション'] || '-', e['内部管理ID'] || '-',
+                   e['商品名'] || e['備考'] || e['正規化コード'], e['数量'],
+                   e['イベント種別'] === '取消' ? '取消' : e['照合結果']];
+    cells.forEach((c, i) => {
+      const td = document.createElement('td'); td.textContent = c;
+      if (i === 3) { td.className = 'pname'; td.title = c; }
+      if (i === 4) td.className = 'num';
+      tr.appendChild(td);
+    });
+    tb.appendChild(tr);
+  }
+  $('h-count').textContent = `最近の有効登録 ${n}件`;
+}
+
+// ---- 開始 ----
+async function loadSetup() {
+  st.info = await api('/api/info');
+  $('h-master').textContent = `マスター版 ${st.info.master_version}`;
+  $('staff').value = store('stocktake_staff') || '';
+  $('device').value = store('stocktake_device') || '';
+  const d = await api('/api/sessions');
+  const box = $('open-sessions'); box.innerHTML = '';
+  if (!d.sessions.length) box.textContent = '(開いているセッションはありません)';
+  for (const s of d.sessions) {
+    const b = document.createElement('button');
+    b.textContent = `${s.id}(開始 ${s.started.slice(5, 16)} ${s.staff})`;
+    b.onclick = () => begin(s.id);
+    box.appendChild(b);
+  }
+  ($('staff').value ? $('device') : $('staff')).focus();
+}
+function readWho() {
+  st.staff = $('staff').value.trim(); st.device = $('device').value.trim();
+  if (!st.staff || !st.device) { alert('担当者と端末IDを入力してください'); return false; }
+  store('stocktake_staff', st.staff); store('stocktake_device', st.device); return true;
+}
+async function begin(sid) {
+  if (!readWho()) return;
+  beep('ok');   // 最初の操作で音を有効化(ブラウザの制約)
+  if (!sid) sid = (await api('/api/sessions', { staff: st.staff, device: st.device })).session;
+  st.session = sid; $('setup').classList.add('hidden'); $('work').classList.remove('hidden');
+  st.location = store(locKey()) || '';
+  header(); idle(); await refreshRecent();
+}
+$('btn-new').onclick = () => begin('');
+['staff', 'device'].forEach(id => $(id).addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); if (id === 'staff') $('device').focus(); else begin(''); }
+}));
+
+// ---- スキャン処理 ----
+async function onScan(raw) {
+  if (!raw) return;
+  const r = await api('/api/lookup', { code: raw });
+  if (r.kind === '操作コード') return command(r.code);
+  if (r.kind === 'ロケーション') {
+    setLocation(r.code); beep('ok');
+    return idle(`ロケーションを ${r.code} に切り替えました`);
+  }
+  if (r.kind === '形式エラー' || r.kind === 'ケースコード') {
+    beep('err');
+    show('err', r.kind, raw, '', r.message + '  (登録していません。もう一度スキャンするか、読めなければ「JANなし商品」)');
+    return setMode('scan', 'JANをスキャン');
+  }
+  st.cur = { raw, lookup: r, chosen: '' };
+  if (r.status === '一致') {
+    beep('ok'); show('ok', '一致', r.product.name, prodMeta(r.product), '数量を入力して Enter');
+    return setMode('qty', `数量(単品の個数) — ${r.product.pid}`);
+  }
+  if (r.status === '仮ID') {
+    beep('ok'); show('info', `仮ID ${r.temp.id}`, r.product ? r.product.name : r.temp.memo,
+                      r.product ? prodMeta(r.product) : '(商品未特定)', '数量を入力して Enter');
+    return setMode('qty', `数量 — 仮ID ${r.temp.id}`);
+  }
+  if (r.status === '未登録JAN') {
+    beep('warn'); show('warn', '未登録JAN', `JAN ${r.code}`, '商品マスターにありません',
+                        'そのまま数量を入力して Enter(後で「未登録商品一覧」で確認します。検索は不要です)');
+    return setMode('qty', `数量(個) — 未登録JAN ${r.code}`);
+  }
+  if (r.status === 'JAN重複' || r.status === 'セット品JAN') {
+    const isSet = r.status === 'セット品JAN';
+    if (isSet && r.candidates.length === 1) {
+      beep('warn'); show('set', 'セット品JAN', r.product.name, prodMeta(r.product),
+                         'セット商品のJANです。梱包済みのセット数を入力して Enter(単品への換算は後で行います)');
+      return setMode('qty', `セット数 — ${r.product.pid}`);
+    }
+    beep('warn');
+    show(isSet ? 'set' : 'info', r.status, `JAN ${r.code}`, `${r.candidates.length}件の商品が同じJANです`,
+         '番号を入力して Enter で商品を選択。分からなければ何も入れずに Enter(後で確認)', r.candidates);
+    return setMode('choose', '候補の番号(空のまま Enter = 後で確認)');
+  }
+}
+
+function onChoose(v) {
+  const c = st.cur.lookup.candidates;
+  if (v === '') {
+    st.cur.chosen = '';
+    show('warn', '候補未選択', `JAN ${st.cur.lookup.code}`, '後で確認として記録します', '数量を入力して Enter');
+    return setMode('qty', '数量(個) — 候補未選択');
+  }
+  const i = /^\d{1,2}$/.test(v) ? Number(v) : 0;
+  if (i < 1 || i > c.length) {
+    beep('err'); show(st.cur.lookup.status === 'セット品JAN' ? 'set' : 'info', st.cur.lookup.status, `JAN ${st.cur.lookup.code}`,
+                      '', `1〜${c.length} の番号を入力してください(コードを読んだ場合は Esc でやめてから読み直し)`, c);
+    return setMode('choose', '候補の番号(空のまま Enter = 後で確認)');
+  }
+  st.cur.chosen = c[i - 1].pid;
+  beep('ok'); show('ok', '候補選択', c[i - 1].name, prodMeta(c[i - 1]), '数量を入力して Enter');
+  setMode('qty', `数量 — ${c[i - 1].pid}`);
+}
+
+async function submit(qty, opts) {
+  const base = { session: st.session, staff: st.staff, device: st.device, location: st.location, qty };
+  try {
+    let d;
+    if (st.cur.temp) d = await api('/api/register_temp', Object.assign(base, { memo: st.cur.memo }, opts));
+    else d = await api('/api/register', Object.assign(base, { raw: st.cur.raw, chosen_pid: st.cur.chosen }, opts));
+    const e = d.event; beep('done');
+    const what = e['商品名'] || (e['コード種別'] === '仮ID' ? `仮ID ${e['正規化コード']}` : `JAN ${e['正規化コード']}`);
+    let msg = `登録しました: ${what} × ${e['数量']}${e['数量単位'] === 'セット' ? 'セット' : ''}`;
+    if (st.cur.temp) msg += `  ／ 現物に「${e['正規化コード']}」と書いて(貼って)ください`;
+    idle(msg); await refreshRecent();
+  } catch (err) {
+    if (!err.code) return;   // 通信エラーは banner で表示済み。状態を残して再度 Enter できるようにする
+    if (err.code === 'confirm_quantity') {
+      beep('warn'); st.cur.pendingQty = qty; st.cur.opts = opts || {};
+      show('warn', '数量の確認', `数量 ${qty}`, '', err.message);
+      return setMode('confirm_qty', '確認: 同じ数量をもう一度入力して Enter');
+    }
+    if (err.code === 'confirm_duplicate') {
+      beep('warn'); st.cur.pendingQty = qty; st.cur.opts = opts || {};
+      show('warn', '二重登録の確認', `数量 ${qty}`, '', err.message + '。追加で登録するなら何も入れずに Enter、やめるなら Esc');
+      return setMode('confirm_dup', '確認: 何も入れずに Enter = 追加登録 / Esc = やめる');
+    }
+    beep('err'); show('err', '登録していません', '', '', err.message);
+    if (err.code.startsWith('qty_')) return setMode('qty', '数量を入力し直して Enter');
+    idle(err.message);
+  }
+}
+
+function onQty(v) {
+  if (v === '') { beep('err'); show('err', '数量が空欄', '', '', '数量を入力してください。0個なら 0 を入力'); return setMode('qty', '数量を入力して Enter'); }
+  // コードを数量欄へ読み込んだ事故(最も起きやすいミス)はサーバーへ送る前に止める
+  if (/^\d+$/.test(v) && v.length >= st.info.quantity.code_like_min_digits) {
+    beep('err'); show('err', '数量欄にコード', v, '', '数量欄にJANなどのコードが入りました。登録していません。数量を入力し直してください');
+    return setMode('qty', '数量を入力し直して Enter');
+  }
+  submit(v, {});
+}
+
+// ---- 取消・仮ID・操作コード ----
+async function askUndo() {
+  const d = await api(`/api/recent?session=${encodeURIComponent(st.session)}&device=${encodeURIComponent(st.device)}`);
+  const cancelled = new Set(d.events.filter(e => e['イベント種別'] === '取消').map(e => e['取消対象イベントID']));
+  const t = d.events.find(e => e['イベント種別'] === '登録' && !e['取消済'] && !cancelled.has(e['イベントID']));
+  if (!t) { beep('err'); return idle('取り消せる登録がありません'); }
+  st.cur = { undo: t['イベントID'] };
+  beep('warn');
+  show('warn', '取消の確認', t['商品名'] || t['正規化コード'], `${t['イベントID']} ／ 数量 ${t['数量']} ／ ${t['ロケーション'] || '未指定'}`,
+       'この登録を取り消します(元の記録は残ります)。何も入れずに Enter = 取消 / Esc = やめる');
+  setMode('confirm_undo', '確認: 何も入れずに Enter = 取消 / Esc = やめる');
+}
+async function doUndo() {
+  try {
+    const d = await api('/api/cancel', { session: st.session, staff: st.staff, device: st.device, target: st.cur.undo });
+    beep('done'); idle(`取り消しました: ${d.event['取消対象イベントID']}`); await refreshRecent();
+  } catch (err) { if (err.code) { beep('err'); idle(err.message); } }
+}
+function startTemp() {
+  st.cur = { temp: true, memo: '' };
+  beep('ok'); show('info', 'JANなし商品', '仮IDで登録します', '', '後で商品を特定できるメモを入力して Enter(例: 青い箱 犬用ガム)');
+  setMode('temp_memo', 'メモ(見た目・特徴)');
+}
+function command(code) {
+  if (code === 'CMD-UNDO') return askUndo();
+  if (code === 'CMD-TEMP') return startTemp();
+  if (code === 'CMD-LOCCLEAR') { setLocation(''); beep('ok'); return idle('ロケーションを未指定に戻しました'); }
+  if (code === 'CMD-CANCEL') { beep('ok'); return idle('やめました(登録していません)'); }
+}
+
+// ---- キー操作: マウスなしで完結させる ----
+entry.addEventListener('keydown', async e => {
+  const v = entry.value.trim();
+  if (e.key === 'Escape') { e.preventDefault(); beep('ok'); return idle('やめました(登録していません)'); }
+  if (st.mode === 'scan' && v === '' && (e.key === '/' || e.key === 'F2')) { e.preventDefault(); return askUndo(); }
+  if (st.mode === 'scan' && v === '' && (e.key === '*' || e.key === 'F4')) { e.preventDefault(); return startTemp(); }
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  try {
+    switch (st.mode) {
+      case 'scan': entry.value = ''; return await onScan(v);
+      case 'choose': return onChoose(v);
+      case 'qty': return onQty(v);
+      case 'confirm_qty':
+        if (v !== String(st.cur.pendingQty)) { beep('err'); show('err', '数量が一致しません', '', '', '最初から数量を入力し直してください'); return setMode('qty', '数量を入力して Enter'); }
+        return submit(v, Object.assign({}, st.cur.opts, { qty_confirmed: true }));
+      case 'confirm_dup':
+        if (v !== '') { beep('err'); return idle('二重登録の確認中に入力があったため、登録しませんでした'); }
+        return submit(st.cur.pendingQty, Object.assign({}, st.cur.opts, { dup_confirmed: true }));
+      case 'confirm_undo':
+        if (v !== '') { beep('err'); return idle('取消の確認中に入力があったため、取り消しませんでした'); }
+        return doUndo();
+      case 'temp_memo':
+        if (!v) { beep('err'); return setMode('temp_memo', 'メモを入力してください(必須)'); }
+        st.cur.memo = v; show('info', 'JANなし商品', v, '仮IDは登録時に発行します', '数量を入力して Enter');
+        return setMode('qty', '数量(個) — JANなし商品');
+    }
+  } catch (err) { if (err.code) { beep('err'); idle(err.message); } }
+});
+// キーイベントを出さない入力(iPad のソフトキーボード等)でも / と * の操作が効くよう、入力内容でも判定する
+entry.addEventListener('input', () => {
+  if (st.mode !== 'scan') return;
+  const v = entry.value.trim();
+  if (v === '/' || v === '／') { entry.value = ''; askUndo().catch(() => {}); }
+  else if (v === '*' || v === '＊') { entry.value = ''; startTemp(); }
+});
+// どこをクリックしても入力欄へ戻す(スキャナーの入力を取りこぼさない)
+document.addEventListener('click', e => { if (!['INPUT', 'BUTTON'].includes(e.target.tagName) && !$('work').classList.contains('hidden')) entry.focus(); });
+
+$('btn-undo').onclick = () => askUndo();
+$('btn-temp').onclick = () => startTemp();
+$('btn-locclear').onclick = () => command('CMD-LOCCLEAR');
+async function aggregate(close) {
+  if (close && !confirm(`セッション ${st.session} を終了して集計します。終了後はこのセッションへ登録できません。よろしいですか?`)) return entry.focus();
+  try {
+    const d = await api(close ? '/api/close' : '/api/aggregate', { session: st.session, staff: st.staff, device: st.device });
+    const s = d.stats;
+    alert(`集計しました\n実棚 ${s.products}商品 / ${s.units}個(単品)\n未登録JAN・候補未選択 ${s.unregistered_qty}\n仮ID ${s.temp_qty}\nセット換算待ち ${s.set_pending_qty}\n要確認 ${d.checks}件\n\n${d.file}`);
+    if (close) { location.reload(); return; }
+  } catch (err) { if (err.code) alert(err.message); }
+  entry.focus();
+}
+$('btn-agg').onclick = () => aggregate(false);
+$('btn-close').onclick = () => aggregate(true);
+
+loadSetup().catch(err => { if (err && err.code === 'token') banner(err.message); });
+</script>
+</body>
+</html>

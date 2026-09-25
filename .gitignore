@@ -64,6 +64,10 @@ MomijiStore_OS/02_Analytics/SourceData/AmazonAds_monthly_statement_*.pdf
 MomijiStore_OS/01_InventoryManagement/SourceData/Reference/
 MomijiStore_OS/02_Analytics/SourceData/Archive/
 
+# JANスキャン棚卸しの生データ・集計(2026-09-25 承認: スキャン生データはGit管理外)
+#  追記型の記録CSV・仮ID台帳・集計xlsx。コード・設定・テストは 01_InventoryManagement/Python/Stocktake/ で管理する
+MomijiStore_OS/01_InventoryManagement/SourceData/Stocktake/
+
 # =============================================================
 #  AIKOS Document Intelligence — 証憑・資料は Git へ入れない
 #  正本は NAS 35_Documents。Git にはコード・設定・仕様・テストだけを置く。
