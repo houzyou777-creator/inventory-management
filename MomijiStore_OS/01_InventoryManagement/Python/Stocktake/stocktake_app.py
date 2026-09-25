@@ -73,7 +73,8 @@ class App:
     def handle(self, method, path, query, body):
         s = self.store
         if method == 'GET' and path == '/api/info':
-            return {'master_version': self.master.version, 'master_file': os.path.basename(self.master.path),
+            return {'environment': s.environment, 'store_id': s.store_id,
+                    'master_version': self.master.version, 'master_file': os.path.basename(self.master.path),
                     'products': len(self.master.products), 'commands': self.config['commands'],
                     'location_pattern': self.config['location_pattern'],
                     'quantity': self.config['quantity'], 'show_cost': self.config.get('show_cost', True)}
@@ -203,6 +204,7 @@ def main():
     print('JANスキャン棚卸し画面を起動しました(終了は Ctrl+C)')
     print(f'  商品マスター: {master.path}  版 {master.version}  {len(master.products)}件')
     print(f'  保存先      : {store.dir}')
+    print(f'  環境        : {"本番" if store.environment == S.ENV_PRODUCTION else "練習用"}({store.environment})')
     print(f'  この Mac    : http://127.0.0.1:{a.port}/' + (f'?t={token}' if token else ''))
     if a.lan:
         print(f'  LAN 内端末  : http://{lan_address()}:{a.port}/?t={token}')

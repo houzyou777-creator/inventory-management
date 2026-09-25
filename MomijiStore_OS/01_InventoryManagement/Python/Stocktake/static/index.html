@@ -18,6 +18,9 @@
   header b { font-size: 17px; }
   header .loc { background: #fff; color: #243044; padding: 2px 10px; border-radius: 6px; font-weight: 700; }
   header .spacer { flex: 1; }
+  header .env { padding: 2px 10px; border-radius: 6px; font-weight: 700; }
+  header .env-practice { background: #f5c451; color: #3a2a00; }
+  header .env-prod { background: #d93a3a; color: #fff; }
   main { max-width: 980px; margin: 0 auto; padding: 16px; }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 14px; }
   label { display: block; font-size: 14px; color: var(--muted); margin-bottom: 4px; }
@@ -61,6 +64,7 @@
 <div id="banner"></div>
 <header>
   <b>JANスキャン棚卸し</b>
+  <span id="h-env" class="env"></span>
   <span id="h-session">セッション未選択</span>
   <span id="h-staff"></span>
   <span>ロケーション <span class="loc" id="h-loc">未指定</span></span>
@@ -178,9 +182,10 @@ function show(cls, badge, name, meta, msg, cands) {
     s.appendChild(box);
   }
 }
-// 「バラ/梱包済み」は単品セット共通JANのときだけ使う。JAN重複ではまとめ買い品も「単品」登録のため、マスターの種別をそのまま出す
+// 「単品候補/セット候補」はマスターの種別を言い換えただけで、物理的な1個とは断定しない
+// (マスター上は単品でも実態は×4・×5のまとめ買い品のことがある。入数の推測はしない)
 function kindLabel(p) {
-  if (st.cur && st.cur.lookup && st.cur.lookup.status === '単品セット共通JAN') return p.kind === '単品' ? 'バラの単品' : '梱包済みセット';
+  if (st.cur && st.cur.lookup && st.cur.lookup.status === '単品セット共通JAN') return p.kind === '単品' ? '単品候補' : 'セット候補';
   return `マスター種別: ${p.kind}`;
 }
 function prodMeta(p) {
@@ -194,7 +199,8 @@ function setMode(mode, label) {
   entry.focus();
 }
 // ロケーションは端末ごとの状態。再読み込みしても棚の途中で「未指定」に戻らないよう記憶する
-function locKey() { return `stocktake_loc_${st.session}_${st.device}`; }
+// 練習用と本番で同じセッションID・端末IDでも混ざらないよう、環境と保存先IDを含める
+function locKey() { return ['stocktake_loc', st.info.environment, st.info.store_id, st.session, st.device].join('|'); }
 function setLocation(v) { st.location = v; store(locKey(), v); header(); }
 function header() {
   $('h-session').textContent = st.session ? `セッション ${st.session}` : 'セッション未選択';
@@ -235,6 +241,8 @@ async function refreshRecent() {
 async function loadSetup() {
   st.info = await api('/api/info');
   $('h-master').textContent = `マスター版 ${st.info.master_version}`;
+  const env = $('h-env'); const prod = st.info.environment === 'production';
+  env.textContent = prod ? '本番' : '練習用'; env.className = 'env ' + (prod ? 'env-prod' : 'env-practice');
   $('staff').value = store('stocktake_staff') || '';
   $('device').value = store('stocktake_device') || '';
   const d = await api('/api/sessions');
@@ -256,9 +264,11 @@ function readWho() {
 async function begin(sid) {
   if (!readWho()) return;
   beep('ok');   // 最初の操作で音を有効化(ブラウザの制約)
-  if (!sid) sid = (await api('/api/sessions', { staff: st.staff, device: st.device })).session;
+  const isNew = !sid;
+  if (isNew) sid = (await api('/api/sessions', { staff: st.staff, device: st.device })).session;
   st.session = sid; $('setup').classList.add('hidden'); $('work').classList.remove('hidden');
-  st.location = store(locKey()) || '';
+  // 新規セッションは必ず「未指定」から始める。続きの入力だけ、同じ環境・保存先・セッション・端末の値を戻す
+  if (isNew) setLocation(''); else st.location = store(locKey()) || '';
   header(); idle(); await refreshRecent();
 }
 $('btn-new').onclick = () => begin('');
@@ -298,9 +308,10 @@ async function onScan(raw) {
   if (r.status === '単品セット共通JAN') {
     // 単品へ自動確定しない: 梱包済みセットを単品として数える過少計上を防ぐ
     beep('warn');
-    show('set', r.status, `JAN ${r.code}`, 'バラの単品と梱包済みセットが同じJANです',
-         '現物を見て番号を入力して Enter。バラなら「バラの単品」、梱包されたままなら「梱包済みセット」', r.candidates);
-    return setMode('choose', 'バラ/セットの番号(0 または 空のまま Enter = 後で確認)');
+    show('set', r.status, `JAN ${r.code}`, '単品とセットの商品が同じJANです',
+         '現物を見て番号を入力して Enter。バラで置かれていれば「単品候補」、梱包されたままなら「セット候補」。' +
+         '商品名と現物が合わない・迷うときは 0(後で確認)', r.candidates);
+    return setMode('choose', '候補の番号(0 または 空のまま Enter = 後で確認)');
   }
   if (r.status === 'JAN重複' || r.status === 'セット品JAN') {
     const isSet = r.status === 'セット品JAN';
@@ -334,12 +345,12 @@ function onChoose(v) {
   st.cur.chosen = p.pid;
   if (p.kind !== '単品') {
     // セットは単品へ換算しない。セットP×セット数のまま「セット換算待ち」で記録する
-    beep('ok'); show('set', '梱包済みセット', p.name, prodMeta(p),
+    beep('ok'); show('set', 'セット候補を選択', p.name, prodMeta(p),
                      '梱包されたままのセットの数を入力して Enter(単品への換算はセット構成表の完成後)');
     return setMode('qty', `セット数 — ${p.pid}(セット換算待ち)`);
   }
-  beep('ok'); show('ok', st.cur.lookup.status === '単品セット共通JAN' ? 'バラの単品' : '候補選択', p.name, prodMeta(p),
-                   '単品の個数を入力して Enter');
+  beep('ok'); show('ok', st.cur.lookup.status === '単品セット共通JAN' ? '単品候補を選択' : '候補選択', p.name, prodMeta(p),
+                   'この商品の個数を入力して Enter');
   setMode('qty', `数量(単品の個数) — ${p.pid}`);
 }
 

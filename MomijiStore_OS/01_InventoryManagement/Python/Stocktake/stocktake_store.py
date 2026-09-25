@@ -13,6 +13,7 @@
 """
 import csv
 import fcntl
+import hashlib
 import os
 import re
 import threading
@@ -51,6 +52,19 @@ UNIT_SET = 'セット'
 UNIT_PIECE = '個(未確定)'   # 未登録・仮ID・候補未選択(バラ/セット未選択を含む)。何の単位かは後で照合して決まる
 
 TIME_FMT = '%Y-%m-%d %H:%M:%S'
+
+# 保存先が本番(DATA_DIR)か練習用かは保存場所で決める(フラグの付け忘れで本番扱いにならないよう、既定以外はすべて練習)
+ENV_PRODUCTION = 'production'
+ENV_PRACTICE = 'practice'
+
+
+def environment_of(data_dir):
+    return ENV_PRODUCTION if os.path.realpath(data_dir) == os.path.realpath(DATA_DIR) else ENV_PRACTICE
+
+
+def store_id_of(data_dir):
+    """保存先ごとの識別子。練習用同士(別フォルダ)でも画面の状態が混ざらないように使う。"""
+    return hashlib.sha256(os.path.realpath(data_dir).encode()).hexdigest()[:10]
 
 
 class StoreError(Exception):
@@ -119,6 +133,8 @@ class Store:
         self.master = master
         self.config = config
         self.dir = data_dir
+        self.environment = environment_of(data_dir)
+        self.store_id = store_id_of(data_dir)
         self.clock = clock or datetime.now
         self._lock = threading.RLock()
         self._seq = {}

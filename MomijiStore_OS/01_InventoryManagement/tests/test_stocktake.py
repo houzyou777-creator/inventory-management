@@ -613,6 +613,58 @@ class RealSharedJan21(unittest.TestCase):
         self.assertEqual([(b['pid'], b['qty']) for b in a['set_pending']], [('P000814', 8)])
 
 
+# ─────────────── I. 練習用/本番の分離・ロケーション記憶(2026-09-25) ───────────────
+
+class EnvironmentSeparation(unittest.TestCase):
+    """本番の保存先は作らずに判定だけを確かめる(Store を本番パスで開かない)。"""
+
+    def test_default_dir_is_production_and_others_are_practice(self):
+        self.assertEqual(S.environment_of(S.DATA_DIR), S.ENV_PRODUCTION)
+        self.assertEqual(S.environment_of(S.DATA_DIR + '/'), S.ENV_PRODUCTION)
+        self.assertEqual(S.environment_of(os.path.join(S.DATA_DIR, '_practice')), S.ENV_PRACTICE)
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(S.environment_of(d), S.ENV_PRACTICE)
+
+    def test_store_id_is_per_directory(self):
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            self.assertEqual(S.store_id_of(a), S.store_id_of(a + '/'))
+            self.assertNotEqual(S.store_id_of(a), S.store_id_of(b))
+        self.assertNotEqual(S.store_id_of(S.DATA_DIR), S.store_id_of(os.path.join(S.DATA_DIR, '_practice')))
+
+    def test_same_session_id_in_two_stores_gets_different_identity(self):
+        # 練習用と本番(あるいは練習用同士)で ST-…-01 が重なっても、画面の状態キーは別になる
+        with tempfile.TemporaryDirectory() as root:
+            m = J.load_master(make_master(root))
+            s1 = S.Store(m, CFG, data_dir=os.path.join(root, 'a'))
+            s2 = S.Store(m, CFG, data_dir=os.path.join(root, 'b'))
+            try:
+                self.assertEqual(s1.start_session('x', 'MAC-1'), s2.start_session('x', 'MAC-1'))
+                self.assertNotEqual(s1.store_id, s2.store_id)
+                self.assertEqual((s1.environment, s2.environment), (S.ENV_PRACTICE, S.ENV_PRACTICE))
+            finally:
+                s1.close()
+                s2.close()
+
+
+class ScreenRules(unittest.TestCase):
+    """画面(index.html)の安全規則を文字列で確かめる(ブラウザでの動作確認と併用)。"""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(APP.STATIC_DIR, 'index.html'), encoding='utf-8') as f:
+            cls.html = f.read()
+
+    def test_location_key_includes_environment_store_session_device(self):
+        self.assertIn("['stocktake_loc', st.info.environment, st.info.store_id, st.session, st.device]", self.html)
+
+    def test_new_session_starts_unassigned(self):
+        self.assertIn("if (isNew) setLocation(''); else st.location = store(locKey()) || '';", self.html)
+
+    def test_shared_jan_labels_are_not_definitive(self):
+        self.assertIn("'単品候補' : 'セット候補'", self.html)
+        self.assertNotIn("'バラの単品'", self.html)
+
+
 # ─────────────── G. HTTP ───────────────
 
 class Http(Base):
@@ -662,6 +714,11 @@ class Http(Base):
         self.assertEqual([(c['pid'], c['kind']) for c in r['candidates']], [('P000005', '単品'), ('P000006', 'セット')])
         st, r = self.call('/api/register', dict(who, raw=SHARED, qty='8', chosen_pid='P000006'))
         self.assertEqual((st, r['event']['数量単位'], r['event']['内部管理ID']), (200, S.UNIT_SET, 'P000006'))
+
+    def test_info_reports_practice_environment(self):
+        self.start()
+        st, r = self.call('/api/info')
+        self.assertEqual((st, r['environment'], r['store_id']), (200, S.ENV_PRACTICE, self.store.store_id))
 
     def test_host_header_guard_on_localhost(self):
         self.start()
