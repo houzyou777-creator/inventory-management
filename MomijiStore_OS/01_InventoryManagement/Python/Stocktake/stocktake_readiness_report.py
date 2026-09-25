@@ -35,6 +35,7 @@ SH_LEGACY = '商品マスター'
 
 ST_SCANNABLE = 'スキャン可'
 ST_DUP = 'JAN重複(候補選択が必要)'
+ST_SHARED = '単品セット共通JAN(バラ/セットを選択)'
 ST_BLANK = 'JAN空欄(仮ID運用)'
 ST_ASIN = 'JAN欄にASIN(要修正)'
 ST_BAD = 'JAN形式エラー(要修正)'
@@ -163,10 +164,10 @@ def jan_status(master, stock_pids):
             note = why
         elif len(master.by_jan_single.get(p['jan'], [])) > 1:
             st, note = ST_DUP, '同JANの単品: ' + ', '.join(master.by_jan_single[p['jan']])
+        elif p['jan'] in master.by_jan_set:
+            st, note = ST_SHARED, '同JANのセット: ' + ', '.join(master.by_jan_set[p['jan']])
         else:
             st, note = ST_SCANNABLE, ''
-            if p['jan'] in master.by_jan_set:
-                note = '同JANのセットあり(スキャンは単品へ寄せる): ' + ', '.join(master.by_jan_set[p['jan']])
         rows.append([pid, s(p['jan_raw']), p['jan'], st, '有' if pid in stock_pids else '無',
                      p['cost'] if p['cost'] is not None else '', p['name'], note])
     return rows
@@ -228,7 +229,8 @@ def build(out_dir):
         ['単品: JAN空欄(仮ID運用・後で紐付け)', cnt[ST_BLANK], ''],
         ['単品: JAN欄にASIN(要修正)', cnt[ST_ASIN], ''],
         ['単品: JAN形式エラー(要修正)', cnt[ST_BAD], ''],
-        ['単品とセットで共通のJAN', len(shared), 'スキャンは単品へ寄せる(物理単品基準)'],
+        ['単品: 単品とセットで共通のJAN(バラ/セットを選択)', cnt[ST_SHARED],
+         f'{len(shared)}JAN。単品へ自動確定しない。梱包済みセットはセットP×セット数で「セット換算待ち」'],
         ['セットだけに一致するJAN', len({r[0] for r in sets_only}), '「セット品JAN」として記録。換算はセット構成表の完成後'],
         ['単品で在庫管理テーブルに行が無い', sum(1 for r in status if r[4] == '無'),
          'スキャン・集計は可能。在庫管理テーブルへの反映(Phase 4)前に在庫行の追加要否を決める'],
@@ -244,7 +246,7 @@ def build(out_dir):
         r[2].alignment = Alignment(wrap_text=True)
     write_sheet(wb, '旧システムID比較', ['旧システムP番号', '旧システム商品名', '旧JAN', '旧ASIN', '商品マスター同P番号の商品名',
                                        '判定', '商品マスターでの該当P(JAN/ASINで照合)'], legacy_rows, [14, 40, 16, 14, 50, 8, 26])
-    order = [ST_DUP, ST_ASIN, ST_BAD, ST_BLANK, ST_SCANNABLE]
+    order = [ST_DUP, ST_SHARED, ST_ASIN, ST_BAD, ST_BLANK, ST_SCANNABLE]
     status.sort(key=lambda r: (order.index(r[3]), r[0]))
     head = ['内部管理ID', 'JAN(マスター値)', '正規化JAN', 'スキャン状態', '在庫行', '標準原価', '商品名', '備考']
     widths = [12, 16, 15, 26, 8, 10, 60, 60]

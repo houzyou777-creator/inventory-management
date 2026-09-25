@@ -169,10 +169,19 @@ function show(cls, badge, name, meta, msg, cands) {
     const box = document.createElement('div'); box.id = 'cands';
     cands.forEach((p, i) => {
       const d = document.createElement('div'); const k = document.createElement('kbd'); k.textContent = i + 1;
-      d.appendChild(k); d.appendChild(document.createTextNode(`${p.pid}  ${p.name}`)); box.appendChild(d);
+      d.appendChild(k); d.appendChild(document.createTextNode(`【${kindLabel(p)}】 ${p.pid}  ${p.name}`)); box.appendChild(d);
     });
+    // 「後で確認」も選択肢として見せる(分からないときに推測で選ばせない)
+    const later = document.createElement('div'); const k0 = document.createElement('kbd'); k0.textContent = '0';
+    later.appendChild(k0); later.appendChild(document.createTextNode('後で確認(0 または 空のまま Enter)'));
+    box.appendChild(later);
     s.appendChild(box);
   }
+}
+// 「バラ/梱包済み」は単品セット共通JANのときだけ使う。JAN重複ではまとめ買い品も「単品」登録のため、マスターの種別をそのまま出す
+function kindLabel(p) {
+  if (st.cur && st.cur.lookup && st.cur.lookup.status === '単品セット共通JAN') return p.kind === '単品' ? 'バラの単品' : '梱包済みセット';
+  return `マスター種別: ${p.kind}`;
 }
 function prodMeta(p) {
   if (!p) return '';
@@ -286,6 +295,13 @@ async function onScan(raw) {
                         'そのまま数量を入力して Enter(後で「未登録商品一覧」で確認します。検索は不要です)');
     return setMode('qty', `数量(個) — 未登録JAN ${r.code}`);
   }
+  if (r.status === '単品セット共通JAN') {
+    // 単品へ自動確定しない: 梱包済みセットを単品として数える過少計上を防ぐ
+    beep('warn');
+    show('set', r.status, `JAN ${r.code}`, 'バラの単品と梱包済みセットが同じJANです',
+         '現物を見て番号を入力して Enter。バラなら「バラの単品」、梱包されたままなら「梱包済みセット」', r.candidates);
+    return setMode('choose', 'バラ/セットの番号(0 または 空のまま Enter = 後で確認)');
+  }
   if (r.status === 'JAN重複' || r.status === 'セット品JAN') {
     const isSet = r.status === 'セット品JAN';
     if (isSet && r.candidates.length === 1) {
@@ -302,20 +318,29 @@ async function onScan(raw) {
 
 function onChoose(v) {
   const c = st.cur.lookup.candidates;
-  if (v === '') {
+  if (v === '' || v === '0') {
     st.cur.chosen = '';
-    show('warn', '候補未選択', `JAN ${st.cur.lookup.code}`, '後で確認として記録します', '数量を入力して Enter');
-    return setMode('qty', '数量(個) — 候補未選択');
+    show('warn', '後で確認', `JAN ${st.cur.lookup.code}`, '候補を選ばずに記録します(実棚には入らず「要確認」に残ります)',
+         '見えている個数を入力して Enter');
+    return setMode('qty', '数量(個) — 後で確認');
   }
-  const i = /^\d{1,2}$/.test(v) ? Number(v) : 0;
+  const i = /^\d{1,2}$/.test(v) ? Number(v) : -1;
   if (i < 1 || i > c.length) {
-    beep('err'); show(st.cur.lookup.status === 'セット品JAN' ? 'set' : 'info', st.cur.lookup.status, `JAN ${st.cur.lookup.code}`,
-                      '', `1〜${c.length} の番号を入力してください(コードを読んだ場合は Esc でやめてから読み直し)`, c);
-    return setMode('choose', '候補の番号(空のまま Enter = 後で確認)');
+    beep('err'); show(st.cur.lookup.status === 'JAN重複' ? 'info' : 'set', st.cur.lookup.status, `JAN ${st.cur.lookup.code}`,
+                      '', `1〜${c.length} の番号か 0(後で確認)を入力してください(コードを読んだ場合は Esc でやめてから読み直し)`, c);
+    return setMode('choose', '候補の番号(0 または 空のまま Enter = 後で確認)');
   }
-  st.cur.chosen = c[i - 1].pid;
-  beep('ok'); show('ok', '候補選択', c[i - 1].name, prodMeta(c[i - 1]), '数量を入力して Enter');
-  setMode('qty', `数量 — ${c[i - 1].pid}`);
+  const p = c[i - 1];
+  st.cur.chosen = p.pid;
+  if (p.kind !== '単品') {
+    // セットは単品へ換算しない。セットP×セット数のまま「セット換算待ち」で記録する
+    beep('ok'); show('set', '梱包済みセット', p.name, prodMeta(p),
+                     '梱包されたままのセットの数を入力して Enter(単品への換算はセット構成表の完成後)');
+    return setMode('qty', `セット数 — ${p.pid}(セット換算待ち)`);
+  }
+  beep('ok'); show('ok', st.cur.lookup.status === '単品セット共通JAN' ? 'バラの単品' : '候補選択', p.name, prodMeta(p),
+                   '単品の個数を入力して Enter');
+  setMode('qty', `数量(単品の個数) — ${p.pid}`);
 }
 
 async function submit(qty, opts) {
@@ -326,7 +351,7 @@ async function submit(qty, opts) {
     else d = await api('/api/register', Object.assign(base, { raw: st.cur.raw, chosen_pid: st.cur.chosen }, opts));
     const e = d.event; beep('done');
     const what = e['商品名'] || (e['コード種別'] === '仮ID' ? `仮ID ${e['正規化コード']}` : `JAN ${e['正規化コード']}`);
-    let msg = `登録しました: ${what} × ${e['数量']}${e['数量単位'] === 'セット' ? 'セット' : ''}`;
+    let msg = `登録しました: ${what} × ${e['数量']}${e['数量単位'] === 'セット' ? 'セット(セット換算待ち)' : ''}`;
     if (st.cur.temp) msg += `  ／ 現物に「${e['正規化コード']}」と書いて(貼って)ください`;
     idle(msg); await refreshRecent();
   } catch (err) {

@@ -48,7 +48,7 @@ METHOD_CHOSEN = '候補選択'
 METHOD_TEMP = '仮ID'
 UNIT_SINGLE = '単品'
 UNIT_SET = 'セット'
-UNIT_PIECE = '個(未確定)'   # 未登録・仮ID・候補未選択。何の単位かは後で照合して決まる
+UNIT_PIECE = '個(未確定)'   # 未登録・仮ID・候補未選択(バラ/セット未選択を含む)。何の単位かは後で照合して決まる
 
 TIME_FMT = '%Y-%m-%d %H:%M:%S'
 
@@ -264,7 +264,8 @@ class Store:
                 res = self.master.resolve_jan(n['code'])
                 status, pid = res['status'], res['pid']
                 if chosen_pid:
-                    if chosen_pid not in res['candidates'] or status not in (J.R_DUPLICATE, J.R_SET_ONLY):
+                    # 共通JANでセットPを選んだ場合も、ここでは換算しない(セットP×セット数のまま記録)
+                    if chosen_pid not in res['candidates'] or status not in (J.R_DUPLICATE, J.R_SET_ONLY, J.R_SHARED):
                         raise StoreError(f'{chosen_pid} はこのJANの候補ではありません', 'bad_choice')
                     status, pid, method = J.R_CHOSEN, chosen_pid, METHOD_CHOSEN
                 elif not pid and res['candidates']:
@@ -305,6 +306,7 @@ class Store:
             unit = UNIT_SINGLE
         elif prod:
             unit = UNIT_SET
+            note = note or 'セット換算待ち(構成表の完成後に単品へ換算)'
         else:
             unit = UNIT_PIECE
         return {'処理区分': ses['op'], 'イベント種別': EV_REGISTER, '端末ID': device, '担当者': staff,

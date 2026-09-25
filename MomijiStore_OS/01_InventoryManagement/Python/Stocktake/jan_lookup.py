@@ -57,6 +57,7 @@ R_MATCH = '一致'
 R_CHOSEN = '候補選択'
 R_DUPLICATE = 'JAN重複'
 R_SET_ONLY = 'セット品JAN'
+R_SHARED = '単品セット共通JAN'   # バラの単品か梱包済みセットかは現物を見た人が選ぶ
 R_UNREGISTERED = '未登録JAN'
 R_TEMP = '仮ID'
 
@@ -172,13 +173,20 @@ class Master:
         self.jan_issues = jan_issues        # [(pid, 元の値, 理由)] JANとして使えない行
 
     def resolve_jan(self, code):
-        """正規化済みJANを照合する。推測はしない(重複は候補を返すだけ)。"""
+        """正規化済みJANを照合する。推測はしない(重複は候補を返すだけ)。
+
+        単品とセットが同じJANを持つときは単品へ自動確定しない(2026-09-25 必須修正①)。
+        梱包済みセットを単品として読むと、セット数が単品数として黙って記録される
+        (例: 2本セット8個 → 単品8個。正しくは16個相当)ため、バラか梱包済みセットかを人に選ばせる。
+        """
         singles = self.by_jan_single.get(code, [])
+        sets = self.by_jan_set.get(code, [])
+        if singles and sets:
+            return {'status': R_SHARED, 'pid': '', 'candidates': singles + sets}
         if len(singles) == 1:
             return {'status': R_MATCH, 'pid': singles[0], 'candidates': singles}
         if len(singles) > 1:
             return {'status': R_DUPLICATE, 'pid': '', 'candidates': singles}
-        sets = self.by_jan_set.get(code, [])
         if sets:
             return {'status': R_SET_ONLY, 'pid': sets[0] if len(sets) == 1 else '', 'candidates': sets}
         return {'status': R_UNREGISTERED, 'pid': '', 'candidates': []}

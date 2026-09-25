@@ -34,6 +34,7 @@ NO_LOC = '(未指定)'
 
 CHK_DUP_UNSELECTED = 'JAN重複(候補未選択)'
 CHK_SET_UNSELECTED = 'セット品JAN(候補未選択)'
+CHK_SHARED_UNSELECTED = '単品セット共通JAN(バラ/セット未選択)'
 CHK_CHANGED = '照合結果が記録時と変化'
 CHK_RESOLVED_LATER = '記録後に照合できた'
 CHK_LARGE = '大量数量(確認済みで登録)'
@@ -119,15 +120,21 @@ def aggregate(events, master, temp_links, temp_items, config, set_composition=No
             res = master.resolve_jan(code)
             if res['status'] == J.R_MATCH:
                 pid = res['pid']
-            elif res['status'] in (J.R_DUPLICATE, J.R_SET_ONLY):
+            elif res['status'] in (J.R_DUPLICATE, J.R_SET_ONLY, J.R_SHARED):
                 if e['入力方法'] == S.METHOD_CHOSEN and snap in res['candidates']:
                     pid = snap
                 elif res['status'] == J.R_SET_ONLY and res['pid']:
                     pid = res['pid']
                 else:
-                    label = CHK_DUP_UNSELECTED if res['status'] == J.R_DUPLICATE else CHK_SET_UNSELECTED
+                    # 選ばれていない登録は実棚に入れない。共通JANを単品と決めつけると過少計上になる
+                    label = {J.R_DUPLICATE: CHK_DUP_UNSELECTED, J.R_SET_ONLY: CHK_SET_UNSELECTED,
+                             J.R_SHARED: CHK_SHARED_UNSELECTED}[res['status']]
                     checks.append([label, eid, f'JAN {code} 数量 {q} 候補: {", ".join(res["candidates"])}',
                                    '現物を確認し、候補から商品を特定する(明細の数量は実棚に未算入)'])
+                    if snap:
+                        # 修正前に単品へ自動確定された記録など。記録時の判断を黙って使わない
+                        checks.append([CHK_CHANGED, eid, f'記録時 {snap} → 現在は {res["status"]}(要選択)',
+                                       '現物がバラか梱包済みセットかを確認'])
                     b = bucket(unregistered, code, {'jan': code, 'reason': label})
                     add(b, e, q, loc)
                     details.append((e, '要確認(実棚に未算入)', ''))

@@ -171,8 +171,10 @@ class MasterIndex(unittest.TestCase):
         r = self.m.resolve_jan(TOWEL)
         self.assertEqual((r['status'], r['pid'], r['candidates']), (J.R_DUPLICATE, '', ['P000002', 'P000003']))
 
-    def test_shared_jan_goes_to_single(self):
-        self.assertEqual(self.m.resolve_jan(SHARED)['pid'], 'P000005')
+    def test_shared_jan_is_not_auto_confirmed(self):
+        # 必須修正①: 単品とセットが同じJANなら単品へ自動確定しない
+        self.assertEqual(self.m.resolve_jan(SHARED),
+                         {'status': J.R_SHARED, 'pid': '', 'candidates': ['P000005', 'P000006']})
 
     def test_set_only(self):
         self.assertEqual(self.m.resolve_jan(SET_JAN)['status'], J.R_SET_ONLY)
@@ -394,7 +396,7 @@ class Reproducibility(Base):
         self.reg(NEW_JAN, 4)
         self.reg(TOWEL, 5, chosen_pid='P000002')
         self.reg(SET_JAN, 10)
-        self.reg(SHARED, 8, device='IPAD-1')
+        self.reg(SHARED, 8, device='IPAD-1', chosen_pid='P000005')
         self.store.register_temp(self.sid, '英樹', 'MAC-1', '', '青い箱', 2)
 
     def test_same_input_same_result(self):
@@ -495,6 +497,122 @@ class SetExtension(Base):
         self.assertEqual(A.load_set_composition(), {})
 
 
+# ─────────────── H. 単品セット共通JAN(必須修正① 2026-09-25) ───────────────
+
+class SharedJan(Base):
+    """バラの単品 / 梱包済みセット / 後で確認 の3択。セットは換算せず「セット換算待ち」。"""
+
+    def test_unselected_is_kept_for_review_not_counted(self):
+        e = self.reg(SHARED, 8)
+        self.assertEqual((e['照合結果'], e['内部管理ID'], e['数量単位']), (J.R_SHARED, '', S.UNIT_PIECE))
+        self.assertIn('P000005', e['備考'])
+        r = self.agg()
+        self.assertIsNone(self.product(r, 'P000005'))                        # 単品に黙って入れない
+        self.assertEqual([(b['jan'], b['qty'], b['reason']) for b in r['unregistered']],
+                         [(SHARED, 8, A.CHK_SHARED_UNSELECTED)])
+        self.assertTrue(any(c[0] == A.CHK_SHARED_UNSELECTED for c in r['checks']))
+
+    def test_loose_single(self):
+        e = self.reg(SHARED, 104, chosen_pid='P000005')
+        self.assertEqual((e['照合結果'], e['内部管理ID'], e['数量単位']), (J.R_CHOSEN, 'P000005', S.UNIT_SINGLE))
+        self.assertEqual(self.product(self.agg(), 'P000005')['qty'], 104)
+
+    def test_packed_set_is_recorded_as_set_p_and_not_converted(self):
+        e = self.reg(SHARED, 8, chosen_pid='P000006')
+        self.assertEqual((e['内部管理ID'], e['数量'], e['数量単位']), ('P000006', '8', S.UNIT_SET))
+        self.assertIn('セット換算待ち', e['備考'])
+        r = self.agg()
+        self.assertEqual([(b['pid'], b['qty']) for b in r['set_pending']], [('P000006', 8)])
+        self.assertIsNone(self.product(r, 'P000005'))                        # 入数を推測して換算しない
+
+    def test_rehearsal_case_loose_104_plus_packed_8(self):
+        # リハーサルで 112(誤り)になったケース: バラ104 + 2本セット梱包8
+        self.reg(SHARED, 104, chosen_pid='P000005')
+        self.reg(SHARED, 8, chosen_pid='P000006')
+        r = self.agg()
+        self.assertEqual(self.product(r, 'P000005')['qty'], 104)
+        self.assertEqual(r['set_pending'][0]['qty'], 8)
+        # 差し込み口: 構成表が渡されたときだけ セット数×構成数量 を単品へ(ここはテスト用の仮の構成)
+        b = self.product(self.agg(comp={'P000006': [('P000005', 3)]}), 'P000005')
+        self.assertEqual((b['qty'], b['direct'], b['from_sets']), (128, 104, 24))
+
+    def test_choice_must_be_a_candidate(self):
+        with self.assertRaises(S.StoreError) as cm:
+            self.reg(SHARED, 1, chosen_pid='P000001')
+        self.assertEqual(cm.exception.code, 'bad_choice')
+
+    def test_old_auto_confirmed_record_is_not_silently_counted(self):
+        # 修正前の規則(単品へ自動確定)で記録された行も、再集計では要確認へ回る
+        old_rows = [r for r in BASE_ROWS if r[0] != 'P000006']
+        self.store.master = J.load_master(make_master(self.dir, old_rows, name='old.xlsx'))
+        e = self.reg(SHARED, 8)
+        self.assertEqual((e['照合結果'], e['内部管理ID']), (J.R_MATCH, 'P000005'))
+        self.store.master = self.master
+        r = self.agg()
+        self.assertIsNone(self.product(r, 'P000005'))
+        kinds = {c[0] for c in r['checks']}
+        self.assertTrue({A.CHK_SHARED_UNSELECTED, A.CHK_CHANGED} <= kinds)
+
+
+@unittest.skipUnless(os.path.exists(J.MASTER_FILE), '実マスターが無い環境')
+class RealSharedJan21(unittest.TestCase):
+    """実マスターの単品セット共通JAN 21件すべてを、3通り(バラ/セット/後で確認)で登録して集計する。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.m = J.load_master()
+        cls.shared = sorted(set(cls.m.by_jan_single) & set(cls.m.by_jan_set))
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = S.Store(self.m, CFG, data_dir=self.tmp.name)
+        self.sid = self.store.start_session('テスト', 'MAC-1')
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_count_is_21(self):
+        # Step 0(2026-09-25)時点の件数。マスターが更新されて変わったら、このテストと手順書を見直す
+        self.assertEqual(len(self.shared), 21, self.shared)
+
+    def test_none_is_auto_confirmed(self):
+        for jan in self.shared:
+            r = self.m.resolve_jan(jan)
+            kinds = {self.m.products[p]['kind'] for p in r['candidates']}
+            self.assertEqual((r['status'], r['pid']), (J.R_SHARED, ''), jan)
+            self.assertEqual(kinds, {J.KIND_SINGLE, J.KIND_SET}, jan)
+
+    def test_three_ways_for_all_21(self):
+        expect_single, expect_set = {}, {}
+        for jan in self.shared:
+            c = self.m.resolve_jan(jan)['candidates']
+            single = next(p for p in c if self.m.products[p]['kind'] == J.KIND_SINGLE)
+            pack = next(p for p in c if self.m.products[p]['kind'] == J.KIND_SET)
+            e1 = self.store.register(self.sid, 'テスト', 'MAC-1', 'A-01-01', jan, 1, chosen_pid=single)
+            e2 = self.store.register(self.sid, 'テスト', 'MAC-1', 'A-01-01', jan, 2, chosen_pid=pack)
+            e3 = self.store.register(self.sid, 'テスト', 'MAC-1', 'A-01-01', jan, 3)
+            self.assertEqual([e['数量単位'] for e in (e1, e2, e3)], [S.UNIT_SINGLE, S.UNIT_SET, S.UNIT_PIECE], jan)
+            expect_single[single] = expect_single.get(single, 0) + 1
+            expect_set[pack] = expect_set.get(pack, 0) + 2
+        r = A.run([self.sid], self.store, set_composition={})
+        self.assertEqual({b['pid']: b['qty'] for b in r['products']}, expect_single)
+        self.assertEqual({b['pid']: b['qty'] for b in r['set_pending']}, expect_set)
+        self.assertEqual({b['jan']: (b['qty'], b['reason']) for b in r['unregistered']},
+                         {j: (3, A.CHK_SHARED_UNSELECTED) for j in self.shared})
+        self.assertEqual(r['stats']['units'], len(self.shared))               # 単品に入るのはバラの1個だけ
+        self.assertEqual(A.run([self.sid], self.store, set_composition={})['fingerprint'], r['fingerprint'])
+
+    def test_crystal_h2o_rehearsal_case(self):
+        r = self.m.resolve_jan('4544059033092')
+        self.assertEqual((r['status'], r['candidates']), (J.R_SHARED, ['P000829', 'P000814']))
+        self.store.register(self.sid, 'テスト', 'MAC-1', 'A-01-03', '4544059033092', 104, chosen_pid='P000829')
+        self.store.register(self.sid, 'テスト', 'MAC-1', 'A-01-03', '4544059033092', 8, chosen_pid='P000814')
+        a = A.run([self.sid], self.store, set_composition={})
+        self.assertEqual([(b['pid'], b['qty']) for b in a['products']], [('P000829', 104)])
+        self.assertEqual([(b['pid'], b['qty']) for b in a['set_pending']], [('P000814', 8)])
+
+
 # ─────────────── G. HTTP ───────────────
 
 class Http(Base):
@@ -535,6 +653,15 @@ class Http(Base):
         st, r = self.call('/api/aggregate', who)
         self.assertEqual((st, r['stats']['cancelled'], r['stats']['units']), (200, 1, 0))
         self.assertTrue(os.path.exists(r['file']))
+
+    def test_shared_jan_over_http(self):
+        self.start()
+        who = {'session': self.sid, 'staff': '英樹', 'device': 'MAC-1'}
+        st, r = self.call('/api/lookup', {'code': SHARED})
+        self.assertEqual((r['status'], r['product']), (J.R_SHARED, None))
+        self.assertEqual([(c['pid'], c['kind']) for c in r['candidates']], [('P000005', '単品'), ('P000006', 'セット')])
+        st, r = self.call('/api/register', dict(who, raw=SHARED, qty='8', chosen_pid='P000006'))
+        self.assertEqual((st, r['event']['数量単位'], r['event']['内部管理ID']), (200, S.UNIT_SET, 'P000006'))
 
     def test_host_header_guard_on_localhost(self):
         self.start()
