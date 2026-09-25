@@ -92,3 +92,6 @@ MomijiStore_OS/06_DocumentIntelligence/**/*.jsonl
 *.tmp
 ~$*
 .~lock.*#
+
+# Product Core 制約テストのログ(ローカル記録・Git管理外)
+MomijiStore_OS/05_Infrastructure/db/tests/logs/
