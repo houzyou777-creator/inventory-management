@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 |---|---|
-| 状態 | **設計基準として凍結(2026-09-25 承認)** |
+| 状態 | **設計基準として凍結(2026-09-25 承認)**。2026-09-26 に §7「凍結後の実装補足」を追記(モデルの層・責務は変更なし) |
 | 実装仕様 | [Product_Core_Phase1_Specification_v1.0.md](Product_Core_Phase1_Specification_v1.0.md) |
 | 根拠 | 読み取り専用検証 v2 → v2.1 → v2.2(2026-09-25)。既存データ(商品マスター 1,211件・出品テーブル 1,430件・Pricetar CSV・棚卸しレーンの共通 JAN 判定)を仮想テーブルへ当てはめて確認した |
 | 原則 | **既存 P 番号は削除・統合・変更しない。** 新しい関係構造を追加して移行する(Shadow Model) |
@@ -49,7 +49,7 @@ Listing ─ listing_reference_history(期間付き)─► Physical Product | Com
 | **Composition** | 販売構成。固定セット・まとめ売り・アソート = 構成品 PP × 数量 | 倉庫での形態(→ Stock Form) |
 | **Listing** | 販売口(Amazon SKU / ASIN・楽天管理番号 / SKU) | 原価・在庫 |
 | **Stock Form**(Phase 2) | 今、倉庫にどの形で存在するか(バラ・事前梱包キット・ケース) | 販売構成 |
-| **Legacy Mapping** | 既存 P 番号が何を表しているか(PP / Composition / 重複の統合先) | 既存 P の変更 |
+| **Legacy Mapping** | 既存 P 番号が何を表しているか(PP / Composition / 重複の統合先)。既存の出品ID(C番号)→ Listing の対応も同じ考え方で持つ(§7) | 既存 P・C番号の変更 |
 | **Cost History / Composition Cost History** | 承認済みの正式原価(税抜・有効期間) | 候補値(→ Cost Observation) |
 | **Cost Observation** | 観測した原価候補(Pricetar・書類・商品マスター等)を元の値のまま | 正式原価 |
 | **Assessment** | AI 判定(追記専用)と人の review 欄 | 人の判断を AI 判定として記録すること |
@@ -101,9 +101,26 @@ Listing ─ listing_reference_history(期間付き)─► Physical Product | Com
 
 | Phase | 対象 |
 |---|---|
-| **1** | physical_product・identifier(+ identifier_link・core_entity)・legacy_mapping・product_relationship・composition・composition_component・listing・listing_group・listing_reference_history・cost_history・composition_cost_history・cost_observation・assessment(+ operator・operator_permission・取込ステージング) |
+| **1** | physical_product・identifier(+ identifier_link・core_entity)・legacy_mapping・legacy_listing_mapping・product_relationship・composition・composition_component・listing・listing_group・listing_reference_history・cost_history・composition_cost_history・cost_observation・assessment(+ review_batch・operator・operator_permission・取込ステージングと冪等性の表) |
 | **2**(AIKOS Warehouse) | location・location_event_rule・stock_form・stock_balance・stock_event・allocation・order_line |
 | **3** | selection_rule・shipment_component_actual(可変福袋)・lot(ロット / 賞味期限) |
+
+---
+
+## 7. 凍結後の実装補足(2026-09-26 DDL Revision)
+
+層と責務は変えず、既存データのドライラン(1,211 P・表現不能 0)で見えた「移行の安全性」の規則を追加した。列定義は Phase 1 Specification v1.0 §14 を正とする。
+
+| # | 規則 | 理由(ドライランで確認した事実) |
+|---|---|---|
+| 11 | **C番号 → Listing は Legacy Mapping と同じ扱い**(1 C番号 → ACTIVE 1件、複数 C番号 → 同じ Listing 可、付け替えは履歴を残す)。Listing 自体は C番号を持たない | 出品テーブルに同じ出品の重複行があり、C番号と Listing が1対1にならない |
+| 12 | **既存 P あたりの原価(PER_LEGACY_P)は PP 単価ではない。** 承認済みの Legacy Mapping と、人が確定した単位(UNIT_BASIS)を経て初めて Cost History にできる | 既存 P にはセット価格の P が混在し、単品と決めつけると原価が数倍ずれる |
+| 13 | **Product Core の ID は DB だけが採番する。** 取込は自然キーで冪等にし、再実行で同じ ID を得る | 明示 ID とシーケンス採番が衝突した |
+| 14 | **12桁コードは元の値のまま保持し、13桁への補完は人の確定後だけ** | 先頭 0 の欠落は機械的に判別できない(チェックディジットが同じ) |
+| 15 | **取込はファイル SHA256 + レコード(業務キー + ハッシュ)で冪等。** 同じ業務キーの別版は上書きせず追記し、人が食い違いを確認する | 同じ業務キーが別ファイルで違う値を持つことがある |
+| 16 | **Human Review は束(review_batch)単位で追跡し、保留には理由を残す。** AI は人の判断欄を書けない | 確認表の往復で、誰が・どの束で・なぜ保留したかを後から辿る必要がある |
+
+- Human Review の優先度分類(A 区分: 名称類似度 0.35・原価倍率 1.8 / 0.56)は **確認の優先順位のための暫定閾値**であり、承認条件ではない。A 区分も Human Review を経由する(Pilot で較正)。
 
 ---
 

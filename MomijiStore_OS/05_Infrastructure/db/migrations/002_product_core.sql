@@ -69,6 +69,7 @@ CREATE SEQUENCE IF NOT EXISTS product_core.ch_seq;
 CREATE SEQUENCE IF NOT EXISTS product_core.cx_seq;
 CREATE SEQUENCE IF NOT EXISTS product_core.co_seq;
 CREATE SEQUENCE IF NOT EXISTS product_core.as_seq;
+CREATE SEQUENCE IF NOT EXISTS product_core.llm_seq;
 
 -- 追記専用の強制(intelligence.deny_mutation と同じ考え方)
 CREATE OR REPLACE FUNCTION product_core.deny_mutation()
@@ -286,6 +287,60 @@ CREATE TABLE IF NOT EXISTS legacy_ingest.external_file_snapshot (
     raw           jsonb   NOT NULL,
     PRIMARY KEY (ingest_run_id, file_kind, row_no)
 );
+
+-- 取込の冪等性(Import idempotency)。Product Core の ID ではなく、取込元のファイルとレコードで冪等にする。
+--   ファイル: 同じ取込元・同じ SHA256 は1回だけ登録する(再実行で何も増えない)
+--   レコード: 取込元 + 業務キー + レコードのハッシュ で一意。同じ業務キーでハッシュが違えば「別の版」として
+--             追記する(黙って上書きしない)。版の食い違いは v_source_key_conflicts で見える
+CREATE TABLE IF NOT EXISTS legacy_ingest.import_source_file (
+    file_id        bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    ingest_run_id  text        NOT NULL REFERENCES legacy_ingest.ingest_run (ingest_run_id),
+    source_system  text        NOT NULL CHECK (btrim(source_system) <> ''),
+    file_path      text        NOT NULL,
+    file_sha256    text        NOT NULL CHECK (file_sha256 ~ '^[0-9a-f]{64}$'),
+    file_mtime     timestamptz,
+    row_count      integer     CHECK (row_count IS NULL OR row_count >= 0),
+    registered_at  timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT import_source_file_uq UNIQUE (source_system, file_sha256)
+);
+
+CREATE TABLE IF NOT EXISTS legacy_ingest.import_source_record (
+    record_id          bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    source_system      text        NOT NULL CHECK (btrim(source_system) <> ''),
+    source_record_key  text        NOT NULL CHECK (btrim(source_record_key) <> ''),  -- 業務キー(例 legacy_p=P000123)
+    source_record_hash text        NOT NULL CHECK (source_record_hash ~ '^[0-9a-f]{64}$'),
+    file_id            bigint      NOT NULL REFERENCES legacy_ingest.import_source_file (file_id),
+    ingest_run_id      text        NOT NULL REFERENCES legacy_ingest.ingest_run (ingest_run_id),
+    raw                jsonb       NOT NULL,
+    registered_at      timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT import_source_record_uq UNIQUE (source_system, source_record_key, source_record_hash)
+);
+
+CREATE TABLE IF NOT EXISTS legacy_ingest.import_record_map (
+    record_id    bigint      NOT NULL REFERENCES legacy_ingest.import_source_record (record_id),
+    target_table text        NOT NULL CHECK (btrim(target_table) <> ''),
+    target_id    text        NOT NULL CHECK (btrim(target_id) <> ''),
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (record_id, target_table, target_id)
+);
+
+DROP TRIGGER IF EXISTS import_source_file_append_only ON legacy_ingest.import_source_file;
+CREATE TRIGGER import_source_file_append_only BEFORE UPDATE OR DELETE ON legacy_ingest.import_source_file
+    FOR EACH ROW EXECUTE FUNCTION product_core.deny_mutation();
+DROP TRIGGER IF EXISTS import_source_record_append_only ON legacy_ingest.import_source_record;
+CREATE TRIGGER import_source_record_append_only BEFORE UPDATE OR DELETE ON legacy_ingest.import_source_record
+    FOR EACH ROW EXECUTE FUNCTION product_core.deny_mutation();
+DROP TRIGGER IF EXISTS import_record_map_append_only ON legacy_ingest.import_record_map;
+CREATE TRIGGER import_record_map_append_only BEFORE UPDATE OR DELETE ON legacy_ingest.import_record_map
+    FOR EACH ROW EXECUTE FUNCTION product_core.deny_mutation();
+
+-- 同じ業務キーに中身の違う版が複数ある(異なるファイルで同じ業務キーが来た)= 人が確認する対象
+CREATE OR REPLACE VIEW legacy_ingest.v_source_key_conflicts AS
+    SELECT source_system, source_record_key, count(DISTINCT source_record_hash) AS versions,
+           array_agg(DISTINCT file_id ORDER BY file_id) AS file_ids
+      FROM legacy_ingest.import_source_record
+     GROUP BY source_system, source_record_key
+    HAVING count(DISTINCT source_record_hash) > 1;
 
 DROP TRIGGER IF EXISTS legacy_product_snapshot_append_only ON legacy_ingest.legacy_product_snapshot;
 CREATE TRIGGER legacy_product_snapshot_append_only BEFORE UPDATE OR DELETE ON legacy_ingest.legacy_product_snapshot
@@ -623,7 +678,7 @@ CREATE TABLE IF NOT EXISTS product_core.listing (
     rakuten_sku       text,
     fulfillment       text        NOT NULL DEFAULT 'UNKNOWN' CHECK (fulfillment IN ('FBA', 'SELF', 'UNKNOWN')),
     listing_group_id  text        REFERENCES product_core.listing_group (listing_group_id),
-    legacy_listing_id text        CHECK (legacy_listing_id IS NULL OR legacy_listing_id ~ '^C[0-9]{6}$'),
+    -- 既存の出品ID(C番号)は持たない。legacy_listing_mapping で対応付ける(1出品 : N 件の C 番号)
     channel_status    text        NOT NULL DEFAULT 'UNKNOWN' CHECK (channel_status IN ('ACTIVE', 'INACTIVE', 'UNKNOWN')),
     first_seen_at     timestamptz NOT NULL DEFAULT now(),
     last_seen_at      timestamptz NOT NULL DEFAULT now(),
@@ -639,8 +694,6 @@ CREATE TABLE IF NOT EXISTS product_core.listing (
     CHECK (channel <> 'RAKUTEN' OR rakuten_item_id IS NOT NULL),
     CHECK (channel <> 'AMAZON' OR (rakuten_item_id IS NULL AND rakuten_sku IS NULL))
 );
-CREATE UNIQUE INDEX IF NOT EXISTS listing_legacy_uq ON product_core.listing (legacy_listing_id)
-    WHERE legacy_listing_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS listing_amazon_sku_uq ON product_core.listing (channel, seller_sku)
     WHERE channel = 'AMAZON' AND seller_sku IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS listing_rakuten_uq ON product_core.listing (channel, rakuten_item_id, rakuten_sku)
@@ -661,7 +714,7 @@ BEGIN
     END IF;
     v_keys := CASE TG_TABLE_NAME
         WHEN 'listing' THEN ARRAY['listing_id', 'entity_type', 'channel', 'asin', 'seller_sku', 'rakuten_item_id',
-                                  'rakuten_sku', 'legacy_listing_id', 'first_seen_at', 'created_at', 'created_by']
+                                  'rakuten_sku', 'first_seen_at', 'created_at', 'created_by']
         ELSE ARRAY['listing_group_id', 'channel', 'group_type', 'group_key', 'created_at', 'created_by'] END;
     IF EXISTS (SELECT 1 FROM unnest(v_keys) k WHERE to_jsonb(NEW) -> k IS DISTINCT FROM to_jsonb(OLD) -> k) THEN
         RAISE EXCEPTION '% の自然キー・作成情報は変更できません', TG_TABLE_NAME USING ERRCODE = 'restrict_violation';
@@ -688,32 +741,65 @@ CREATE CONSTRAINT TRIGGER core_entity_has_body AFTER INSERT ON product_core.core
 
 
 -- =============================================================
---  identifier — コード登録簿(P3 追記専用・対象を持たない)
+--  review_batch — Human Review の出力単位(Excel 確認表 / 将来の承認 UI)
 -- =============================================================
-CREATE TABLE IF NOT EXISTS product_core.identifier (
-    identifier_id     text        PRIMARY KEY DEFAULT product_core.fmt_id('ID-', nextval('product_core.id_seq'), 8)
-                                  CHECK (identifier_id ~ '^ID-[0-9]{8,}$'),
-    id_type           text        NOT NULL CHECK (id_type IN ('JAN', 'GTIN14', 'MAKER_CODE', 'JAN_PARTIAL4',
-                                                               'ASIN', 'FNSKU', 'KIT_LABEL', 'TEMP_ID')),
-    value             text        NOT NULL,
-    checkdigit_valid  boolean,
-    first_seen_source text        NOT NULL CHECK (btrim(first_seen_source) <> ''),
-    first_seen_ref    text        NOT NULL CHECK (btrim(first_seen_ref) <> ''),
-    created_at        timestamptz NOT NULL DEFAULT now(),
-    created_by        text        NOT NULL CHECK (product_core.is_actor(created_by)),
-    ingest_run_id     text        REFERENCES legacy_ingest.ingest_run (ingest_run_id),
-    CONSTRAINT identifier_code_uq UNIQUE (id_type, value),
-    CONSTRAINT identifier_value_format CHECK (CASE id_type
-        WHEN 'JAN'          THEN value ~ '^([0-9]{8}|[0-9]{12,13})$'
-        WHEN 'GTIN14'       THEN value ~ '^[0-9]{14}$'
-        WHEN 'JAN_PARTIAL4' THEN value ~ '^[0-9]{4}$'
-        WHEN 'ASIN'         THEN value ~ '^B0[0-9A-Z]{8}$'
-        WHEN 'TEMP_ID'      THEN value ~ '^T-[0-9]{6}$'
-        ELSE btrim(value) <> '' END)
+--  AI 判定を人に見せた「束」。PENDING(記入待ち)→ REVIEWED(記入済み)→ IMPORTED(取込済み)。
+--  AI は作れない(人の操作で出力・取込するもの)。
+CREATE SEQUENCE IF NOT EXISTS product_core.rb_seq;
+CREATE TABLE IF NOT EXISTS product_core.review_batch (
+    review_batch_id text        PRIMARY KEY DEFAULT product_core.fmt_id('RB-', nextval('product_core.rb_seq'), 8)
+                                CHECK (review_batch_id ~ '^RB-[0-9]{8,}$'),
+    review_type     text        NOT NULL CHECK (review_type IN ('LEGACY_MAPPING', 'DUPLICATE_GROUP', 'COMPOSITION',
+                                    'LISTING_REFERENCE', 'LEGACY_LISTING', 'IDENTIFIER', 'TAX_BASIS', 'UNIT_BASIS', 'COST')),
+    channel         text        NOT NULL DEFAULT 'EXCEL' CHECK (channel IN ('EXCEL', 'UI')),
+    status          text        NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'REVIEWED', 'IMPORTED')),
+    file_name       text,
+    file_sha256     text        CHECK (file_sha256 IS NULL OR file_sha256 ~ '^[0-9a-f]{64}$'),
+    reviewed_file_sha256 text   CHECK (reviewed_file_sha256 IS NULL OR reviewed_file_sha256 ~ '^[0-9a-f]{64}$'),
+    note            text,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    created_by      text        NOT NULL CHECK (product_core.is_human(created_by)),
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    updated_by      text        NOT NULL CHECK (product_core.is_human(updated_by)),
+    CHECK (channel <> 'EXCEL' OR status = 'PENDING' OR reviewed_file_sha256 IS NOT NULL)
 );
-DROP TRIGGER IF EXISTS identifier_append_only ON product_core.identifier;
-CREATE TRIGGER identifier_append_only BEFORE UPDATE OR DELETE ON product_core.identifier
-    FOR EACH ROW EXECUTE FUNCTION product_core.deny_mutation();
+
+CREATE OR REPLACE FUNCTION product_core.review_batch_guard()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'review_batch は削除できません' USING ERRCODE = 'restrict_violation';
+    END IF;
+    IF TG_OP = 'INSERT' THEN
+        PERFORM product_core.assert_approval(NEW.created_by, 'REVIEW');
+        IF NEW.status <> 'PENDING' THEN
+            RAISE EXCEPTION 'review_batch は PENDING で作成してください' USING ERRCODE = 'check_violation';
+        END IF;
+        NEW.updated_by := NEW.created_by;
+        NEW.updated_at := now();
+        RETURN NEW;
+    END IF;
+    IF NEW.review_batch_id <> OLD.review_batch_id OR NEW.review_type <> OLD.review_type OR NEW.channel <> OLD.channel
+       OR NEW.created_at <> OLD.created_at OR NEW.created_by <> OLD.created_by
+       OR NEW.file_sha256 IS DISTINCT FROM OLD.file_sha256 AND OLD.file_sha256 IS NOT NULL THEN
+        RAISE EXCEPTION 'review_batch の識別情報・出力ファイルの sha256 は変更できません' USING ERRCODE = 'restrict_violation';
+    END IF;
+    IF NOT ((OLD.status = NEW.status)
+            OR (OLD.status = 'PENDING' AND NEW.status = 'REVIEWED')
+            OR (OLD.status = 'REVIEWED' AND NEW.status = 'IMPORTED')) THEN
+        RAISE EXCEPTION 'review_batch の状態 % → % には変更できません', OLD.status, NEW.status USING ERRCODE = 'check_violation';
+    END IF;
+    IF OLD.status = 'IMPORTED' THEN
+        RAISE EXCEPTION '取込済みの review_batch は変更できません' USING ERRCODE = 'restrict_violation';
+    END IF;
+    PERFORM product_core.assert_approval(NEW.updated_by, 'REVIEW');
+    NEW.updated_at := now();
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS review_batch_guard ON product_core.review_batch;
+CREATE TRIGGER review_batch_guard BEFORE INSERT OR UPDATE OR DELETE ON product_core.review_batch
+    FOR EACH ROW EXECUTE FUNCTION product_core.review_batch_guard();
 
 
 -- =============================================================
@@ -723,8 +809,8 @@ CREATE TABLE IF NOT EXISTS product_core.assessment (
     assessment_id            text        PRIMARY KEY DEFAULT product_core.fmt_id('AS-', nextval('product_core.as_seq'), 9)
                                          CHECK (assessment_id ~ '^AS-[0-9]{9,}$'),
     assessment_type          text        NOT NULL CHECK (assessment_type IN ('LEGACY_MAPPING', 'LISTING_REFERENCE',
-                                             'COST_VARIANCE', 'TAX_BASIS', 'DUPLICATE_PP', 'IDENTIFIER_LINK',
-                                             'COMPOSITION_CLASS')),
+                                             'COST_VARIANCE', 'TAX_BASIS', 'UNIT_BASIS', 'DUPLICATE_PP', 'IDENTIFIER_LINK',
+                                             'COMPOSITION_CLASS', 'LEGACY_LISTING')),
     subject_entity_id        text,
     subject_entity_type      text,
     subject_key              text,
@@ -751,6 +837,11 @@ CREATE TABLE IF NOT EXISTS product_core.assessment (
     corrected_value          text,        -- 対象ではなく値を人が修正したとき(例: TAX_BASIS の INCLUDED / EXCLUDED)
     review_channel           text        CHECK (review_channel IS NULL OR review_channel IN ('EXCEL', 'UI')),
     review_ref               text,
+    -- 保留の理由(HOLD = 判断を保留 / NEEDS_MORE_INFO = 追加情報が必要)と、不足している情報
+    review_reason_code       text        CHECK (review_reason_code IS NULL OR review_reason_code IN ('HOLD', 'NEEDS_MORE_INFO')),
+    review_info_needed       text        CHECK (review_info_needed IS NULL
+                                                OR review_info_needed IN ('PURCHASE_RECORD', 'PHYSICAL_CHECK', 'LISTING_PAGE', 'OTHER')),
+    review_batch_id          text        REFERENCES product_core.review_batch (review_batch_id),
     FOREIGN KEY (subject_entity_id, subject_entity_type) REFERENCES product_core.core_entity (entity_id, entity_type),
     FOREIGN KEY (proposed_entity_id, proposed_entity_type) REFERENCES product_core.core_entity (entity_id, entity_type),
     FOREIGN KEY (corrected_entity_id, corrected_entity_type) REFERENCES product_core.core_entity (entity_id, entity_type),
@@ -763,6 +854,12 @@ CREATE TABLE IF NOT EXISTS product_core.assessment (
     CHECK (review_status NOT IN ('ON_HOLD', 'REJECTED', 'CORRECTED') OR btrim(coalesce(review_note, '')) <> ''),
     CHECK (review_status <> 'CORRECTED' OR corrected_entity_id IS NOT NULL OR corrected_value IS NOT NULL),
     CHECK (assessment_type <> 'TAX_BASIS' OR corrected_value IS NULL OR corrected_value IN ('INCLUDED', 'EXCLUDED', 'UNKNOWN')),
+    CHECK (assessment_type <> 'UNIT_BASIS' OR corrected_value IS NULL OR corrected_value IN ('PER_PP', 'PER_COMPOSITION', 'UNKNOWN')),
+    -- 保留には理由コードが必須。保留が解けた後も理由コードは残してよい(何で止まっていたかの記録)
+    CHECK (review_status <> 'ON_HOLD' OR review_reason_code IS NOT NULL),
+    CHECK (review_status <> 'UNREVIEWED' OR review_reason_code IS NULL),
+    CHECK ((review_reason_code = 'NEEDS_MORE_INFO') = (review_info_needed IS NOT NULL)),
+    CHECK (review_channel IS DISTINCT FROM 'EXCEL' OR review_batch_id IS NOT NULL),
     CONSTRAINT assessment_verdict_by_type CHECK (
            (assessment_type = 'LEGACY_MAPPING'    AND verdict IN ('PHYSICAL_PRODUCT_CANDIDATE', 'COMPOSITION_CANDIDATE',
                                                                   'ALIAS_CANDIDATE', 'NEEDS_REVIEW'))
@@ -772,9 +869,11 @@ CREATE TABLE IF NOT EXISTS product_core.assessment (
                                                                   'TAX_BASIS_UNKNOWN', 'TAX_RATE_UNKNOWN',
                                                                   'UNIT_UNKNOWN', 'NO_BASELINE'))
         OR (assessment_type = 'TAX_BASIS'         AND verdict IN ('INCLUDED', 'EXCLUDED', 'UNKNOWN'))
+        OR (assessment_type = 'UNIT_BASIS'        AND verdict IN ('PER_PP', 'PER_COMPOSITION', 'UNKNOWN'))
+        OR (assessment_type = 'LEGACY_LISTING'    AND verdict IN ('SAME_NATURAL_KEY', 'DUPLICATE_LEGACY_ROW', 'AMBIGUOUS', 'NO_MATCH'))
         OR (assessment_type = 'DUPLICATE_PP'      AND verdict IN ('DUPLICATE_CANDIDATE', 'VARIANT_CANDIDATE', 'NOT_DUPLICATE'))
         OR (assessment_type = 'IDENTIFIER_LINK'   AND verdict IN ('VALID', 'CHECKDIGIT_ERROR', 'MISFILED',
-                                                                  'SHARED_ACROSS_ENTITIES'))
+                                                                  'SHARED_ACROSS_ENTITIES', 'LEADING_ZERO_SUSPECT'))
         OR (assessment_type = 'COMPOSITION_CLASS' AND verdict IN ('FIXED_CANDIDATE', 'SELECTION_CANDIDATE',
                                                                   'HUMAN_REVIEW_REQUIRED')))
 );
@@ -784,7 +883,8 @@ COMMENT ON TABLE product_core.assessment IS
 CREATE OR REPLACE FUNCTION product_core.assessment_review_columns()
 RETURNS text[] LANGUAGE sql IMMUTABLE AS $$
     SELECT ARRAY['review_status', 'reviewed_by', 'reviewed_at', 'review_note', 'corrected_entity_id',
-                 'corrected_entity_type', 'corrected_value', 'review_channel', 'review_ref']
+                 'corrected_entity_type', 'corrected_value', 'review_channel', 'review_ref', 'review_reason_code',
+                 'review_info_needed', 'review_batch_id']
 $$;
 
 CREATE OR REPLACE FUNCTION product_core.assessment_guard()
@@ -796,7 +896,7 @@ BEGIN
     END IF;
     IF TG_OP = 'INSERT' THEN
         IF NEW.review_status <> 'UNREVIEWED' OR NEW.reviewed_by IS NOT NULL OR NEW.corrected_entity_id IS NOT NULL
-           OR NEW.corrected_value IS NOT NULL
+           OR NEW.corrected_value IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_batch_id IS NOT NULL
            OR NEW.review_channel IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_note IS NOT NULL THEN
             RAISE EXCEPTION 'assessment は UNREVIEWED・review 欄空欄で作成してください' USING ERRCODE = 'check_violation';
         END IF;
@@ -839,6 +939,78 @@ BEGIN
     END IF;
 END;
 $$;
+
+
+-- =============================================================
+--  identifier — コード登録簿(P3 追記専用・対象を持たない)
+-- =============================================================
+CREATE TABLE IF NOT EXISTS product_core.identifier (
+    identifier_id     text        PRIMARY KEY DEFAULT product_core.fmt_id('ID-', nextval('product_core.id_seq'), 8)
+                                  CHECK (identifier_id ~ '^ID-[0-9]{8,}$'),
+    id_type           text        NOT NULL CHECK (id_type IN ('JAN', 'GTIN12', 'GTIN14', 'MAKER_CODE', 'JAN_PARTIAL4',
+                                                               'ASIN', 'FNSKU', 'KIT_LABEL', 'TEMP_ID')),
+    value             text        NOT NULL,
+    checkdigit_valid  boolean,
+    first_seen_source text        NOT NULL CHECK (btrim(first_seen_source) <> ''),
+    first_seen_ref    text        NOT NULL CHECK (btrim(first_seen_ref) <> ''),
+    created_at        timestamptz NOT NULL DEFAULT now(),
+    created_by        text        NOT NULL CHECK (product_core.is_actor(created_by)),
+    ingest_run_id     text        REFERENCES legacy_ingest.ingest_run (ingest_run_id),
+    -- OBSERVED = 取込元に書かれていた値そのまま / HUMAN_CORRECTED = 人が review で修正した値(例: 12桁 → 先頭0を補った13桁)
+    origin            text        NOT NULL DEFAULT 'OBSERVED' CHECK (origin IN ('OBSERVED', 'HUMAN_CORRECTED')),
+    derived_from_identifier_id text REFERENCES product_core.identifier (identifier_id),
+    correction_assessment_id   text REFERENCES product_core.assessment (assessment_id),
+    CONSTRAINT identifier_code_uq UNIQUE (id_type, value),
+    CHECK ((origin = 'HUMAN_CORRECTED') = (derived_from_identifier_id IS NOT NULL)),
+    CHECK ((origin = 'HUMAN_CORRECTED') = (correction_assessment_id IS NOT NULL)),
+    CONSTRAINT identifier_value_format CHECK (CASE id_type
+        WHEN 'JAN'          THEN value ~ '^([0-9]{8}|[0-9]{13})$'   -- 12桁は JAN にしない(GTIN12 として元のまま)
+        WHEN 'GTIN12'       THEN value ~ '^[0-9]{12}$'
+        WHEN 'GTIN14'       THEN value ~ '^[0-9]{14}$'
+        WHEN 'JAN_PARTIAL4' THEN value ~ '^[0-9]{4}$'
+        WHEN 'ASIN'         THEN value ~ '^B0[0-9A-Z]{8}$'
+        WHEN 'TEMP_ID'      THEN value ~ '^T-[0-9]{6}$'
+        ELSE btrim(value) <> '' END)
+);
+DROP TRIGGER IF EXISTS identifier_append_only ON product_core.identifier;
+CREATE TRIGGER identifier_append_only BEFORE UPDATE OR DELETE ON product_core.identifier
+    FOR EACH ROW EXECUTE FUNCTION product_core.deny_mutation();
+
+
+-- 12桁 JAN の先頭0欠落(1.4): 元の12桁は GTIN12 のまま残し、13桁は人の review(CORRECTED)の後にだけ作る
+CREATE OR REPLACE FUNCTION product_core.identifier_insert_rules()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    v_src product_core.identifier%ROWTYPE;
+    t     product_core.assessment%ROWTYPE;
+BEGIN
+    IF NEW.origin = 'HUMAN_CORRECTED' THEN
+        PERFORM product_core.assert_approval(NEW.created_by, 'IDENTIFIER_APPROVE');
+        SELECT * INTO v_src FROM product_core.identifier WHERE identifier_id = NEW.derived_from_identifier_id;
+        SELECT * INTO t FROM product_core.assessment WHERE assessment_id = NEW.correction_assessment_id;
+        IF v_src.id_type IS DISTINCT FROM 'GTIN12' OR NEW.id_type <> 'JAN' OR NEW.value <> '0' || v_src.value THEN
+            RAISE EXCEPTION '人の修正で作れるのは、12桁(GTIN12)に先頭0を補った13桁 JAN だけです' USING ERRCODE = 'check_violation';
+        END IF;
+        IF t.assessment_type IS DISTINCT FROM 'IDENTIFIER_LINK' OR t.verdict <> 'LEADING_ZERO_SUSPECT'
+           OR t.review_status <> 'CORRECTED' OR t.corrected_value IS DISTINCT FROM NEW.value
+           OR t.subject_key IS DISTINCT FROM ('GTIN12:' || v_src.value) THEN
+            RAISE EXCEPTION '修正の根拠となる LEADING_ZERO_SUSPECT 判定が、人の review で % へ修正(CORRECTED)されていません', NEW.value
+                USING ERRCODE = 'check_violation';
+        END IF;
+        RETURN NEW;
+    END IF;
+    -- 取込元の値として 0+12桁 を登録しようとした場合、既に同じ12桁があるなら人の確認を経由させる(推測の補完を防ぐ)
+    IF NEW.id_type = 'JAN' AND left(NEW.value, 1) = '0'
+       AND EXISTS (SELECT 1 FROM product_core.identifier WHERE id_type = 'GTIN12' AND value = substr(NEW.value, 2)) THEN
+        RAISE EXCEPTION '12桁 % に先頭0を補った値です。人の review(LEADING_ZERO_SUSPECT → CORRECTED)を経由してください', substr(NEW.value, 2)
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS identifier_insert_rules ON product_core.identifier;
+CREATE TRIGGER identifier_insert_rules BEFORE INSERT ON product_core.identifier
+    FOR EACH ROW EXECUTE FUNCTION product_core.identifier_insert_rules();
 
 
 -- =============================================================
@@ -1145,6 +1317,67 @@ CREATE TRIGGER b_listing_reference_rules BEFORE INSERT OR UPDATE ON product_core
 
 
 -- =============================================================
+--  legacy_listing_mapping — 既存の出品ID(C番号)→ Product Core の出品(P1)
+-- =============================================================
+--  C番号 1件は ACTIVE な対応を1つだけ持つ。複数の C番号が同じ出品を指してよい(既存出品テーブルの重複行)。
+--  AI・取込は PROPOSED まで。ACTIVE 化は人(LISTING_REFERENCE_APPROVE)。
+--  付け替えは 新しい行を PROPOSED → 旧 ACTIVE を SUPERSEDED(superseded_by = 新) → 新を ACTIVE の順(履歴が残る)。
+--  出品は削除できない(fact_copy_guard)ので、対応先が消えて孤立することはない。
+CREATE TABLE IF NOT EXISTS product_core.legacy_listing_mapping (
+    llm_id              text        PRIMARY KEY DEFAULT product_core.fmt_id('LLM-', nextval('product_core.llm_seq'), 8)
+                                    CHECK (llm_id ~ '^LLM-[0-9]{8,}$'),
+    legacy_listing_id   text        NOT NULL CHECK (legacy_listing_id ~ '^C[0-9]{6}$'),  -- 正本は Excel(FK なし)
+    listing_id          text        NOT NULL REFERENCES product_core.listing (listing_id),
+    match_basis         text        NOT NULL CHECK (match_basis IN ('SAME_NATURAL_KEY', 'DUPLICATE_LEGACY_ROW', 'MANUAL')),
+    observed_legacy_p   text        CHECK (observed_legacy_p IS NULL OR observed_legacy_p ~ '^P[0-9]{6}$'),  -- 参考(承認の根拠ではない)
+    legacy_snapshot_ref text        NOT NULL CHECK (btrim(legacy_snapshot_ref) <> ''),
+    record_status       text        NOT NULL DEFAULT 'PROPOSED'
+                                    CHECK (record_status IN ('PROPOSED', 'ACTIVE', 'REJECTED', 'SUPERSEDED')),
+    approved_by         text        CHECK (approved_by IS NULL OR product_core.is_human(approved_by)),
+    approved_at         timestamptz,
+    assessment_id       text        REFERENCES product_core.assessment (assessment_id),
+    superseded_by       text        REFERENCES product_core.legacy_listing_mapping (llm_id),
+    created_at          timestamptz NOT NULL DEFAULT now(),
+    created_by          text        NOT NULL CHECK (product_core.is_actor(created_by)),
+    updated_at          timestamptz NOT NULL DEFAULT now(),
+    updated_by          text        NOT NULL CHECK (product_core.is_actor(updated_by)),
+    ingest_run_id       text        REFERENCES legacy_ingest.ingest_run (ingest_run_id),
+    CHECK ((approved_by IS NULL) = (approved_at IS NULL)),
+    CHECK (record_status NOT IN ('ACTIVE', 'REJECTED', 'SUPERSEDED') OR approved_by IS NOT NULL),
+    CHECK (record_status <> 'SUPERSEDED' OR superseded_by IS NOT NULL),
+    CHECK (superseded_by IS NULL OR superseded_by <> llm_id)
+);
+-- C番号ごとに ACTIVE は1行だけ(PROPOSED は複数あってよい: 付け替え中の新しい提案)
+CREATE UNIQUE INDEX IF NOT EXISTS legacy_listing_mapping_active_uq ON product_core.legacy_listing_mapping (legacy_listing_id)
+    WHERE record_status = 'ACTIVE';
+-- 同じ C番号 → 同じ出品 の未決(PROPOSED / ACTIVE)は重ねない(再取込で提案が増えない)
+CREATE UNIQUE INDEX IF NOT EXISTS legacy_listing_mapping_open_uq
+    ON product_core.legacy_listing_mapping (legacy_listing_id, listing_id) WHERE record_status IN ('PROPOSED', 'ACTIVE');
+
+CREATE OR REPLACE FUNCTION product_core.legacy_listing_mapping_rules()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE v_next product_core.legacy_listing_mapping%ROWTYPE;
+BEGIN
+    -- 付け替え先は同じ C番号の行であること(別の C番号の行で上書きしたことにしない)
+    IF NEW.superseded_by IS NOT NULL THEN
+        SELECT * INTO v_next FROM product_core.legacy_listing_mapping WHERE llm_id = NEW.superseded_by;
+        IF v_next.legacy_listing_id IS DISTINCT FROM NEW.legacy_listing_id THEN
+            RAISE EXCEPTION 'superseded_by は同じ C番号(%)の行を指してください', NEW.legacy_listing_id
+                USING ERRCODE = 'check_violation';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS a_legacy_listing_mapping_p1 ON product_core.legacy_listing_mapping;
+CREATE TRIGGER a_legacy_listing_mapping_p1 BEFORE INSERT OR UPDATE OR DELETE ON product_core.legacy_listing_mapping
+    FOR EACH ROW EXECUTE FUNCTION product_core.p1_guard('LISTING_REFERENCE_APPROVE');
+DROP TRIGGER IF EXISTS b_legacy_listing_mapping_rules ON product_core.legacy_listing_mapping;
+CREATE TRIGGER b_legacy_listing_mapping_rules BEFORE INSERT OR UPDATE ON product_core.legacy_listing_mapping
+    FOR EACH ROW EXECUTE FUNCTION product_core.legacy_listing_mapping_rules();
+
+
+-- =============================================================
 --  cost_observation — 原価の観測値(P3 追記専用・元資料の値のまま)
 -- =============================================================
 --  税込・税抜が混在する前提(D12)。元資料に書かれた金額は変換しない。
@@ -1173,6 +1406,14 @@ CREATE TABLE IF NOT EXISTS product_core.cost_observation (
     subject_entity_type text           CHECK (subject_entity_type IS NULL
                                               OR subject_entity_type IN ('PHYSICAL_PRODUCT', 'COMPOSITION', 'LISTING')),
     subject_legacy_p    text           CHECK (subject_legacy_p IS NULL OR subject_legacy_p ~ '^P[0-9]{6}$'),
+    -- 元資料の金額が「何1つ分」か。PER_LEGACY_P = 既存 P 1件あたり(P が単品・セットのどちらかは未確定)で、
+    -- PP 単価とは限らない。正式原価へは legacy_mapping の承認 + 人の UNIT_BASIS 確定を経てのみ使える
+    source_unit_basis   text           NOT NULL CHECK (source_unit_basis IN ('PER_LEGACY_P', 'PER_LISTING_UNIT',
+                                           'PER_DOCUMENT_LINE', 'PER_PP', 'PER_COMPOSITION', 'UNKNOWN')),
+    -- 取込の冪等性: 取込元の業務キーとレコードのハッシュ。同じキーで中身が違えば別の版として追記される
+    source_record_key   text           NOT NULL CHECK (btrim(source_record_key) <> ''),
+    source_record_hash  text           NOT NULL CHECK (source_record_hash ~ '^[0-9a-f]{64}$'),
+    import_record_id    bigint         REFERENCES legacy_ingest.import_source_record (record_id),
     evidence            jsonb          NOT NULL,
     created_at          timestamptz    NOT NULL DEFAULT now(),
     created_by          text           NOT NULL CHECK (product_core.is_actor(created_by)),
@@ -1182,12 +1423,17 @@ CREATE TABLE IF NOT EXISTS product_core.cost_observation (
     CHECK ((subject_entity_id IS NULL) <> (subject_legacy_p IS NULL)),  -- どちらか一方だけ
     CHECK ((tax_inclusion = 'UNKNOWN') = (tax_inclusion_basis = 'NONE')),
     CHECK ((tax_rate IS NULL) = (tax_rate_basis = 'NONE')),
+    -- 既存 P あたりの値は「単位不明」として扱い、P 経由でしか持てない
+    CHECK (source_unit_basis <> 'PER_LEGACY_P' OR (amount_unit = 'UNKNOWN' AND subject_legacy_p IS NOT NULL)),
+    -- 既存 P に付いた値は、P が単品かセットか確定するまで PP 単価・セット価格と名乗れない
+    CHECK (subject_legacy_p IS NULL OR source_unit_basis IN ('PER_LEGACY_P', 'UNKNOWN')),
     -- 書類から読んだ値は AIKOS の DocID(原本)に必ず結び付ける
     CHECK (source NOT IN ('delivery_note', 'invoice', 'maker_document', 'wholesaler_document', 'price_list',
                           'other_document') OR source_document_id IS NOT NULL)
 );
+-- 再取込で同じ観測値が増えない(同じ取込元・業務キー・ハッシュは1行)
 CREATE UNIQUE INDEX IF NOT EXISTS cost_observation_source_uq ON product_core.cost_observation
-    (source, source_ref, (coalesce(subject_entity_id, subject_legacy_p)));
+    (source, source_record_key, source_record_hash);
 DROP TRIGGER IF EXISTS cost_observation_append_only ON product_core.cost_observation;
 CREATE TRIGGER cost_observation_append_only BEFORE UPDATE OR DELETE ON product_core.cost_observation
     FOR EACH ROW EXECUTE FUNCTION product_core.deny_mutation();
@@ -1311,6 +1557,7 @@ CREATE TABLE IF NOT EXISTS product_core.cost_history (
     basis                   text           NOT NULL CHECK (btrim(basis) <> ''),
     assessment_id           text           NOT NULL REFERENCES product_core.assessment (assessment_id),
     tax_basis_assessment_id text           REFERENCES product_core.assessment (assessment_id),
+    unit_basis_assessment_id text          REFERENCES product_core.assessment (assessment_id),
     approved_by             text           NOT NULL CHECK (product_core.is_human(approved_by)),
     approved_at             timestamptz    NOT NULL DEFAULT now(),
     record_status           text           NOT NULL DEFAULT 'ACTIVE' CHECK (record_status IN ('ACTIVE', 'SUPERSEDED', 'VOID')),
@@ -1341,6 +1588,7 @@ CREATE TABLE IF NOT EXISTS product_core.composition_cost_history (
     basis                   text           NOT NULL CHECK (btrim(basis) <> ''),
     assessment_id           text           NOT NULL REFERENCES product_core.assessment (assessment_id),
     tax_basis_assessment_id text           REFERENCES product_core.assessment (assessment_id),
+    unit_basis_assessment_id text          REFERENCES product_core.assessment (assessment_id),
     approved_by             text           NOT NULL CHECK (product_core.is_human(approved_by)),
     approved_at             timestamptz    NOT NULL DEFAULT now(),
     record_status           text           NOT NULL DEFAULT 'ACTIVE' CHECK (record_status IN ('ACTIVE', 'SUPERSEDED', 'VOID')),
@@ -1372,7 +1620,9 @@ DECLARE
     v_expected numeric;
     v_weak     boolean;
     v_confirmed text;
+    v_unit_ok  text;
     t          product_core.assessment%ROWTYPE;
+    u          product_core.assessment%ROWTYPE;
 BEGIN
     IF TG_OP = 'DELETE' THEN
         RAISE EXCEPTION '% は削除できません(VOID で取り消してください)', TG_TABLE_NAME USING ERRCODE = 'restrict_violation';
@@ -1424,7 +1674,9 @@ BEGIN
 
     SELECT * INTO o FROM product_core.cost_observation WHERE observation_id = NEW.source_observation_id;
     -- 観測値がこの対象のものであること(直接 / 承認済みの legacy_mapping 経由 / 承認済みの出品参照経由)
-    IF NOT (o.subject_entity_id = v_entity
+    -- ⚠️ 対象が legacy P のとき subject_entity_id は NULL。比較が NULL になると NOT(...) も NULL で
+    --    検査を素通りするため、coalesce で false に倒す
+    IF NOT (coalesce(o.subject_entity_id = v_entity, false)
             OR (o.subject_legacy_p IS NOT NULL AND EXISTS (
                     SELECT 1 FROM product_core.legacy_mapping m
                      WHERE m.legacy_p = o.subject_legacy_p AND m.entity_id = v_entity AND m.record_status = 'ACTIVE'))
@@ -1434,6 +1686,31 @@ BEGIN
         RAISE EXCEPTION '観測値 % は % のものではありません(承認済みの対応付けもありません)', o.observation_id, v_entity
             USING ERRCODE = 'check_violation';
     END IF;
+    -- 1.2: 単位の根拠が「既存 P あたり」または不明の観測値は、それだけでは正式原価にできない。
+    --      承認済みの legacy_mapping(P → この対象)に加え、人が UNIT_BASIS を確定していること
+    IF o.source_unit_basis IN ('PER_LEGACY_P', 'UNKNOWN') THEN
+        v_unit_ok := CASE WHEN v_is_cp THEN 'PER_COMPOSITION' ELSE 'PER_PP' END;
+        IF o.source_unit_basis = 'PER_LEGACY_P' AND NOT EXISTS (
+               SELECT 1 FROM product_core.legacy_mapping m
+                WHERE m.legacy_p = o.subject_legacy_p AND m.entity_id = v_entity AND m.record_status = 'ACTIVE') THEN
+            RAISE EXCEPTION '観測値 % は既存 P あたりの値です。% → % の ACTIVE な legacy_mapping が必要です',
+                o.observation_id, o.subject_legacy_p, v_entity USING ERRCODE = 'check_violation';
+        END IF;
+        IF NEW.unit_basis_assessment_id IS NULL THEN
+            RAISE EXCEPTION '観測値 % は単位の根拠が未確定です(%)。人の UNIT_BASIS 確定が必要です', o.observation_id, o.source_unit_basis
+                USING ERRCODE = 'check_violation';
+        END IF;
+        SELECT * INTO u FROM product_core.assessment WHERE assessment_id = NEW.unit_basis_assessment_id;
+        IF u.assessment_type IS DISTINCT FROM 'UNIT_BASIS' OR u.subject_key IS DISTINCT FROM o.observation_id
+           OR u.review_status NOT IN ('APPROVED', 'CORRECTED') THEN
+            RAISE EXCEPTION 'UNIT_BASIS 判定 % は、この観測値について人が確定したものではありません', NEW.unit_basis_assessment_id
+                USING ERRCODE = 'check_violation';
+        END IF;
+        IF (CASE u.review_status WHEN 'APPROVED' THEN u.verdict ELSE u.corrected_value END) IS DISTINCT FROM v_unit_ok THEN
+            RAISE EXCEPTION '人が確定した単位が % ではありません(正式原価にできません)', v_unit_ok USING ERRCODE = 'check_violation';
+        END IF;
+    END IF;
+
     n := NEW.normalization;
     -- S8: 換算記録が元の観測値と一致すること(元の金額・税区分・税率を失わない)
     IF (n ->> 'observed_amount')::numeric IS DISTINCT FROM o.observed_amount
@@ -1611,6 +1888,128 @@ $$;
 
 
 -- =============================================================
+--  取込関数 — Product Core の ID は DB が採番する(1.3)
+-- =============================================================
+--  取込ロールは ID 列を書けない(003 の列権限)。再実行しても同じ行を二重に作らないよう、
+--  自然キーで同時実行を直列化(advisory lock)し、既にあればその ID を返す。
+--  ON CONFLICT は使わない: 実体表の BEFORE INSERT トリガーが core_entity を先に登録するため、
+--  競合で捨てられる行の登録だけが残る恐れがある。
+--  SECURITY INVOKER(既定): 呼び出したロールの権限で動く(取込ロールに権限以上のことをさせない)。
+--  updated_by は INSERT トリガーが created_by から設定する(取込ロールには列権限が無い)。
+CREATE OR REPLACE FUNCTION product_core.import_physical_product(p_origin_key text, p_name text, p_kind text,
+                                                                 p_created_by text, p_ingest_run_id text)
+RETURNS TABLE (pp_id text, created boolean) LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended('product_core.physical_product:' || p_origin_key, 0));
+    SELECT p.pp_id INTO pp_id FROM product_core.physical_product p WHERE p.origin_key = p_origin_key;
+    IF FOUND THEN
+        created := false; RETURN NEXT; RETURN;
+    END IF;
+    INSERT INTO product_core.physical_product (name, kind, origin_key, created_by, ingest_run_id)
+    VALUES (p_name, coalesce(p_kind, 'GOODS'), p_origin_key, p_created_by, p_ingest_run_id)
+    RETURNING physical_product.pp_id INTO pp_id;
+    created := true; RETURN NEXT;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION product_core.import_composition(p_origin_key text, p_name text, p_comp_type text,
+                                                            p_created_by text, p_ingest_run_id text)
+RETURNS TABLE (cp_id text, created boolean) LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended('product_core.composition:' || p_origin_key, 0));
+    SELECT c.cp_id INTO cp_id FROM product_core.composition c WHERE c.origin_key = p_origin_key;
+    IF FOUND THEN
+        created := false; RETURN NEXT; RETURN;
+    END IF;
+    INSERT INTO product_core.composition (name, comp_type, origin_key, created_by, ingest_run_id)
+    VALUES (p_name, p_comp_type, p_origin_key, p_created_by, p_ingest_run_id)
+    RETURNING composition.cp_id INTO cp_id;
+    created := true; RETURN NEXT;
+END;
+$$;
+
+-- 出品の自然キー: Amazon = seller_sku / 楽天 = 商品管理番号 × SKU(SKU 単独は使い回しがあるため不可)
+CREATE OR REPLACE FUNCTION product_core.import_listing(p_channel text, p_seller_sku text, p_asin text,
+                                                        p_rakuten_item_id text, p_rakuten_sku text,
+                                                        p_source_type text, p_source_ref text,
+                                                        p_created_by text, p_ingest_run_id text)
+RETURNS TABLE (listing_id text, created boolean) LANGUAGE plpgsql AS $$
+DECLARE v_key text;
+BEGIN
+    IF p_channel = 'AMAZON' THEN
+        IF p_seller_sku IS NULL THEN
+            RAISE EXCEPTION 'Amazon の出品は seller_sku が必要です' USING ERRCODE = 'check_violation';
+        END IF;
+        v_key := 'AMAZON:' || p_seller_sku;
+    ELSIF p_channel = 'RAKUTEN' THEN
+        v_key := 'RAKUTEN:' || coalesce(p_rakuten_item_id, '') || ':' || coalesce(p_rakuten_sku, '<NULL>');
+    ELSE
+        RAISE EXCEPTION '取込関数で扱う販路は AMAZON / RAKUTEN です(%)', p_channel USING ERRCODE = 'check_violation';
+    END IF;
+    PERFORM pg_advisory_xact_lock(hashtextextended('product_core.listing:' || v_key, 0));
+    SELECT l.listing_id INTO listing_id FROM product_core.listing l
+     WHERE l.channel = p_channel
+       AND ((p_channel = 'AMAZON' AND l.seller_sku = p_seller_sku)
+         OR (p_channel = 'RAKUTEN' AND l.rakuten_item_id = p_rakuten_item_id
+             AND l.rakuten_sku IS NOT DISTINCT FROM p_rakuten_sku));
+    IF FOUND THEN
+        created := false; RETURN NEXT; RETURN;
+    END IF;
+    INSERT INTO product_core.listing (channel, asin, seller_sku, rakuten_item_id, rakuten_sku, source_type, source_ref,
+                                      created_by, ingest_run_id)
+    VALUES (p_channel, p_asin, p_seller_sku, p_rakuten_item_id, p_rakuten_sku, p_source_type, p_source_ref,
+            p_created_by, p_ingest_run_id)
+    RETURNING listing.listing_id INTO listing_id;
+    created := true; RETURN NEXT;
+END;
+$$;
+
+-- 取込元ファイル: 同じ取込元・同じ SHA256 なら既存の file_id を返す(再実行で増えない)
+CREATE OR REPLACE FUNCTION legacy_ingest.import_source_file_register(p_ingest_run_id text, p_source_system text,
+                                                                     p_file_path text, p_file_sha256 text,
+                                                                     p_file_mtime timestamptz, p_row_count integer)
+RETURNS TABLE (file_id bigint, created boolean) LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO legacy_ingest.import_source_file (ingest_run_id, source_system, file_path, file_sha256, file_mtime, row_count)
+    VALUES (p_ingest_run_id, p_source_system, p_file_path, p_file_sha256, p_file_mtime, p_row_count)
+    ON CONFLICT ON CONSTRAINT import_source_file_uq DO NOTHING
+    RETURNING import_source_file.file_id INTO file_id;
+    IF file_id IS NOT NULL THEN
+        created := true; RETURN NEXT; RETURN;
+    END IF;
+    SELECT f.file_id INTO file_id FROM legacy_ingest.import_source_file f
+     WHERE f.source_system = p_source_system AND f.file_sha256 = p_file_sha256;
+    created := false; RETURN NEXT;
+END;
+$$;
+
+-- 取込元レコード: 同じ業務キー・同じハッシュなら既存を返す。ハッシュが違えば新しい版として追記し、
+-- is_conflict = true(同じ業務キーに別の版が既にある)を返す。既存の版は書き換えない
+CREATE OR REPLACE FUNCTION legacy_ingest.import_source_record_register(p_file_id bigint, p_ingest_run_id text,
+                                                                       p_source_system text, p_source_record_key text,
+                                                                       p_source_record_hash text, p_raw jsonb)
+RETURNS TABLE (record_id bigint, created boolean, is_conflict boolean) LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO legacy_ingest.import_source_record (source_system, source_record_key, source_record_hash, file_id,
+                                                    ingest_run_id, raw)
+    VALUES (p_source_system, p_source_record_key, p_source_record_hash, p_file_id, p_ingest_run_id, p_raw)
+    ON CONFLICT ON CONSTRAINT import_source_record_uq DO NOTHING
+    RETURNING import_source_record.record_id INTO record_id;
+    created := record_id IS NOT NULL;
+    IF NOT created THEN
+        SELECT r.record_id INTO record_id FROM legacy_ingest.import_source_record r
+         WHERE r.source_system = p_source_system AND r.source_record_key = p_source_record_key
+           AND r.source_record_hash = p_source_record_hash;
+    END IF;
+    is_conflict := EXISTS (SELECT 1 FROM legacy_ingest.import_source_record r
+                            WHERE r.source_system = p_source_system AND r.source_record_key = p_source_record_key
+                              AND r.source_record_hash <> p_source_record_hash);
+    RETURN NEXT;
+END;
+$$;
+
+
+-- =============================================================
 --  正式処理用のビュー(S4)— 承認済みの行だけを公開する
 -- =============================================================
 CREATE OR REPLACE VIEW product_core.v_active_legacy_mapping AS
@@ -1622,6 +2021,19 @@ CREATE OR REPLACE VIEW product_core.v_active_listing_reference AS
     SELECT listing_id, entity_id, entity_type, valid_from, valid_to, approved_by, approved_at, ref_id
       FROM product_core.listing_reference_history
      WHERE record_status = 'ACTIVE';
+
+-- C番号 ↔ 出品 の正引き・逆引き(ACTIVE だけ)
+CREATE OR REPLACE VIEW product_core.v_active_legacy_listing_mapping AS
+    SELECT legacy_listing_id, listing_id, match_basis, approved_by, approved_at, llm_id
+      FROM product_core.legacy_listing_mapping
+     WHERE record_status = 'ACTIVE';
+
+-- 同じ業務キーで中身の違う観測値(黙って上書きせず、人が確認する対象)
+CREATE OR REPLACE VIEW product_core.v_cost_observation_key_conflicts AS
+    SELECT source, source_record_key, count(*) AS versions, array_agg(observation_id ORDER BY observation_id) AS observation_ids
+      FROM product_core.cost_observation
+     GROUP BY source, source_record_key
+    HAVING count(*) > 1;
 
 CREATE OR REPLACE VIEW product_core.v_active_identifier_link AS
     SELECT l.link_id, i.id_type, i.value, l.entity_id, l.entity_type, l.scan_policy, l.valid_from, l.valid_to
@@ -1641,4 +2053,6 @@ CREATE INDEX IF NOT EXISTS cost_observation_subject_idx ON product_core.cost_obs
 CREATE INDEX IF NOT EXISTS cost_observation_legacy_idx ON product_core.cost_observation (subject_legacy_p);
 CREATE INDEX IF NOT EXISTS assessment_subject_key_idx ON product_core.assessment (assessment_type, subject_key);
 CREATE INDEX IF NOT EXISTS assessment_review_idx ON product_core.assessment (review_status);
+CREATE INDEX IF NOT EXISTS legacy_listing_mapping_listing_idx ON product_core.legacy_listing_mapping (listing_id);
+CREATE INDEX IF NOT EXISTS legacy_listing_mapping_legacy_idx ON product_core.legacy_listing_mapping (legacy_listing_id);
 CREATE INDEX IF NOT EXISTS listing_asin_idx ON product_core.listing (asin) WHERE asin IS NOT NULL;

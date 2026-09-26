@@ -2,9 +2,9 @@
 
 | 項目 | 内容 |
 |---|---|
-| 版 | **v1.0**(2026-09-26 承認・正式配置)。U1〜U4 の決定、追加安全制約 S1〜S8、原価警告の2段階、NUMERIC 精度を反映。DDL: `05_Infrastructure/db/migrations/002_product_core.sql` / `003_product_core_roles.sql` |
+| 版 | **v1.0**(2026-09-26 承認・正式配置)。U1〜U4 の決定、追加安全制約 S1〜S8、原価警告の2段階、NUMERIC 精度を反映。**同日 DDL Revision(§14)を反映**: C番号の対応表・PER_LEGACY_P・DB 採番・GTIN12・取込の冪等性・review 束と保留理由。DDL: `05_Infrastructure/db/migrations/002_product_core.sql` / `003_product_core_roles.sql` |
 | 設計基準 | 商品データモデル v2.2(2026-09-25 承認・凍結) |
-| 状態 | DDL・DB ロール・制約テストを作成済み(使い捨て PostgreSQL での検証用)。**本番 DB への適用と実データ投入は未承認・未実施** |
+| 状態 | DDL・DB ロール・制約テスト(386件)を作成済み(使い捨て PostgreSQL での検証用)。**本番 DB への適用と実データ投入は未承認・未実施** |
 | 正本 | 既存 Excel(商品マスター・出品テーブル等)が引き続き正本。Product Core は **Shadow Model** |
 
 ---
@@ -29,6 +29,9 @@
 | D14(U3) | 確認表の保存先 | **NAS 上の AIKOS 管理領域**に置き、Pending / Reviewed / Archive 相当の状態で管理する。**実際のパスは既存の AIKOS 文書管理設計を確認してから確定**し、推測で新しいパスを作らない(§7.1) |
 | D15(U4) | 承認者と権限 | 最初の承認者を管理者として登録できる構造。operator の永続 ID と表示名を分離し、承認記録には `human:<operator_id>`。権限(商品マスター承認・Legacy Mapping 承認・Listing 参照先変更・正式原価承認 等)を operator ごとに分離できる(§3.0b / §3.0c) |
 | D16 | Identifier | A 案(identifier / identifier_link / core_entity)を**正式採用**。曖昧な Identifier から Stock Form を自動確定しない |
+| D17 | migration の修正方針 | 002・003 は本番へ一度も適用されていないため、Phase 1 の完成版として**直接修正**する(2026-09-26 DDL Revision)。**本番へ一度でも適用した後は既存 migration を書き換えず、004 以降を追加する** |
+| D18 | Human Review の保存先 | **B 案: `45_HumanReview/` として独立**(35_Documents は証憑・Document Intelligence の領域として維持)。将来 AIKOS Control Center へ移行する前提。**NAS 上の作成は CLAUDE.md 変更案のレビュー後**(`HumanReview_Storage_CLAUDE_md_Proposal.md`) |
+| D19 | A 区分の閾値 | 商品名類似度 0.35・原価倍率 1.8 / 0.56 は **Human Review の優先度分類のための暫定閾値**であり、承認条件ではない。**A 区分 = 簡易 Human Review 候補**(自動承認ではない)。A 区分も全件 Human Review を経由する。閾値は Pilot(`HumanReview_Pilot_Design.md`)で較正する |
 
 ---
 
@@ -149,7 +152,7 @@
 |---|---|
 | physical_product | **`PP-` + 6桁**(例 `PP-000001`) |
 | composition | **`CP-` + 6桁** |
-| listing | `LS-` + 6桁(既存の出品ID `C000001` は `legacy_listing_id`) |
+| listing | `LS-` + 6桁(既存の出品ID `C000001` は `legacy_listing_mapping` で対応付ける) |
 | listing_group | `LG-` + 6桁 |
 | identifier / identifier_link | `ID-` + 8桁 / `IL-` + 8桁 |
 | legacy_mapping | `LM-` + 8桁 |
@@ -159,9 +162,13 @@
 | cost_history / composition_cost_history | `CH-` + 8桁 / `CX-` + 8桁 |
 | cost_observation | `CO-` + 9桁 |
 | assessment | `AS-` + 9桁 |
+| legacy_listing_mapping | `LLM-` + 8桁 |
+| review_batch | `RB-` + 8桁 |
 
 - 既存の `P000001` は**文字列の legacy P** としてだけ扱う(legacy_mapping・snapshot・evidence)。Product Core の主キー・FK には使わない。
 - 桁が不足したら、同じ接頭辞のまま桁を増やす(既存 ID は変えない)。
+- **ID は DB のシーケンスだけが採番する**(DDL Revision 1.3)。取込ロール(`pc_ingest`)には ID 列の INSERT 権限を与えない。取込は `INSERT ... RETURNING` か取込関数(`import_physical_product()` / `import_composition()` / `import_listing()`)で ID を受け取る。取込関数は自然キー(origin_key・出品の自然キー)で直列化(advisory lock)し、既にあれば同じ ID を返す(再実行で重複しない。既存行の名前等は上書きしない)。
+  - 理由: ドライランで、明示 ID とシーケンス採番が衝突した(assessment)。
 
 ### 2.4 行為者(actor)と承認者
 
@@ -294,13 +301,23 @@
 | 列 | 型 | NULL | 制約・値 | AI | 説明 |
 |---|---|---|---|---|---|
 | `identifier_id` | text | NOT NULL | **PK** `^ID-\d{8,}$` | ✅ | |
-| `id_type` | text | NOT NULL | `JAN`(GTIN-13/8)/ `GTIN14` / `MAKER_CODE` / `JAN_PARTIAL4` / `ASIN` / `FNSKU` / `KIT_LABEL` / `TEMP_ID` | ✅ | FNSKU・KIT_LABEL は Phase 2 用に値だけ予約 |
-| `value` | text | NOT NULL | 正規化済み(数字は先頭0を保持) | ✅ | |
+| `id_type` | text | NOT NULL | `JAN`(GTIN-13/8。**8桁か13桁のみ**)/ `GTIN12`(12桁。元の値のまま)/ `GTIN14` / `MAKER_CODE` / `JAN_PARTIAL4` / `ASIN` / `FNSKU` / `KIT_LABEL` / `TEMP_ID` | ✅ | FNSKU・KIT_LABEL は Phase 2 用に値だけ予約 |
+| `value` | text | NOT NULL | 正規化済み(数字は先頭0を保持)。**12桁を13桁へ自動変換しない** | ✅ | |
 | | | | **UQ** `(id_type, value)` | | 同じコードは1行 |
 | `checkdigit_valid` | boolean | NULL可 | JAN / GTIN14 のみ | ✅ | 不一致でも登録する(誤記の証拠) |
 | `first_seen_source` | text | NOT NULL | 例 `legacy_product_master` / `pricetar_sku` / `set_sku` / `stocktake_scan` | ✅ | |
 | `first_seen_ref` | text | NOT NULL | ファイル + sha256 + 行 | ✅ | |
+| `origin` | text | NOT NULL | `OBSERVED`(既定・取込元の値そのまま)/ `HUMAN_CORRECTED`(人が review で修正した値) | OBSERVED のみ | HUMAN_CORRECTED |
+| `derived_from_identifier_id` | text | NULL可 | FK identifier。HUMAN_CORRECTED のとき必須(派生元の GTIN12) | | ✅ |
+| `correction_assessment_id` | text | NULL可 | FK assessment。HUMAN_CORRECTED のとき必須 | | ✅ |
 | 共通列 | | | created_* / ingest_run_id | | |
+
+**12桁 JAN(先頭0欠落の疑い)の扱い(DDL Revision 1.4)**
+- 12桁のコードは `GTIN12` として**元の値のまま**登録する。先頭に 0 を補った13桁へは自動変換しない(チェックディジットは先頭0で変わらないため、12桁と 0+12桁 を機械的に区別できない)。
+- AI は assessment(`IDENTIFIER_LINK` / `LEADING_ZERO_SUSPECT`、`subject_key = 'GTIN12:<12桁>'`)で提案できる。
+- 13桁の JAN は、人がその判定を review で `CORRECTED`(`corrected_value = 0 + 12桁`)にした後、`IDENTIFIER_APPROVE` を持つ人だけが `origin = HUMAN_CORRECTED` で登録できる(トリガー)。取込ロールは origin・派生元の列に権限が無い。
+- 元の GTIN12 の行は残る(identifier は追記専用)。13桁の行は派生元と根拠の判定を指す。
+- 取込元の値として 0+12桁 の JAN を登録しようとしても、同じ12桁の GTIN12 が既にあれば拒否する(推測の補完を防ぐ)。
 
 ### 3.3 `identifier_link` — コード → 対象の候補
 
@@ -405,13 +422,13 @@
 | `rakuten_item_id` / `rakuten_sku` | text | NULL可 | | ✅ | |
 | `fulfillment` | text | NOT NULL | `FBA` / `SELF` / `UNKNOWN` | ✅ | |
 | `listing_group_id` | text | NULL可 | FK listing_group | ✅ | |
-| `legacy_listing_id` | text | NULL可 | **UQ**(非NULL時)`^C\d{6}$` | ✅ | |
 | `channel_status` | text | NOT NULL | `ACTIVE` / `INACTIVE` / `UNKNOWN` | ✅ | |
 | `first_seen_at` / `last_seen_at` | timestamptz | NOT NULL | | ✅ | |
 | `source_type` / `source_ref` | text | NOT NULL | | ✅ | |
 
 - **UQ(部分):** Amazon は `(channel, seller_sku)`、楽天は `(channel, rakuten_item_id, rakuten_sku)`。自然キーは変更不可(SKU 変更は新しい listing)。
 - **listing は参照先を持たない**(listing_reference_history のみ)。
+- **既存の出品ID(C番号)は持たない**(DDL Revision 1.1)。出品テーブルには同じ出品の重複行があり、1出品に複数の C番号が対応するため、`legacy_listing_mapping`(§3.10b)で対応付ける。
 
 ### 3.9 `listing_group`
 
@@ -442,6 +459,28 @@
 
 - **排他制約:** 同じ listing の ACTIVE 行で期間が重ならない(`EXCLUDE USING gist (listing_id WITH =, daterange(valid_from, valid_to, '[]') WITH &&) WHERE (record_status='ACTIVE')`)。
 - ASIN 誤紐付け疑い 41件は、人の確認前に PROPOSED 行を作らない(assessment のみ)。
+
+### 3.10b `legacy_listing_mapping` — 既存の出品ID(C番号)→ 出品(DDL Revision 1.1)
+
+- **目的:** 出品テーブルの C番号を削除・変更せずに Product Core の listing へ対応付ける。**P1 提案→承認**(`LISTING_REFERENCE_APPROVE`)。
+
+| 列 | 型 | NULL | 制約・値 | AI | 人 | 説明 |
+|---|---|---|---|---|---|---|
+| `llm_id` | text | NOT NULL | **PK** `^LLM-\d{8,}$`(DB 採番) | | | |
+| `legacy_listing_id` | text | NOT NULL | `^C\d{6}$`(FK なし。正本は Excel) | ✅ | | |
+| `listing_id` | text | NOT NULL | **FK** listing | ✅ | | |
+| `match_basis` | text | NOT NULL | `SAME_NATURAL_KEY` / `DUPLICATE_LEGACY_ROW` / `MANUAL` | ✅ | | |
+| `observed_legacy_p` | text | NULL可 | `^P\d{6}$` | ✅ | | 取込時の旧紐付け(参考。承認の根拠ではない) |
+| `legacy_snapshot_ref` | text | NOT NULL | 取込時のファイル sha256 + 行 | ✅ | | |
+| `record_status` / `approved_by` / `approved_at` / `assessment_id` / `superseded_by` | | | P1 | PROPOSED | ACTIVE・REJECTED・SUPERSEDED | |
+
+- **1 C番号 → 1 出品:** `legacy_listing_id` ごとに ACTIVE は1行だけ(部分 UQ)。
+- **複数の C番号 → 同じ出品:** 許可(出品テーブルの重複行)。
+- **付け替え:** 新しい行を PROPOSED → 旧 ACTIVE を SUPERSEDED(`superseded_by` = 新、同じ C番号の行に限る)→ 新を ACTIVE。旧行は残る。
+- **逆引き:** ビュー `v_active_legacy_listing_mapping`(C番号 → 出品、出品 → C番号)。
+- **孤児を作らない:** listing は削除できない(P4)ので、対応先が消えることはない。存在しない listing は FK で拒否。
+- 同じ C番号 → 同じ出品の未決(PROPOSED / ACTIVE)は1行(再取込で増えない)。
+- AI の判定は assessment `LEGACY_LISTING`(`SAME_NATURAL_KEY` / `DUPLICATE_LEGACY_ROW` / `AMBIGUOUS` / `NO_MATCH`)。
 
 ### 3.11 `cost_history` — PP の正式原価(税抜)
 
@@ -525,17 +564,28 @@
 | `subject_entity_id` / `subject_entity_type` | text | NULL可 | 複合 FK core_entity(PP / CP / LISTING) | |
 | `subject_legacy_p` | text | NULL可 | `^P\d{6}$` | legacy P 単位の観測(標準原価等) |
 | | | | CHECK: subject_entity か subject_legacy_p の**ちょうど一方** | |
+| `source_unit_basis` | text | NOT NULL | `PER_LEGACY_P` / `PER_LISTING_UNIT` / `PER_DOCUMENT_LINE` / `PER_PP` / `PER_COMPOSITION` / `UNKNOWN` | 元資料の金額が「何1つ分」か(DDL Revision 1.2) |
+| `source_record_key` | text | NOT NULL | 取込元の業務キー(例 `legacy_p=P000123`) | 冪等性(1.5) |
+| `source_record_hash` | text | NOT NULL | `^[0-9a-f]{64}$`(レコードの sha256) | 冪等性(1.5) |
+| `import_record_id` | bigint | NULL可 | FK `legacy_ingest.import_source_record` | 取込元レコードへの参照 |
 | `evidence` | jsonb | NOT NULL | | |
 | `ingest_run_id` | text | NOT NULL | | |
 
-- **UQ:** `(source, source_ref, 対象)`(再取込で重複しない)。
+- **UQ:** `(source, source_record_key, source_record_hash)`(同じ版の再取込は増えない)。同じ業務キーで中身が違う版は**別の行として追記**し、黙って上書きしない。食い違いはビュー `v_cost_observation_key_conflicts` で確認する。
+
+**PER_LEGACY_P(DDL Revision 1.2)**
+- 既存 P に付いた値(商品マスターの標準原価など)は `source_unit_basis = PER_LEGACY_P`・`amount_unit = UNKNOWN` で記録する。**既存 P が単品かセットかは未確定のため、PP 単価と同一視しない**(CHECK: legacy P を対象にした観測値は `PER_LEGACY_P` か `UNKNOWN` のみ)。
+- `PER_LEGACY_P` / `UNKNOWN` の観測値は、**それだけでは正式原価に昇格できない**。昇格には次の両方が必要(トリガー):
+  1. `PER_LEGACY_P` なら、その P → 対象の **ACTIVE な legacy_mapping**
+  2. `unit_basis_assessment_id` が、**この観測値**について人が review で確定(APPROVED / CORRECTED)した `UNIT_BASIS` 判定であり、確定した単位が `PER_PP`(cost_history)/ `PER_COMPOSITION`(composition_cost_history)であること。AI の判定だけ(UNREVIEWED)では不可
+- 原価差異の判定(`cost_variance()`)では単位不明として扱い、PP 単価と比較しない(`UNIT_UNKNOWN`)。
 - 原価確認記録(人の確認)も、観測値(`cost_confirmation_record`)として取り込む。cost_history への登録は、AI Assessment → Human Approval を経て行う。
 
 **既存データの初期値(D12)**
 
 | source | tax_inclusion | tax_inclusion_basis | source_reliability | 理由 |
 |---|---|---|---|---|
-| `legacy_product_master`(標準原価) | `INCLUDED` | `OPERATIONAL_CONVENTION` | MEDIUM | 運用上は原則税込だが、行ごとの証拠は無い |
+| `legacy_product_master`(標準原価) | `INCLUDED` | `OPERATIONAL_CONVENTION` | MEDIUM | 運用上は原則税込だが、行ごとの証拠は無い。**単位は `PER_LEGACY_P`** |
 | `pricetar_inventory_csv`(cost) | `INCLUDED` | `OPERATIONAL_CONVENTION` | MEDIUM | 同上(手入力の運用値) |
 | `rakuten_item_number`(「/仕入値」) | `INCLUDED` | `OPERATIONAL_CONVENTION` | LOW | 文字列への埋め込み |
 | `sku_string`(`@値`) | `UNKNOWN` | `NONE` | LOW | 入力規則が確認できない |
@@ -572,7 +622,7 @@
 | 列 | 型 | NULL | 制約・値 | 説明 |
 |---|---|---|---|---|
 | `assessment_id` | text | NOT NULL | **PK** `^AS-\d{9,}$` | |
-| `assessment_type` | text | NOT NULL | `LEGACY_MAPPING` / `LISTING_REFERENCE` / `COST_VARIANCE` / `TAX_BASIS` / `DUPLICATE_PP` / `IDENTIFIER_LINK` / `COMPOSITION_CLASS` | |
+| `assessment_type` | text | NOT NULL | `LEGACY_MAPPING` / `LISTING_REFERENCE` / `COST_VARIANCE` / `TAX_BASIS` / `UNIT_BASIS` / `DUPLICATE_PP` / `IDENTIFIER_LINK` / `COMPOSITION_CLASS` / `LEGACY_LISTING` | |
 | `subject_entity_id` / `subject_entity_type` | text | NULL可 | 複合 FK core_entity | |
 | `subject_key` | text | NULL可 | 例 legacy P・ASIN・observation_id | |
 | | | | CHECK: 上の2つの**少なくとも一方** | |
@@ -598,6 +648,11 @@
 | `corrected_value` | text | NULL可 | 対象ではなく**値**を人が修正したとき(例: TAX_BASIS の INCLUDED / EXCLUDED)。CORRECTED では corrected_entity か corrected_value のどちらかが必須 |
 | `review_channel` | text | NULL可 | `EXCEL` / `UI` |
 | `review_ref` | text | NULL可 | 確認表のファイル sha256 + 行、または UI のセッション ID |
+| `review_reason_code` | text | NULL可 | `HOLD`(判断を保留)/ `NEEDS_MORE_INFO`(追加情報が必要)。**ON_HOLD のとき必須**。保留が解けた後も記録として残す(DDL Revision 1.6) |
+| `review_info_needed` | text | NULL可 | `PURCHASE_RECORD` / `PHYSICAL_CHECK` / `LISTING_PAGE` / `OTHER`。`NEEDS_MORE_INFO` のとき必須(それ以外は NULL) |
+| `review_batch_id` | text | NULL可 | FK review_batch。**`review_channel = EXCEL` のとき必須** |
+
+- review 欄(上の表の列すべて)は `content_hash` の対象外。取込ロールには review 欄の権限が無い(AI は人の判断を記録できない)。
 
 - **遷移(トリガー):** UNREVIEWED → ON_HOLD / APPROVED / REJECTED / CORRECTED、ON_HOLD → APPROVED / REJECTED / CORRECTED。**APPROVED / REJECTED / CORRECTED は最終状態**(やり直しは新しい assessment で行う)。
 - **`verdict='CONSISTENT_HIGH'` でも review_status は UNREVIEWED のまま。** 下流の ACTIVE 化は review が APPROVED / CORRECTED の assessment にだけ許す。
@@ -609,8 +664,24 @@
 | COST_VARIANCE | `OK` / `CONFIRMED_WARN` / `REFERENCE_WARN` / `TAX_BASIS_UNKNOWN` / `TAX_RATE_UNKNOWN` / `UNIT_UNKNOWN` / `NO_BASELINE` |
 | TAX_BASIS | `INCLUDED` / `EXCLUDED` / `UNKNOWN`(人が review で確定・修正する。CORRECTED の修正値は `review_note` と evidence に記録) |
 | DUPLICATE_PP | `DUPLICATE_CANDIDATE` / `VARIANT_CANDIDATE` / `NOT_DUPLICATE` |
-| IDENTIFIER_LINK | `VALID` / `CHECKDIGIT_ERROR` / `MISFILED` / `SHARED_ACROSS_ENTITIES` |
+| UNIT_BASIS | `PER_PP` / `PER_COMPOSITION` / `UNKNOWN`(`subject_key` = observation_id。CORRECTED の修正値は `corrected_value`) |
+| IDENTIFIER_LINK | `VALID` / `CHECKDIGIT_ERROR` / `MISFILED` / `SHARED_ACROSS_ENTITIES` / `LEADING_ZERO_SUSPECT`(`subject_key = 'GTIN12:<12桁>'`) |
+| LEGACY_LISTING | `SAME_NATURAL_KEY` / `DUPLICATE_LEGACY_ROW` / `AMBIGUOUS` / `NO_MATCH` |
 | COMPOSITION_CLASS | `FIXED_CANDIDATE` / `SELECTION_CANDIDATE` / `HUMAN_REVIEW_REQUIRED` |
+
+### 3.14b `review_batch` — Human Review の束(DDL Revision 1.6)
+
+| 列 | 型 | NULL | 制約・値 | 説明 |
+|---|---|---|---|---|
+| `review_batch_id` | text | NOT NULL | **PK** `^RB-\d{8,}$`(DB 採番) | 確認表ファイル名・保存先フォルダ名に使う |
+| `review_type` | text | NOT NULL | assessment の種類と対応(`LEGACY_MAPPING` / `DUPLICATE_GROUP` / `COMPOSITION` / `LISTING_REFERENCE` / `LEGACY_LISTING` / `IDENTIFIER` / `TAX_BASIS` / `UNIT_BASIS` / `COST`) | |
+| `channel` | text | NOT NULL | `EXCEL`(既定)/ `UI` | |
+| `status` | text | NOT NULL | `PENDING` → `REVIEWED` → `IMPORTED`(逆行・飛び越し不可) | 保存先の Pending / Reviewed / Imported と対応 |
+| `file_name` / `file_sha256` | text | NULL可 | 出力した確認表(sha256 は一度記録したら変更不可) | |
+| `reviewed_file_sha256` | text | NULL可 | 記入済みファイル。EXCEL で REVIEWED 以降は必須 | |
+| `created_by` / `updated_by` | text | NOT NULL | `human:`。`REVIEW` 権限を持つ ACTIVE な operator(トリガー) | |
+
+- AI(取込ロール)は作成・更新できない。削除不可。IMPORTED 後は変更不可。
 
 ### 3.15 取込ステージング(`legacy_ingest`)
 
@@ -622,6 +693,18 @@
 | `external_file_snapshot` | `ingest_run_id`・`file_kind`・`row_no`・`raw` jsonb | Pricetar CSV・RMS CSV・KPI・原価確認記録 |
 
 - 追記のみ。古い run の削除は別承認。
+
+**取込の冪等性(DDL Revision 1.5)**
+
+| テーブル | 主な列 | 一意性 |
+|---|---|---|
+| `import_source_file` | `file_id`(IDENTITY)・`ingest_run_id`・`source_system`・`file_path`・`file_sha256`・`file_mtime`・`row_count` | `(source_system, file_sha256)`: 同じファイルは1回だけ |
+| `import_source_record` | `record_id`(IDENTITY)・`source_system`・`source_record_key`(業務キー)・`source_record_hash`(sha256)・`file_id`・`ingest_run_id`・`raw` | `(source_system, source_record_key, source_record_hash)`: 同じ版は1回だけ。**同じ業務キーで違う版は追記**(上書きしない) |
+| `import_record_map` | `record_id`・`target_table`・`target_id` | 取込元レコード → 作った Product Core の行 |
+
+- 3表とも追記専用。取込関数 `import_source_file_register()` / `import_source_record_register()` は既存があれば同じ ID を返し、レコードは同じ業務キーに別の版があれば `is_conflict = true` を返す。
+- 同じ業務キーの版の食い違いはビュー `legacy_ingest.v_source_key_conflicts` で人が確認する(黙って最新版を採用しない)。
+- 取込は1トランザクションで行う。途中で失敗すればファイル・レコード・PP / CP・登録簿のすべてが取り消され、再実行で同じ結果になる(テスト E で確認)。
 
 ---
 
@@ -650,13 +733,19 @@
 | **S6** | 曖昧な Identifier で自動確定できない(解決関数 `resolve_identifier()` は、候補が複数・PROVISIONAL・`CONFIRM_ALWAYS` のとき `NEEDS_SELECTION` を返し、確定 ID を返さない。`AUTO_IF_UNIQUE` は承認時だけ設定できる) | identifier_link / 解決関数 |
 | **S7** | 税区分 UNKNOWN(および運用慣行のみ)の観測値を、人の `TAX_BASIS` 確定なしに正式原価へ採用できない | cost_history / composition_cost_history |
 | **S8** | 正式原価へ変換しても、観測値の元の金額・税区分・evidence が失われない(観測値は追記専用・RESTRICT、`normalization` と観測値の一致をトリガーで検証) | cost_observation / cost_history |
+| **S9** | C番号 → 出品は ACTIVE 1行、付け替えは SUPERSEDED で履歴を残す(同じ C番号の行のみ)、AI は ACTIVE を作れない | legacy_listing_mapping |
+| **S10** | `PER_LEGACY_P` / `UNKNOWN` 単位の観測値は、ACTIVE な legacy_mapping と人が確定した UNIT_BASIS なしに正式原価へ昇格できない | cost_observation / cost_history / composition_cost_history |
+| **S11** | 取込ロールは Product Core の ID 列を書けない(DB 採番のみ) | 全実体・提案・判定・観測値 |
+| **S12** | 12桁コードを13桁へ自動変換しない。13桁の修正コードは人の CORRECTED + IDENTIFIER_APPROVE の後だけ | identifier |
+| **S13** | 取込はファイル SHA256 + レコード(業務キー + ハッシュ)で冪等。同じ業務キーの別版は追記し、黙って上書きしない | legacy_ingest / cost_observation |
+| **S14** | Excel での review は review_batch に属し、保留には理由コードが要る。AI は review 欄・review_batch を書けない | assessment / review_batch |
 
 **DB ロールの分離(S5 の土台)**
 
 | ロール(NOLOGIN のグループロール) | 使う主体 | 権限 |
 |---|---|---|
 | `pc_owner` | マイグレーション(Migrate.sh) | スキーマの所有者。アプリからは使わない |
-| `pc_ingest` | 取込ジョブ・AI 判定 | P3・P4 表への INSERT、PROVISIONAL / PROPOSED の INSERT、assessment の AI 部分の INSERT。**承認列・review 列・cost_history / composition_cost_history には権限なし**(列単位の権限) |
+| `pc_ingest` | 取込ジョブ・AI 判定 | P3・P4 表への INSERT、PROVISIONAL / PROPOSED の INSERT、assessment の AI 部分の INSERT、取込の冪等性の表への INSERT。**ID 列・承認列・review 列・identifier の origin / 派生元・review_batch・cost_history / composition_cost_history には権限なし**(列単位の権限) |
 | `pc_reviewer` | Excel 確認表の取込(人が起動) | review 列の UPDATE、ACTIVE 化の UPDATE、cost_history / composition_cost_history の INSERT。**ただしトリガーで operator の permission を確認** |
 | `pc_reader` | 検証レポート・将来の MCP 参照 | SELECT のみ |
 
@@ -709,7 +798,8 @@ legacy_ingest(ingest_run + snapshots)
         ✕ Product Core → Excel の書き戻し(D1)
 ```
 
-- **冪等性:** 同じ入力で再実行しても行が増えない(identifier の `(id_type, value)`・origin_key・listing の自然キー・observation の UQ)。
+- **冪等性:** 同じ入力で再実行しても行が増えない(ファイル SHA256・取込元レコード(業務キー + ハッシュ)・identifier の `(id_type, value)`・origin_key・listing の自然キー・observation の UQ)。ID は DB 採番で、取込関数が既存 ID を返す(§2.3・§3.15)。
+- 出品テーブルの C番号は `legacy_listing_mapping` の PROPOSED(AI)→ 人の承認で ACTIVE(§3.10b)。
 - 取込で作るのは P3 / P4 の行・PROVISIONAL・PROPOSED・assessment だけ。ACTIVE と正式原価は作らない。
 - 出品テーブルの旧紐付け(出品 → legacy P)は、legacy_mapping が ACTIVE になった後に、listing_reference_history の PROPOSED(`reason='初期移行'`)として提案し、人の承認を経て ACTIVE にする。
 
@@ -738,7 +828,9 @@ Excel 確認表の取込(手動実行)
 
 - 将来の承認 UI は、同じ review 列を `review_channel=UI` で更新するだけにする(表の変更は不要)。
 
-### 7.1 確認表の保存先(D14)
+### 7.1 確認表の保存先(D14 → D18)
+
+> **2026-09-26 更新:** B 案 **`45_HumanReview/`(独立領域)を採用**(D18)。フォルダ構造・CLAUDE.md の NAS 書込ルール・バックアップ・アクセス権・命名・状態管理は変更案 `HumanReview_Storage_CLAUDE_md_Proposal.md` にまとめ、**レビュー後に NAS へ作成する(現時点では未作成)**。状態は review_batch の `PENDING / REVIEWED / IMPORTED` と対応させる。以下は採用前の検討経緯として残す。
 
 - 保存先は **NAS 上の AIKOS 管理領域**とし、Pending(記入待ち)→ Reviewed(記入済み・取込待ち / 取込済み)→ Archive(取込完了・保管)の状態で管理する。
 - **既存の AIKOS 文書管理設計**(`06_DocumentIntelligence/docs/Phase1_Intake_Spec.md`)を確認した結果:
@@ -750,7 +842,7 @@ Excel 確認表の取込(手動実行)
   - 案2: 確認表専用の新しい番号領域を文書管理設計に追加する
   いずれも CLAUDE.md の NAS 例外(書き込み主体・範囲)の改訂承認が必要。
 - 保存先が決まるまでは、確認表の往復(実装順序の段階8)に着手しない。段階1〜7は保存先に依存しない。
-- **一括承認:** 同じ `rule_version`・同じ `verdict`・`confidence=HIGH` の範囲に限る。各行に reviewed_by / reviewed_at を記録する。
+- **一括承認:** 同じ `rule_version`・同じ `verdict`・`confidence=HIGH` の範囲に限る。各行に reviewed_by / reviewed_at を記録する。**優先度分類の A 区分(D19)は一括承認の条件ではない。** A 区分は「簡易 Human Review 候補」であり、1件ずつ人の判断を記録する。
 - **人間承認が必要な変更:** P 統合(MERGED / DUPLICATE_OF)、正式原価(cost_history / composition_cost_history)、Listing 参照先、PP / CP の ACTIVE・RETIRED、scan_policy の AUTO_IF_UNIQUE 化。
 
 **原価差異の判定(D8・D12)**
@@ -826,7 +918,7 @@ Excel 確認表の取込(手動実行)
 2. 取込の前後で正本 Excel・CSV の sha256 が一致している(書き込みゼロ)。
 3. 同じ入力で再取込しても行が増えない。
 4. 既存 P 1,211件すべてに LEGACY_MAPPING assessment が1件ずつあり、`UNREVIEWED` から開始している。
-5. 出品テーブル 1,430件が listing に `legacy_listing_id` で1対1に対応している。
+5. 出品テーブル 1,430件の C番号すべてに `legacy_listing_mapping` の提案があり、ACTIVE は C番号ごとに1行(複数の C番号 → 同じ出品は可)。
 6. ACTIVE・正式原価の行はすべて承認者が `human:<operator_id>`(ACTIVE・対象操作の permission あり)である。
 7. `verdict='CONSISTENT_HIGH'` の assessment が、人の review 無しで下流を変えていない(検証クエリで0件)。
 8. PROVISIONAL の PP / CP に cost_history / composition_cost_history が無い。商品マスターの標準原価が一括で cost_history に入っていない。
@@ -859,7 +951,7 @@ Excel 確認表の取込(手動実行)
 |---|---|---|
 | U1 | 原価の税区分 | **決定済み**(D12・§3.11・§3.13) |
 | U2 | NUMERIC の精度 | **決定済み**(NUMERIC(18,6) / NUMERIC(7,6)、境界値テスト済み)。会計 / KPI 確定時の最終丸め規則は確定処理の設計時に決める |
-| U3 | 確認表の NAS パス | **AIKOS 文書管理設計の改訂で決める**(§7.1)。段階8の前提 |
+| U3 | 確認表の NAS パス | **B 案 `45_HumanReview/` を採用**(D18)。CLAUDE.md 変更案のレビュー後に NAS へ作成(§7.1)。段階8の前提 |
 | U4 | 承認者と権限 | **決定済み**(D15・§3.0b・§3.0c)。最初の管理者の実際の operator_id は人が登録時に決める |
 | U5 | PP の tax_category(10% / 8%)の初期値 | 既定は UNKNOWN。AI が商品名から提案し、人が承認する(`PRODUCT_APPROVE`) |
 
@@ -876,6 +968,30 @@ Excel 確認表の取込(手動実行)
 | 楽天出品の一意制約 | `NULLS NOT DISTINCT`(PostgreSQL 15 以降) | SKU 空の楽天出品の重複を防ぐ |
 | `pc_owner` | ロールだけ作成し、Phase 1 では権限・所有権を与えない | 所有権の移し替えは本番適用の手順で別途決める |
 | 拡張 `btree_gist` | データベース単位で有効化(スキーマは既定) | 期間の重なり禁止(EXCLUDE)に必要 |
+
+## 14. DDL Revision(2026-09-26)
+
+002・003 は本番未適用のため直接修正した(D17。修正前に本番の `public.schema_migrations` が 001 のみであること、`product_core` / `legacy_ingest` スキーマ・`pc_` ロールが無いことを読み取り専用で確認)。
+
+| # | 変更 | DDL | 仕様 |
+|---|---|---|---|
+| 1.1 | `listing.legacy_listing_id` を廃止し、`legacy_listing_mapping` を追加 | 002 / 003 | §3.8・§3.10b・S9 |
+| 1.2 | `cost_observation.source_unit_basis`(PER_LEGACY_P ほか)と昇格条件。assessment `UNIT_BASIS`、cost_history / composition_cost_history に `unit_basis_assessment_id` | 002 | §3.13・§3.14・S10 |
+| 1.3 | 取込ロールから ID 列の INSERT 権限を外す。取込関数 `import_physical_product()` / `import_composition()` / `import_listing()` | 002 / 003 | §2.3・S11 |
+| 1.4 | identifier に `GTIN12`・`origin`・派生元・根拠の判定。JAN は 8 / 13 桁のみ。`LEADING_ZERO_SUSPECT` | 002 / 003 | §3.2・S12 |
+| 1.5 | `legacy_ingest.import_source_file` / `import_source_record` / `import_record_map`、観測値の `source_record_key` / `source_record_hash`、食い違いのビュー | 002 / 003 | §3.13・§3.15・S13 |
+| 1.6 | `review_batch`、assessment の `review_reason_code` / `review_info_needed` / `review_batch_id` | 002 / 003 | §3.14・§3.14b・S14 |
+
+**Revision で見つけて直した既存の不具合**
+- 正式原価の作成時の「観測値がこの対象のものか」の検査で、legacy P を対象にした観測値(`subject_entity_id` が NULL)に対して比較結果が NULL になり、`IF NOT (...)` が成立せず**検査を素通りしていた**。`coalesce(..., false)` で拒否側に倒した(テスト B「承認済みの legacy_mapping が無ければ正式原価にできない」で検出)。
+
+**既存テストの修正(期待値は変えず、前提の作り方だけを変更)**
+- 取込ロールが ID を指定していた準備の INSERT: ID 列を外し、直前に `setval` で DB 採番を既知の ID に合わせる。準備の後に「想定の ID になっている」確認を追加(前提が崩れたら別の理由で PASS しないように)。
+- 取込ロールの異常系で ID を指定していたもの: ID を外し、意図した制約(列権限 / CHECK / 一意)で拒否されることを確認。C13(既存 P 番号を主キーにできない)はスーパーユーザーで CHECK を確認し、取込ロールが ID を指定できないことは別のテストに分けた。
+- 観測値の INSERT に新しい必須列(source_unit_basis・source_record_key・source_record_hash)を追加。商品マスター由来の観測値(CO-100000002)は 1.2 に合わせて `PER_LEGACY_P` / `UNKNOWN` にした。これに伴い、商品マスター原価を legacy_mapping 経由で正式原価にするテストは、税区分の確定に加えて UNIT_BASIS の確定を準備に加えた(期待は「通る」「税区分が未確定なら拒否」のまま)。
+- 税抜同士の比較の確認(OK / REFERENCE_WARN)は、単位が PP と確定した商品マスター由来の観測値(CO-100000019)で行い、PER_LEGACY_P の値が PP 単価と比較されない(UNIT_UNKNOWN)ことを新しいテストで確認。
+- Excel での review に review_batch_id、保留に理由コードを付けた(1.6 の新しい必須条件)。
+- 表の数の確認(STRUCT)を新しい表の数に更新(17→19・4→7)。
 
 ## 付記
 - 本書は v2.2(凍結)と 2026-09-26 の決定事項 D1〜D11 に基づく。草案(`product_core_phase1_spec_20260925.md`)からの主な変更点:

@@ -172,7 +172,7 @@ ok "再適用(冪等性)"
 log "5/6 制約テスト"
 set +e
 cat "${TEST_DIR}/00_harness.sql" "${TEST_DIR}/10_core.sql" "${TEST_DIR}/20_cost.sql" \
-    "${TEST_DIR}/30_identifier_roles.sql" \
+    "${TEST_DIR}/30_identifier_roles.sql" "${TEST_DIR}/50_revision.sql" \
     | test_exec "psql -X -q --set ON_ERROR_STOP=1 -U '${TEST_USER}' -d '${TEST_DB}'" >/dev/null
 TEST_RC=$?
 # AI のプロセスと同じ条件(スーパーユーザーではない pc_ingest メンバー)の別セッション

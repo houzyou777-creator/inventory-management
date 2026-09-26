@@ -6,18 +6,23 @@
 -- ------------------------------------------------------------
 --  IDENTIFIER: コード登録簿(P3)とコード → 対象の候補(P1)
 -- ------------------------------------------------------------
+SELECT setval('product_core.id_seq', 10000000);
 SELECT pc_test.lives('IDENTIFIER', '取込ロールがコードを登録できる',
-    $q$INSERT INTO product_core.identifier (identifier_id, id_type, value, checkdigit_valid, first_seen_source, first_seen_ref, created_by) VALUES
-       ('ID-10000001', 'JAN', '4900000000011', true, 'legacy_product_master', 'sha#1', 'ingest:t'),
-       ('ID-10000002', 'JAN', '4900000000028', true, 'legacy_product_master', 'sha#2', 'ingest:t'),
-       ('ID-10000003', 'JAN', '4900000000035', true, 'legacy_product_master', 'sha#3', 'ingest:t'),
-       ('ID-10000004', 'JAN', '4900000000042', true, 'legacy_product_master', 'sha#4', 'ingest:t'),
-       ('ID-10000005', 'JAN', '4900000000059', true, 'legacy_product_master', 'sha#5', 'ingest:t'),
-       ('ID-10000006', 'JAN_PARTIAL4', '0011', NULL, 'set_sku', 'SET-0011-0028', 'ingest:t'),
-       ('ID-10000007', 'ASIN', 'B0TESTA001', NULL, 'legacy_product_master', 'sha#7', 'ingest:t'),
-       ('ID-10000008', 'GTIN14', '14900000000018', true, 'stocktake_scan', 'scan#8', 'ingest:t'),
-       ('ID-10000009', 'JAN', '4900000000066', true, 'legacy_product_master', 'sha#9', 'ingest:t'),
-       ('ID-10000010', 'TEMP_ID', 'T-000123', NULL, 'stocktake_scan', 'scan#10', 'ingest:t')$q$, 'pctest_ingest');
+    $q$INSERT INTO product_core.identifier (id_type, value, checkdigit_valid, first_seen_source, first_seen_ref, created_by) VALUES
+       ('JAN', '4900000000011', true, 'legacy_product_master', 'sha#1', 'ingest:t'),
+       ('JAN', '4900000000028', true, 'legacy_product_master', 'sha#2', 'ingest:t'),
+       ('JAN', '4900000000035', true, 'legacy_product_master', 'sha#3', 'ingest:t'),
+       ('JAN', '4900000000042', true, 'legacy_product_master', 'sha#4', 'ingest:t'),
+       ('JAN', '4900000000059', true, 'legacy_product_master', 'sha#5', 'ingest:t'),
+       ('JAN_PARTIAL4', '0011', NULL, 'set_sku', 'SET-0011-0028', 'ingest:t'),
+       ('ASIN', 'B0TESTA001', NULL, 'legacy_product_master', 'sha#7', 'ingest:t'),
+       ('GTIN14', '14900000000018', true, 'stocktake_scan', 'scan#8', 'ingest:t'),
+       ('JAN', '4900000000066', true, 'legacy_product_master', 'sha#9', 'ingest:t'),
+       ('TEMP_ID', 'T-000123', NULL, 'stocktake_scan', 'scan#10', 'ingest:t')$q$, 'pctest_ingest');
+SELECT setval('product_core.id_seq', 10000100);
+SELECT pc_test.check('IDENTIFIER', 'DB の採番で想定の ID になっている(テストの前提)',
+    (SELECT string_agg(identifier_id || '=' || value, ',' ORDER BY identifier_id) FROM product_core.identifier)
+    = 'ID-10000001=4900000000011,ID-10000002=4900000000028,ID-10000003=4900000000035,ID-10000004=4900000000042,ID-10000005=4900000000059,ID-10000006=0011,ID-10000007=B0TESTA001,ID-10000008=14900000000018,ID-10000009=4900000000066,ID-10000010=T-000123');
 SELECT pc_test.throws('IDENTIFIER', 'JAN の形式を検査', $q$INSERT INTO product_core.identifier (id_type, value, first_seen_source, first_seen_ref, created_by)
     VALUES ('JAN', '12345', 's', 'r', 'ingest:t')$q$, 'pctest_ingest', '23514');
 SELECT pc_test.throws('IDENTIFIER', '同じコードは1行(重複を拒否)', $q$INSERT INTO product_core.identifier (id_type, value, first_seen_source, first_seen_ref, created_by)
@@ -25,15 +30,23 @@ SELECT pc_test.throws('IDENTIFIER', '同じコードは1行(重複を拒否)', $
 SELECT pc_test.throws('IDENTIFIER', 'P3: コードは変更できない', $q$UPDATE product_core.identifier SET value = '4900000000073' WHERE identifier_id = 'ID-10000001'$q$, NULL, '追記専用');
 SELECT pc_test.throws('IDENTIFIER', 'P3: コードは削除できない', $q$DELETE FROM product_core.identifier WHERE identifier_id = 'ID-10000001'$q$, NULL, '追記専用');
 
-SELECT pc_test.lives('IDENTIFIER', 'AI が紐付けの候補(PROPOSED)を作れる — 同じ JAN を単品とセットへ(共有 JAN)',
-    $q$INSERT INTO product_core.identifier_link (link_id, identifier_id, entity_id, entity_type, link_basis, confidence, evidence, created_by) VALUES
-       ('IL-10000001', 'ID-10000001', 'PP-100001', 'PHYSICAL_PRODUCT', 'LEGACY_MASTER', 'HIGH', '{}', 'rule:id/1.0'),
-       ('IL-10000002', 'ID-10000002', 'PP-100002', 'PHYSICAL_PRODUCT', 'LEGACY_MASTER', 'HIGH', '{}', 'rule:id/1.0'),
-       ('IL-10000003', 'ID-10000002', 'CP-100001', 'COMPOSITION', 'LEGACY_MASTER', 'MEDIUM', '{"shared_jan":true}', 'rule:id/1.0'),
-       ('IL-10000004', 'ID-10000003', 'PP-100007', 'PHYSICAL_PRODUCT', 'LEGACY_MASTER', 'HIGH', '{}', 'rule:id/1.0'),
-       ('IL-10000005', 'ID-10000004', 'PP-100003', 'PHYSICAL_PRODUCT', 'LEGACY_MASTER', 'HIGH', '{}', 'rule:id/1.0'),
-       ('IL-10000006', 'ID-10000005', 'PP-100008', 'PHYSICAL_PRODUCT', 'LEGACY_MASTER', 'HIGH', '{}', 'rule:id/1.0'),
-       ('IL-10000009', 'ID-10000009', 'PP-100002', 'PHYSICAL_PRODUCT', 'LEGACY_MASTER', 'HIGH', '{}', 'rule:id/1.0')$q$, 'pctest_ingest');
+SELECT pc_test.lives('IDENTIFIER', 'AI が紐付けの候補(PROPOSED)を作れる — 同じ JAN を単品とセットへ(共有 JAN)', ARRAY[
+    $q$SELECT setval('product_core.il_seq', 10000000)$q$,
+    $q$SET LOCAL ROLE pctest_ingest$q$,
+    $q$INSERT INTO product_core.identifier_link (identifier_id, entity_id, entity_type, link_basis, confidence, evidence, created_by) VALUES
+       ('ID-10000001', 'PP-100001', 'PHYSICAL_PRODUCT', 'LEGACY_MASTER', 'HIGH', '{}', 'rule:id/1.0'),
+       ('ID-10000002', 'PP-100002', 'PHYSICAL_PRODUCT', 'LEGACY_MASTER', 'HIGH', '{}', 'rule:id/1.0'),
+       ('ID-10000002', 'CP-100001', 'COMPOSITION', 'LEGACY_MASTER', 'MEDIUM', '{"shared_jan":true}', 'rule:id/1.0'),
+       ('ID-10000003', 'PP-100007', 'PHYSICAL_PRODUCT', 'LEGACY_MASTER', 'HIGH', '{}', 'rule:id/1.0'),
+       ('ID-10000004', 'PP-100003', 'PHYSICAL_PRODUCT', 'LEGACY_MASTER', 'HIGH', '{}', 'rule:id/1.0'),
+       ('ID-10000005', 'PP-100008', 'PHYSICAL_PRODUCT', 'LEGACY_MASTER', 'HIGH', '{}', 'rule:id/1.0')$q$,
+    $q$RESET ROLE$q$,
+    $q$SELECT setval('product_core.il_seq', 10000008)$q$,
+    $q$SET LOCAL ROLE pctest_ingest$q$,
+    $q$INSERT INTO product_core.identifier_link (identifier_id, entity_id, entity_type, link_basis, confidence, evidence, created_by) VALUES
+       ('ID-10000009', 'PP-100002', 'PHYSICAL_PRODUCT', 'LEGACY_MASTER', 'HIGH', '{}', 'rule:id/1.0')$q$,
+    $q$RESET ROLE$q$,
+    $q$SELECT setval('product_core.il_seq', 10000100)$q$]);
 SELECT pc_test.throws('IDENTIFIER', 'S6: AI は自動確定の許可(AUTO_IF_UNIQUE)付きで提案できない',
     $q$INSERT INTO product_core.identifier_link (identifier_id, entity_id, entity_type, link_basis, scan_policy, confidence, evidence, created_by)
        VALUES ('ID-10000005', 'PP-100001', 'PHYSICAL_PRODUCT', 'LEGACY_MASTER', 'AUTO_IF_UNIQUE', 'HIGH', '{}', 'ai:x')$q$, 'pctest_ingest', '23514');
@@ -43,10 +56,17 @@ SELECT pc_test.throws('IDENTIFIER', 'S6: JAN 下4桁(部分識別子)はスキ�
 SELECT pc_test.throws('IDENTIFIER', 'S6: JAN 欄の誤記(MISFILED)はスキャンに使えない',
     $q$INSERT INTO product_core.identifier_link (identifier_id, entity_id, entity_type, link_basis, confidence, evidence, created_by)
        VALUES ('ID-10000007', 'LS-100001', 'LISTING', 'MISFILED', 'LOW', '{}', 'ai:x')$q$, 'pctest_ingest', '23514');
-SELECT pc_test.lives('IDENTIFIER', '部分識別子・誤記は NOT_FOR_SCAN なら記録できる',
-    $q$INSERT INTO product_core.identifier_link (link_id, identifier_id, entity_id, entity_type, link_basis, scan_policy, confidence, evidence, created_by) VALUES
-       ('IL-10000007', 'ID-10000006', 'PP-100001', 'PHYSICAL_PRODUCT', 'DERIVED_FROM_SKU', 'NOT_FOR_SCAN', 'LOW', '{}', 'ai:x'),
-       ('IL-10000008', 'ID-10000007', 'LS-100001', 'LISTING', 'MISFILED', 'NOT_FOR_SCAN', 'LOW', '{}', 'ai:x')$q$, 'pctest_ingest');
+SELECT pc_test.lives('IDENTIFIER', '部分識別子・誤記は NOT_FOR_SCAN なら記録できる', ARRAY[
+    $q$SELECT setval('product_core.il_seq', 10000006)$q$,
+    $q$SET LOCAL ROLE pctest_ingest$q$,
+    $q$INSERT INTO product_core.identifier_link (identifier_id, entity_id, entity_type, link_basis, scan_policy, confidence, evidence, created_by) VALUES
+       ('ID-10000006', 'PP-100001', 'PHYSICAL_PRODUCT', 'DERIVED_FROM_SKU', 'NOT_FOR_SCAN', 'LOW', '{}', 'ai:x'),
+       ('ID-10000007', 'LS-100001', 'LISTING', 'MISFILED', 'NOT_FOR_SCAN', 'LOW', '{}', 'ai:x')$q$,
+    $q$RESET ROLE$q$,
+    $q$SELECT setval('product_core.il_seq', 10000200)$q$]);
+SELECT pc_test.check('IDENTIFIER', 'DB の採番で想定の ID になっている(テストの前提)',
+    (SELECT string_agg(link_id || '=' || identifier_id || '>' || entity_id, ',' ORDER BY link_id) FROM product_core.identifier_link)
+    = 'IL-10000001=ID-10000001>PP-100001,IL-10000002=ID-10000002>PP-100002,IL-10000003=ID-10000002>CP-100001,IL-10000004=ID-10000003>PP-100007,IL-10000005=ID-10000004>PP-100003,IL-10000006=ID-10000005>PP-100008,IL-10000007=ID-10000006>PP-100001,IL-10000008=ID-10000007>LS-100001,IL-10000009=ID-10000009>PP-100002');
 SELECT pc_test.throws('IDENTIFIER', 'S5: AI は scan_policy を変えられない(列権限)',
     $q$UPDATE product_core.identifier_link SET scan_policy = 'AUTO_IF_UNIQUE' WHERE link_id = 'IL-10000001'$q$, 'pctest_ingest', '42501');
 SELECT pc_test.throws('IDENTIFIER', 'C1: IDENTIFIER_APPROVE の無い人は承認できない',

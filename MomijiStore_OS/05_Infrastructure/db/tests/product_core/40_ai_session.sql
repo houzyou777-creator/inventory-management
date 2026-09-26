@@ -28,3 +28,15 @@ SELECT pc_test.lives('AI_SESSION', 'AI は判定(assessment)を UNREVIEWED で�
        VALUES ('LEGACY_MAPPING', 'P000077', 'NEEDS_REVIEW', 'LOW', 'AI セッションからの記録', '{}', 'legacy-map/1.0', 'ai:test/1')$q$);
 SELECT pc_test.check('AI_SESSION', 'AI が記録した判定は UNREVIEWED のまま',
     (SELECT review_status = 'UNREVIEWED' FROM product_core.assessment WHERE subject_key = 'P000077' AND assessed_by = 'ai:test/1'));
+SELECT pc_test.throws('AI_SESSION', '1.6: AI は review_batch(人の確認表の束)を作れない',
+    $q$INSERT INTO product_core.review_batch (review_type, file_name, created_by, updated_by) VALUES ('LEGACY_LISTING', 'x.xlsx', 'human:op_rev', 'human:op_rev')$q$, NULL, '42501');
+SELECT pc_test.throws('AI_SESSION', '1.6: AI は保留理由・review_batch_id(人の判断)を書けない',
+    $q$UPDATE product_core.assessment SET review_status = 'ON_HOLD', reviewed_by = 'human:op_rev', review_note = 'x', review_reason_code = 'HOLD',
+           review_channel = 'EXCEL', review_batch_id = 'RB-00000001' WHERE assessment_id = 'AS-100000003'$q$, NULL, '42501');
+SELECT pc_test.throws('AI_SESSION', '1.4: AI は人の修正コード(HUMAN_CORRECTED)を登録できない',
+    $q$INSERT INTO product_core.identifier (id_type, value, first_seen_source, first_seen_ref, created_by, origin) VALUES ('JAN', '4900000000998', 's', 'r', 'human:op_admin', 'HUMAN_CORRECTED')$q$, NULL, '42501');
+SELECT pc_test.throws('AI_SESSION', '1.1: AI が human: を名乗って C番号の対応を ACTIVE で作ることはできない',
+    $q$INSERT INTO product_core.legacy_listing_mapping (legacy_listing_id, listing_id, match_basis, legacy_snapshot_ref, created_by, record_status, approved_by)
+       VALUES ('C000077', 'LS-100002', 'MANUAL', 'x', 'human:op_admin', 'ACTIVE', 'human:op_admin')$q$, NULL, '42501');
+SELECT pc_test.throws('AI_SESSION', '1.3: AI は PP の ID を指定できない',
+    $q$INSERT INTO product_core.physical_product (pp_id, name, origin_key, created_by) VALUES ('PP-100077', 'x', 'k:ai77', 'ai:x')$q$, NULL, '42501');

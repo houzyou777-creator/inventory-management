@@ -6,55 +6,61 @@
 -- ------------------------------------------------------------
 --  OBSERVATION: 原価の観測値(P3・D12)
 -- ------------------------------------------------------------
+SELECT setval('product_core.co_seq', 100000000);
 SELECT pc_test.lives('OBSERVATION', '取込ロールが税込・税抜・不明の観測値を元の値のまま記録できる',
-    $q$INSERT INTO product_core.cost_observation (observation_id, source, source_ref, source_document_id, source_reliability, observed_at,
+    $q$INSERT INTO product_core.cost_observation (source, source_ref, source_document_id, source_reliability, observed_at,
             observed_amount, tax_inclusion, tax_inclusion_basis, tax_rate, tax_rate_basis, amount_unit,
-            subject_entity_id, subject_entity_type, subject_legacy_p, evidence, created_by, ingest_run_id) VALUES
-       ('CO-100000001', 'invoice', 'inv#1', 'DOC-20260926-000001', 'HIGH', '2026-09-15', 1000, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', NULL, '{"line_unit_price":"1,000","tax_label":"税抜","issuer":"問屋A"}', 'ingest:t', 'IR-20260926-000002-abcd'),
-       ('CO-100000002', 'legacy_product_master', 'master#2', NULL, 'MEDIUM', '2026-09-15', 1100, 'INCLUDED', 'OPERATIONAL_CONVENTION', NULL, 'NONE', 'PER_PP', NULL, NULL, 'P000001', '{"column":"標準原価"}', 'ingest:t', 'IR-20260926-000002-abcd'),
-       ('CO-100000003', 'sku_string', 'sku#3', NULL, 'LOW', '2026-09-15', 1234, 'UNKNOWN', 'NONE', NULL, 'NONE', 'PER_PP', 'PP-100006', 'PHYSICAL_PRODUCT', NULL, '{"sku":"X@1234"}', 'ingest:t', 'IR-20260926-000002-abcd'),
-       ('CO-100000004', 'delivery_note', 'dn#4', 'DOC-20260926-000002', 'HIGH', '2026-09-15', 1100, 'INCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100002', 'PHYSICAL_PRODUCT', NULL, '{"tax_label":"税込"}', 'ingest:t', 'IR-20260926-000002-abcd'),
-       ('CO-100000005', 'invoice', 'inv#5', 'DOC-20260926-000003', 'HIGH', '2026-09-20', 1060, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', NULL, '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
-       ('CO-100000006', 'invoice', 'inv#6', 'DOC-20260926-000004', 'HIGH', '2026-09-20', 1050, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', NULL, '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
-       ('CO-100000007', 'invoice', 'inv#7', 'DOC-20260926-000005', 'HIGH', '2026-09-20', 1049, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', NULL, '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
-       ('CO-100000008', 'invoice', 'inv#8', 'DOC-20260926-000006', 'HIGH', '2026-09-20', 1284, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', NULL, '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
-       ('CO-100000009', 'invoice', 'inv#9', 'DOC-20260926-000007', 'HIGH', '2026-09-20', 1224, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', NULL, '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
-       ('CO-100000010', 'invoice', 'inv#10', 'DOC-20260926-000008', 'HIGH', '2026-09-20', 1100, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', NULL, '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
-       ('CO-100000011', 'legacy_product_master', 'master#11', NULL, 'MEDIUM', '2026-09-15', 1080, 'INCLUDED', 'OPERATIONAL_CONVENTION', NULL, 'NONE', 'PER_PP', 'PP-100003', 'PHYSICAL_PRODUCT', NULL, '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
-       ('CO-100000012', 'invoice', 'inv#12', 'DOC-20260926-000009', 'HIGH', '2026-09-20', 1000, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_LISTING_UNIT', 'LS-100001', 'LISTING', NULL, '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
-       ('CO-100000013', 'invoice', 'inv#13', 'DOC-20260926-000010', 'HIGH', '2026-09-20', 0, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', NULL, '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
-       ('CO-100000014', 'maker_document', 'mk#14', 'DOC-20260926-000011', 'HIGH', '2026-09-20', 0.12, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100007', 'PHYSICAL_PRODUCT', NULL, '{"note":"100枚で0.12円"}', 'ingest:t', 'IR-20260926-000002-abcd'),
-       ('CO-100000015', 'price_list', 'pl#15', 'DOC-20260926-000012', 'HIGH', '2026-09-20', 99999999.99, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100008', 'PHYSICAL_PRODUCT', NULL, '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
-       ('CO-100000016', 'invoice', 'inv#16', 'DOC-20260926-000013', 'HIGH', '2026-09-20', 1800, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_COMPOSITION', 'CP-100001', 'COMPOSITION', NULL, '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
-       ('CO-100000017', 'delivery_note', 'dn#17', 'DOC-20260926-000014', 'HIGH', '2026-09-20', 1080, 'INCLUDED', 'DOCUMENT_STATED', 0.08, 'DOCUMENT_STATED', 'PER_PP', 'PP-100002', 'PHYSICAL_PRODUCT', NULL, '{"tax_label":"税込(軽減8%)"}', 'ingest:t', 'IR-20260926-000002-abcd'),
-       ('CO-100000018', 'invoice', 'inv#18', 'DOC-20260926-000015', 'HIGH', '2026-09-20', 1980, 'INCLUDED', 'DOCUMENT_STATED', NULL, 'NONE', 'PER_COMPOSITION', 'CP-100001', 'COMPOSITION', NULL, '{}', 'ingest:t', 'IR-20260926-000002-abcd')$q$,
+            subject_entity_id, subject_entity_type, subject_legacy_p, source_unit_basis, source_record_key, source_record_hash,
+            evidence, created_by, ingest_run_id) VALUES
+       ('invoice', 'inv#1', 'DOC-20260926-000001', 'HIGH', '2026-09-15', 1000, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', NULL, 'PER_PP', 'inv#1', encode(sha256('inv#1'::bytea), 'hex'), '{"line_unit_price":"1,000","tax_label":"税抜","issuer":"問屋A"}', 'ingest:t', 'IR-20260926-000002-abcd'),
+       ('legacy_product_master', 'master#2', NULL, 'MEDIUM', '2026-09-15', 1100, 'INCLUDED', 'OPERATIONAL_CONVENTION', NULL, 'NONE', 'UNKNOWN', NULL, NULL, 'P000001', 'PER_LEGACY_P', 'master#2', encode(sha256('master#2'::bytea), 'hex'), '{"column":"標準原価"}', 'ingest:t', 'IR-20260926-000002-abcd'),
+       ('sku_string', 'sku#3', NULL, 'LOW', '2026-09-15', 1234, 'UNKNOWN', 'NONE', NULL, 'NONE', 'PER_PP', 'PP-100006', 'PHYSICAL_PRODUCT', NULL, 'PER_PP', 'sku#3', encode(sha256('sku#3'::bytea), 'hex'), '{"sku":"X@1234"}', 'ingest:t', 'IR-20260926-000002-abcd'),
+       ('delivery_note', 'dn#4', 'DOC-20260926-000002', 'HIGH', '2026-09-15', 1100, 'INCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100002', 'PHYSICAL_PRODUCT', NULL, 'PER_PP', 'dn#4', encode(sha256('dn#4'::bytea), 'hex'), '{"tax_label":"税込"}', 'ingest:t', 'IR-20260926-000002-abcd'),
+       ('invoice', 'inv#5', 'DOC-20260926-000003', 'HIGH', '2026-09-20', 1060, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', NULL, 'PER_PP', 'inv#5', encode(sha256('inv#5'::bytea), 'hex'), '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
+       ('invoice', 'inv#6', 'DOC-20260926-000004', 'HIGH', '2026-09-20', 1050, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', NULL, 'PER_PP', 'inv#6', encode(sha256('inv#6'::bytea), 'hex'), '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
+       ('invoice', 'inv#7', 'DOC-20260926-000005', 'HIGH', '2026-09-20', 1049, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', NULL, 'PER_PP', 'inv#7', encode(sha256('inv#7'::bytea), 'hex'), '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
+       ('invoice', 'inv#8', 'DOC-20260926-000006', 'HIGH', '2026-09-20', 1284, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', NULL, 'PER_PP', 'inv#8', encode(sha256('inv#8'::bytea), 'hex'), '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
+       ('invoice', 'inv#9', 'DOC-20260926-000007', 'HIGH', '2026-09-20', 1224, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', NULL, 'PER_PP', 'inv#9', encode(sha256('inv#9'::bytea), 'hex'), '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
+       ('invoice', 'inv#10', 'DOC-20260926-000008', 'HIGH', '2026-09-20', 1100, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', NULL, 'PER_PP', 'inv#10', encode(sha256('inv#10'::bytea), 'hex'), '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
+       ('legacy_product_master', 'master#11', NULL, 'MEDIUM', '2026-09-15', 1080, 'INCLUDED', 'OPERATIONAL_CONVENTION', NULL, 'NONE', 'PER_PP', 'PP-100003', 'PHYSICAL_PRODUCT', NULL, 'PER_PP', 'master#11', encode(sha256('master#11'::bytea), 'hex'), '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
+       ('invoice', 'inv#12', 'DOC-20260926-000009', 'HIGH', '2026-09-20', 1000, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_LISTING_UNIT', 'LS-100001', 'LISTING', NULL, 'PER_LISTING_UNIT', 'inv#12', encode(sha256('inv#12'::bytea), 'hex'), '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
+       ('invoice', 'inv#13', 'DOC-20260926-000010', 'HIGH', '2026-09-20', 0, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', NULL, 'PER_PP', 'inv#13', encode(sha256('inv#13'::bytea), 'hex'), '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
+       ('maker_document', 'mk#14', 'DOC-20260926-000011', 'HIGH', '2026-09-20', 0.12, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100007', 'PHYSICAL_PRODUCT', NULL, 'PER_PP', 'mk#14', encode(sha256('mk#14'::bytea), 'hex'), '{"note":"100枚で0.12円"}', 'ingest:t', 'IR-20260926-000002-abcd'),
+       ('price_list', 'pl#15', 'DOC-20260926-000012', 'HIGH', '2026-09-20', 99999999.99, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100008', 'PHYSICAL_PRODUCT', NULL, 'PER_PP', 'pl#15', encode(sha256('pl#15'::bytea), 'hex'), '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
+       ('invoice', 'inv#16', 'DOC-20260926-000013', 'HIGH', '2026-09-20', 1800, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_COMPOSITION', 'CP-100001', 'COMPOSITION', NULL, 'PER_COMPOSITION', 'inv#16', encode(sha256('inv#16'::bytea), 'hex'), '{}', 'ingest:t', 'IR-20260926-000002-abcd'),
+       ('delivery_note', 'dn#17', 'DOC-20260926-000014', 'HIGH', '2026-09-20', 1080, 'INCLUDED', 'DOCUMENT_STATED', 0.08, 'DOCUMENT_STATED', 'PER_PP', 'PP-100002', 'PHYSICAL_PRODUCT', NULL, 'PER_PP', 'dn#17', encode(sha256('dn#17'::bytea), 'hex'), '{"tax_label":"税込(軽減8%)"}', 'ingest:t', 'IR-20260926-000002-abcd'),
+       ('invoice', 'inv#18', 'DOC-20260926-000015', 'HIGH', '2026-09-20', 1980, 'INCLUDED', 'DOCUMENT_STATED', NULL, 'NONE', 'PER_COMPOSITION', 'CP-100001', 'COMPOSITION', NULL, 'PER_COMPOSITION', 'inv#18', encode(sha256('inv#18'::bytea), 'hex'), '{}', 'ingest:t', 'IR-20260926-000002-abcd')$q$,
     'pctest_ingest');
+SELECT setval('product_core.co_seq', 100000100);
+SELECT pc_test.check('OBSERVATION', 'DB の採番で想定の ID になっている(テストの前提)',
+    (SELECT count(*) = 18 AND bool_and(observation_id = 'CO-1000000' || lpad(substring(source_ref FROM '[0-9]+$'), 2, '0'))
+       FROM product_core.cost_observation));
 SELECT pc_test.check('OBSERVATION', '元の金額をそのまま保存(1100 は 1100 のまま)',
     (SELECT observed_amount = 1100 AND tax_inclusion = 'INCLUDED' FROM product_core.cost_observation WHERE observation_id = 'CO-100000002'));
 SELECT pc_test.throws('OBSERVATION', '書類の観測値は DocID 必須',
     $q$INSERT INTO product_core.cost_observation (source, source_ref, source_reliability, observed_at, observed_amount, tax_inclusion, tax_inclusion_basis,
-            tax_rate_basis, amount_unit, subject_entity_id, subject_entity_type, evidence, created_by, ingest_run_id)
-       VALUES ('invoice', 'x#1', 'HIGH', now(), 1, 'EXCLUDED', 'DOCUMENT_STATED', 'NONE', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', '{}', 'ingest:t', 'IR-20260926-000002-abcd')$q$,
+            tax_rate_basis, amount_unit, subject_entity_id, subject_entity_type, source_unit_basis, source_record_key, source_record_hash, evidence, created_by, ingest_run_id)
+       VALUES ('invoice', 'x#1', 'HIGH', now(), 1, 'EXCLUDED', 'DOCUMENT_STATED', 'NONE', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', 'PER_PP', 'x#1', repeat('1', 64), '{}', 'ingest:t', 'IR-20260926-000002-abcd')$q$,
     'pctest_ingest', '23514');
 SELECT pc_test.throws('OBSERVATION', '税区分 UNKNOWN に根拠を付けられない',
     $q$INSERT INTO product_core.cost_observation (source, source_ref, source_reliability, observed_at, observed_amount, tax_inclusion, tax_inclusion_basis,
-            tax_rate_basis, amount_unit, subject_entity_id, subject_entity_type, evidence, created_by, ingest_run_id)
-       VALUES ('sku_string', 'x#2', 'LOW', now(), 1, 'UNKNOWN', 'DOCUMENT_STATED', 'NONE', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', '{}', 'ingest:t', 'IR-20260926-000002-abcd')$q$,
+            tax_rate_basis, amount_unit, subject_entity_id, subject_entity_type, source_unit_basis, source_record_key, source_record_hash, evidence, created_by, ingest_run_id)
+       VALUES ('sku_string', 'x#2', 'LOW', now(), 1, 'UNKNOWN', 'DOCUMENT_STATED', 'NONE', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', 'PER_PP', 'x#2', repeat('2', 64), '{}', 'ingest:t', 'IR-20260926-000002-abcd')$q$,
     'pctest_ingest', '23514');
 SELECT pc_test.throws('OBSERVATION', '税率には根拠が必要',
     $q$INSERT INTO product_core.cost_observation (source, source_ref, source_reliability, observed_at, observed_amount, tax_inclusion, tax_inclusion_basis,
-            tax_rate, tax_rate_basis, amount_unit, subject_entity_id, subject_entity_type, evidence, created_by, ingest_run_id)
-       VALUES ('sku_string', 'x#3', 'LOW', now(), 1, 'INCLUDED', 'OPERATIONAL_CONVENTION', 0.10, 'NONE', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', '{}', 'ingest:t', 'IR-20260926-000002-abcd')$q$,
+            tax_rate, tax_rate_basis, amount_unit, subject_entity_id, subject_entity_type, source_unit_basis, source_record_key, source_record_hash, evidence, created_by, ingest_run_id)
+       VALUES ('sku_string', 'x#3', 'LOW', now(), 1, 'INCLUDED', 'OPERATIONAL_CONVENTION', 0.10, 'NONE', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', 'PER_PP', 'x#3', repeat('3', 64), '{}', 'ingest:t', 'IR-20260926-000002-abcd')$q$,
     'pctest_ingest', '23514');
 SELECT pc_test.throws('OBSERVATION', '税率は 0 以上 1 未満',
     $q$INSERT INTO product_core.cost_observation (source, source_ref, source_reliability, observed_at, observed_amount, tax_inclusion, tax_inclusion_basis,
-            tax_rate, tax_rate_basis, amount_unit, subject_entity_id, subject_entity_type, evidence, created_by, ingest_run_id)
-       VALUES ('supplier_csv', 'x#4', 'LOW', now(), 1, 'INCLUDED', 'SOURCE_SPEC', 1.5, 'SOURCE_SPEC', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', '{}', 'ingest:t', 'IR-20260926-000002-abcd')$q$,
-    'pctest_ingest');
+            tax_rate, tax_rate_basis, amount_unit, subject_entity_id, subject_entity_type, source_unit_basis, source_record_key, source_record_hash, evidence, created_by, ingest_run_id)
+       VALUES ('supplier_csv', 'x#4', 'LOW', now(), 1, 'INCLUDED', 'SOURCE_SPEC', 1.5, 'SOURCE_SPEC', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', 'PER_PP', 'x#4', repeat('4', 64), '{}', 'ingest:t', 'IR-20260926-000002-abcd')$q$,
+    'pctest_ingest', '23514');
 SELECT pc_test.throws('OBSERVATION', '対象は1つだけ(実体と legacy P の両方は不可)',
     $q$INSERT INTO product_core.cost_observation (source, source_ref, source_reliability, observed_at, observed_amount, tax_inclusion, tax_inclusion_basis,
-            tax_rate_basis, amount_unit, subject_entity_id, subject_entity_type, subject_legacy_p, evidence, created_by, ingest_run_id)
-       VALUES ('sku_string', 'x#5', 'LOW', now(), 1, 'UNKNOWN', 'NONE', 'NONE', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', 'P000001', '{}', 'ingest:t', 'IR-20260926-000002-abcd')$q$,
+            tax_rate_basis, amount_unit, subject_entity_id, subject_entity_type, subject_legacy_p, source_unit_basis, source_record_key, source_record_hash, evidence, created_by, ingest_run_id)
+       VALUES ('sku_string', 'x#5', 'LOW', now(), 1, 'UNKNOWN', 'NONE', 'NONE', 'UNKNOWN', 'PP-100001', 'PHYSICAL_PRODUCT', 'P000001', 'UNKNOWN', 'x#5', repeat('5', 64), '{}', 'ingest:t', 'IR-20260926-000002-abcd')$q$,
     'pctest_ingest', '23514');
 SELECT pc_test.throws('OBSERVATION', 'P3: 観測値の金額は変更できない',
     $q$UPDATE product_core.cost_observation SET observed_amount = 1 WHERE observation_id = 'CO-100000001'$q$, NULL, '追記専用');
@@ -62,11 +68,14 @@ SELECT pc_test.throws('OBSERVATION', 'P3: 観測値の evidence は変更でき�
     $q$UPDATE product_core.cost_observation SET evidence = '{}' WHERE observation_id = 'CO-100000001'$q$, NULL, '追記専用');
 SELECT pc_test.throws('OBSERVATION', 'P3: 観測値は削除できない',
     $q$DELETE FROM product_core.cost_observation WHERE observation_id = 'CO-100000001'$q$, NULL, '追記専用');
+-- 冪等性の単位は「取込元 + 業務キー + レコードのハッシュ」(1.5)。同じ行の再取込は増えない
 SELECT pc_test.throws('OBSERVATION', '同じ資料の同じ行は二重に取り込まれない(冪等性)',
     $q$INSERT INTO product_core.cost_observation (source, source_ref, source_document_id, source_reliability, observed_at, observed_amount, tax_inclusion,
-            tax_inclusion_basis, tax_rate, tax_rate_basis, amount_unit, subject_entity_id, subject_entity_type, evidence, created_by, ingest_run_id)
-       VALUES ('invoice', 'inv#1', 'DOC-20260926-000001', 'HIGH', now(), 1000, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT', '{}', 'ingest:t', 'IR-20260926-000002-abcd')$q$,
-    'pctest_ingest', '23505');
+            tax_inclusion_basis, tax_rate, tax_rate_basis, amount_unit, subject_entity_id, subject_entity_type, source_unit_basis, source_record_key,
+            source_record_hash, evidence, created_by, ingest_run_id)
+       VALUES ('invoice', 'inv#1', 'DOC-20260926-000001', 'HIGH', now(), 1000, 'EXCLUDED', 'DOCUMENT_STATED', 0.10, 'DOCUMENT_STATED', 'PER_PP', 'PP-100001', 'PHYSICAL_PRODUCT',
+               'PER_PP', 'inv#1', encode(sha256('inv#1'::bytea), 'hex'), '{}', 'ingest:t', 'IR-20260926-000002-abcd')$q$,
+    'pctest_ingest', 'cost_observation_source_uq');
 
 -- ------------------------------------------------------------
 --  COST: 正式原価(C4・C8・C10・C11・S3・S5・S7・S8)
@@ -178,15 +187,24 @@ SELECT pc_test.lives('COST', 'S7: 人の確定後は、確定した税区分で�
     format($q$INSERT INTO product_core.cost_history (pp_id, unit_cost_excl_tax, valid_from, source_observation_id, normalization, basis, assessment_id, tax_basis_assessment_id, approved_by)
        VALUES ('PP-100006', 1121.818182, '2026-09-01', 'CO-100000003', %L, '人が税込と確定', 'AS-100000004', 'AS-100000005', 'human:op_cost')$q$, :'norm_unknown'),
     'pctest_reviewer');
+-- 1.2: CO-100000002(商品マスター・既存 P あたり)は単位の人の確定が要る。先に AI 判定を記録し人が PER_PP と確定する
+SELECT pc_test.lives('COST', '(準備)UNIT_BASIS の AI 判定を記録し、人が PER_PP と確定する', ARRAY[
+    $q$SELECT setval('product_core.as_seq', 100000200)$q$,
+    $q$SET LOCAL ROLE pctest_ingest$q$,
+    $q$INSERT INTO product_core.assessment (assessment_type, subject_key, verdict, confidence, reason, evidence, rule_version, assessed_by)
+       VALUES ('UNIT_BASIS', 'CO-100000002', 'PER_PP', 'MEDIUM', 'P000001 は単品(構成品なし)', '{}', 'unit/1.0', 'rule:unit/1.0')$q$,
+    $q$RESET ROLE$q$,
+    $q$SET LOCAL ROLE pctest_reviewer$q$,
+    $q$UPDATE product_core.assessment SET review_status = 'APPROVED', reviewed_by = 'human:op_cost' WHERE assessment_id = 'AS-100000201'$q$]);
 \set norm_conv '{"observed_amount":1100,"tax_inclusion":"INCLUDED","tax_inclusion_basis":"OPERATIONAL_CONVENTION","tax_rate":null,"tax_inclusion_applied":"INCLUDED","tax_rate_applied":0.10,"tax_rate_basis_applied":"PP_TAX_CATEGORY","unit_divisor":1,"formula":"1100/1.10"}'
 SELECT pc_test.throws('COST', 'S7: 運用慣行(原則税込)だけの観測値は、人の確定なしに正式原価にできない',
-    format($q$INSERT INTO product_core.cost_history (pp_id, unit_cost_excl_tax, valid_from, source_observation_id, normalization, basis, assessment_id, approved_by)
-       VALUES ('PP-100001', 1000, '2027-01-01', 'CO-100000002', %L, 'x', 'AS-100000004', 'human:op_cost')$q$, :'norm_conv'),
-    'pctest_reviewer', '確定していません');
-SELECT pc_test.lives('COST', '人が「税込」を承認すれば、legacy_mapping 経由の商品マスター原価を使える', ARRAY[
+    format($q$INSERT INTO product_core.cost_history (pp_id, unit_cost_excl_tax, valid_from, source_observation_id, normalization, basis, assessment_id, unit_basis_assessment_id, approved_by)
+       VALUES ('PP-100001', 1000, '2027-01-01', 'CO-100000002', %L, 'x', 'AS-100000004', 'AS-100000201', 'human:op_cost')$q$, :'norm_conv'),
+    'pctest_reviewer', '税区分は確定していません');
+SELECT pc_test.lives('COST', '人が「税込」と単位を確定すれば、legacy_mapping 経由の商品マスター原価を使える', ARRAY[
     $q$UPDATE product_core.assessment SET review_status = 'APPROVED', reviewed_by = 'human:op_cost' WHERE assessment_id = 'AS-100000006'$q$,
-    format($q$INSERT INTO product_core.cost_history (pp_id, unit_cost_excl_tax, valid_from, source_observation_id, normalization, basis, assessment_id, tax_basis_assessment_id, approved_by)
-       VALUES ('PP-100001', 1000, '2027-01-01', 'CO-100000002', %L, '商品マスター(人が税込と確定)', 'AS-100000004', 'AS-100000006', 'human:op_cost')$q$, :'norm_conv')],
+    format($q$INSERT INTO product_core.cost_history (pp_id, unit_cost_excl_tax, valid_from, source_observation_id, normalization, basis, assessment_id, tax_basis_assessment_id, unit_basis_assessment_id, approved_by)
+       VALUES ('PP-100001', 1000, '2027-01-01', 'CO-100000002', %L, '商品マスター(人が税込・PP 単位と確定)', 'AS-100000004', 'AS-100000006', 'AS-100000201', 'human:op_cost')$q$, :'norm_conv')],
     'pctest_reviewer');
 
 -- ------------------------------------------------------------
@@ -266,10 +284,24 @@ SELECT pc_test.check('WARN', '書類の税込(税率明記)→ CONFIRMED で 100
     (SELECT certainty = 'CONFIRMED' AND excl_tax_amount = 1000 FROM product_core.normalize_observation('CO-100000004')));
 SELECT pc_test.check('WARN', '商品マスター(原則税込・運用慣行)+ PP の税区分 → REFERENCE で 1000',
     (SELECT certainty = 'REFERENCE' AND excl_tax_amount = 1000 FROM product_core.normalize_observation('CO-100000002', 'PP-100001')));
+-- 1.2 により CO-100000002(既存 P あたり)は単位不明となり、PP 単価と比較しない(下の新しい確認)。
+-- 「運用慣行の税込値と書類の税抜値を税抜同士で比べる」確認の目的は変えず、単位が PP と確定した
+-- 商品マスター由来の観測値(CO-100000019: PP を直接の対象とする)で行う
+SELECT pc_test.lives('WARN', '(準備)PP 単位と確定した商品マスター由来の観測値(税込・運用慣行 1100)', ARRAY[
+    $q$SELECT setval('product_core.co_seq', 100000018)$q$,
+    $q$SET LOCAL ROLE pctest_ingest$q$,
+    $q$INSERT INTO product_core.cost_observation (source, source_ref, source_reliability, observed_at, observed_amount, tax_inclusion, tax_inclusion_basis,
+            tax_rate_basis, amount_unit, subject_entity_id, subject_entity_type, source_unit_basis, source_record_key, source_record_hash, evidence, created_by, ingest_run_id)
+       VALUES ('legacy_product_master', 'master#19', 'MEDIUM', '2026-09-15', 1100, 'INCLUDED', 'OPERATIONAL_CONVENTION', 'NONE', 'PER_PP',
+               'PP-100001', 'PHYSICAL_PRODUCT', 'PER_PP', 'master#19', encode(sha256('master#19'::bytea), 'hex'), '{"column":"標準原価"}', 'ingest:t', 'IR-20260926-000002-abcd')$q$,
+    $q$RESET ROLE$q$,
+    $q$SELECT setval('product_core.co_seq', 100000100)$q$]);
 SELECT pc_test.check('WARN', '商品マスター 1100(税込)と納品書 1000(税抜)は税抜 1000 同士で比較され、差は無い(OK)',
-    (SELECT verdict = 'OK' AND diff = 0 FROM product_core.cost_variance('CO-100000002', 'CO-100000001', 'PP-100001')));
+    (SELECT verdict = 'OK' AND diff = 0 FROM product_core.cost_variance('CO-100000019', 'CO-100000001', 'PP-100001')));
 SELECT pc_test.check('WARN', '推定を含む比較で 50円以上 かつ 5%以上 → REFERENCE_WARN(CONFIRMED と区別)',
-    (SELECT verdict = 'REFERENCE_WARN' FROM product_core.cost_variance('CO-100000010', 'CO-100000002', 'PP-100001')));
+    (SELECT verdict = 'REFERENCE_WARN' FROM product_core.cost_variance('CO-100000010', 'CO-100000019', 'PP-100001')));
+SELECT pc_test.check('WARN', '1.2: 既存 P あたり(PER_LEGACY_P)の値は PP 単価と比較しない(UNIT_UNKNOWN)',
+    (SELECT verdict = 'UNIT_UNKNOWN' FROM product_core.cost_variance('CO-100000002', 'CO-100000001', 'PP-100001')));
 SELECT pc_test.check('WARN', '双方が証拠で確認済み、差 60円・6% → CONFIRMED_WARN',
     (SELECT verdict = 'CONFIRMED_WARN' FROM product_core.cost_variance('CO-100000005', 'CO-100000001')));
 SELECT pc_test.check('WARN', '境界: 差 50円・5.0% ちょうど → CONFIRMED_WARN(以上を含む)',
